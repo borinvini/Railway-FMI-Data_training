@@ -1,6 +1,7 @@
 import glob
 import os
 import pandas as pd
+import re
 import ast
 
 from config.const import DATA_FILE_PREFIX_FOR_TRAINING, OUTPUT_FOLDER
@@ -26,6 +27,104 @@ class TrainingPipeline:
             'Snow depth', 
             'Horizontal visibility'
         ]
+
+    def run_pipeline(self, csv_files):
+        """
+        Run the full processing pipeline on the provided CSV files.
+        
+        This method coordinates the execution of the preprocessing and 
+        missing value handling steps for each input file.
+        
+        Parameters:
+        -----------
+        csv_files : list
+            List of CSV file paths to process.
+            
+        Returns:
+        --------
+        dict
+            A summary of the processing results containing:
+            - total_files: Total number of files processed
+            - successful_preprocessing: Number of files successfully preprocessed
+            - successful_cleaning: Number of files with successful missing value handling
+            - failed_files: Number of files that failed processing
+            - processed_dataframes: Dictionary of processed dataframes (if save_dataframes=True)
+        """
+        if not csv_files:
+            print("\nNo CSV files to process.")
+            return {
+                "total_files": 0,
+                "successful_preprocessing": 0,
+                "successful_cleaning": 0,
+                "failed_files": 0
+            }
+        
+        print(f"\nStarting pipeline processing for {len(csv_files)} CSV files.")
+        
+        # Initialize counters for summary
+        successful_preprocessing = 0
+        successful_cleaning = 0
+        failed_files = 0
+        processed_dataframes = {}
+        
+        # Process each file
+        for i, input_file_path in enumerate(csv_files):
+            filename = os.path.basename(input_file_path)
+            print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename}")
+            
+            # Step 1: Preprocess the CSV file
+            print(f"Starting preprocessing for {filename}...")
+            processed_df = self.preprocess_csv_file(input_file_path)
+            
+            if processed_df is None:
+                print(f"Error occurred during preprocessing of {filename}")
+                failed_files += 1
+                continue
+                
+            print(f"Preprocessing completed successfully for {filename}")
+            print(f"Processed data contains {len(processed_df)} rows and {len(processed_df.columns)} columns")
+            successful_preprocessing += 1
+            
+            # Step 2: Handle missing values
+            # Extract year and month from the filename
+            pattern = r'(\d{4})_(\d{2})'
+            match = re.search(pattern, filename)
+            
+            if match:
+                year_month = f"{match.group(1)}_{match.group(2)}"
+                print(f"\nHandling missing values for {year_month}...")
+                
+                # Call the handle_missing_values method
+                cleaned_df = self.handle_missing_values(file_year_month=year_month, dataframe=processed_df)
+                
+                if cleaned_df is not None:
+                    print(f"Successfully cleaned missing values for {year_month}")
+                    successful_cleaning += 1
+                    processed_dataframes[year_month] = cleaned_df
+                else:
+                    print(f"Failed to clean missing values for {year_month}")
+            else:
+                print(f"Could not extract year_month from filename: {filename}")
+        
+        # Generate and return summary
+        summary = {
+            "total_files": len(csv_files),
+            "successful_preprocessing": successful_preprocessing,
+            "successful_cleaning": successful_cleaning,
+            "failed_files": failed_files,
+            "processed_dataframes": processed_dataframes
+        }
+        
+        # Print summary
+        print("\n" + "="*50)
+        print("Processing Summary:")
+        print(f"Total files processed: {summary['total_files']}")
+        print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
+        print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
+        print(f"Failed to process: {summary['failed_files']}")
+        print("="*50)
+        
+        return summary
 
     def preprocess_csv_file(self, input_file_path):
         """
