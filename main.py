@@ -1,7 +1,7 @@
 import os
 import re
 from src.file_utils import check_csv_files, extract_date_range, load_and_preview_csv
-from src.data_preprocessor import preprocess_csv_file, handle_missing_values
+from src.data_preprocessor import TrainingPipeline  # Import the class instead of functions
 
 
 def main():
@@ -29,6 +29,9 @@ def main():
     failed_files = 0
     successful_missing_values = 0
     
+    # Initialize the TrainingPipeline class
+    pipeline = TrainingPipeline()
+    
     for i, input_file_path in enumerate(csv_files):
         filename = os.path.basename(input_file_path)
         print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename}")
@@ -46,8 +49,8 @@ def main():
         # Process the CSV file
         print(f"Starting preprocessing for {filename}...")
         
-        # Call the preprocessing function
-        processed_df = preprocess_csv_file(input_file_path)
+        # Call the preprocessing method on the class instance
+        processed_df = pipeline.preprocess_csv_file(input_file_path)
         
         if processed_df is not None:
             print(f"Preprocessing completed successfully for {filename}")
@@ -62,8 +65,8 @@ def main():
                 year_month = f"{match.group(1)}_{match.group(2)}"
                 print(f"\nHandling missing values for {year_month}...")
                 
-                # Call the handle_missing_values function with the processed dataframe
-                cleaned_df = handle_missing_values(file_year_month=year_month, dataframe=processed_df)
+                # Call the handle_missing_values method on the class instance
+                cleaned_df = pipeline.handle_missing_values(file_year_month=year_month, dataframe=processed_df)
                 
                 if cleaned_df is not None:
                     print(f"Successfully cleaned missing values for {year_month}")
