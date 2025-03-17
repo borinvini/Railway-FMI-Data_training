@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import re
 import ast
+from sklearn.preprocessing import StandardScaler
 
 from config.const import DATA_FILE_PREFIX_FOR_TRAINING, OUTPUT_FOLDER
 from src.file_utils import generate_output_path
@@ -65,6 +66,7 @@ class TrainingPipeline:
         successful_preprocessing = 0
         successful_cleaning = 0
         successful_deduplication = 0
+        successful_scaling = 0
         successful_saves = 0
         failed_files = 0
         
@@ -110,16 +112,34 @@ class TrainingPipeline:
                         print(f"Successfully removed duplicates for {year_month}")
                         successful_deduplication += 1
                         
-                        # Step 4: Save the deduplicated dataframe immediately to free up memory
-                        print(f"Saving processed dataframe for {year_month}...")
-                        save_success = self.save_df_to_csv(year_month, deduplicated_df)
+                        # Step 4: Scale numeric columns
+                        print(f"Scaling numeric columns for {year_month}...")
+                        scaled_df = self.scale_numeric_columns(dataframe=deduplicated_df)
                         
-                        if save_success:
-                            successful_saves += 1
-                            print(f"Successfully saved dataframe for {year_month}")
-                        else:
-                            print(f"Failed to save dataframe for {year_month}")
+                        if scaled_df is not None:
+                            print(f"Successfully scaled numeric columns for {year_month}")
+                            successful_scaling += 1
                             
+                            # Step 5: Save the scaled dataframe immediately to free up memory
+                            print(f"Saving processed dataframe for {year_month}...")
+                            save_success = self.save_df_to_csv(year_month, scaled_df)
+                            
+                            if save_success:
+                                successful_saves += 1
+                                print(f"Successfully saved dataframe for {year_month}")
+                            else:
+                                print(f"Failed to save dataframe for {year_month}")
+                                
+                            # Clear the scaled dataframe from memory
+                            del scaled_df
+                        else:
+                            print(f"Failed to scale numeric columns for {year_month}")
+                            # Try to save the deduplicated dataframe anyway
+                            print(f"Saving deduplicated dataframe for {year_month}...")
+                            save_success = self.save_df_to_csv(year_month, deduplicated_df)
+                            if save_success:
+                                successful_saves += 1
+                        
                         # Clear the deduplicated dataframe from memory
                         del deduplicated_df
                     else:
@@ -146,6 +166,7 @@ class TrainingPipeline:
             "successful_preprocessing": successful_preprocessing,
             "successful_cleaning": successful_cleaning,
             "successful_deduplication": successful_deduplication,
+            "successful_scaling": successful_scaling,
             "successful_saves": successful_saves,
             "failed_files": failed_files
         }
@@ -157,6 +178,7 @@ class TrainingPipeline:
         print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
         print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
         print(f"Successfully deduplicated: {summary['successful_deduplication']}")
+        print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
@@ -408,6 +430,73 @@ class TrainingPipeline:
             print(f"- Duplicate percentage: {100 - retention_percentage:.2f}%")
         
         return df_deduplicated
+    
+    def scale_numeric_columns(self, dataframe=None):
+        """
+        Scale numeric columns in the dataframe using StandardScaler.
+        
+        This standardizes numeric features by removing the mean and scaling to unit variance.
+        Important for machine learning models that assume features are on similar scales.
+        
+        Note: The 'differenceInMinutes' column is excluded from scaling as it's likely 
+        the target variable we want to predict.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with numeric columns scaled (except for differenceInMinutes).
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Scaling numeric columns in dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        try:
+            # Identify all numeric columns
+            all_numeric_columns = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+            
+            if len(all_numeric_columns) == 0:
+                print("Warning: No numeric columns found in the dataframe")
+                return df
+            
+            # Exclude differenceInMinutes from scaling if it exists
+            columns_to_scale = [col for col in all_numeric_columns if col != 'differenceInMinutes']
+            
+            # Report which columns will be scaled and which ones are excluded
+            excluded_columns = set(all_numeric_columns) - set(columns_to_scale)
+            print(f"Found {len(all_numeric_columns)} numeric columns.")
+            print(f"Excluding from scaling: {list(excluded_columns)}")
+            print(f"Columns to scale: {columns_to_scale}")
+            
+            if not columns_to_scale:
+                print("No columns to scale after exclusions. Returning original dataframe.")
+                return df
+            
+            # Initialize the scaler
+            scaler = StandardScaler()
+            
+            # Scale only the selected numeric columns
+            df[columns_to_scale] = scaler.fit_transform(df[columns_to_scale])
+            
+            print(f"Successfully scaled {len(columns_to_scale)} numeric columns")
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error scaling numeric columns: {e}")
+            return dataframe  # Return original dataframe on error
     
     def save_df_to_csv(self, year_month, dataframe):
         """
