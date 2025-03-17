@@ -64,8 +64,8 @@ class TrainingPipeline:
         # Initialize counters for summary
         successful_preprocessing = 0
         successful_cleaning = 0
+        successful_saves = 0
         failed_files = 0
-        processed_dataframes = {}
         
         # Process each file
         for i, input_file_path in enumerate(csv_files):
@@ -94,25 +94,40 @@ class TrainingPipeline:
                 year_month = f"{match.group(1)}_{match.group(2)}"
                 print(f"\nHandling missing values for {year_month}...")
                 
-                # Call the handle_missing_values method
-                cleaned_df = self.handle_missing_values(file_year_month=year_month, dataframe=processed_df)
+                # Call the handle_missing_values method (now without saving)
+                cleaned_df = self.handle_missing_values(dataframe=processed_df)
                 
                 if cleaned_df is not None:
                     print(f"Successfully cleaned missing values for {year_month}")
                     successful_cleaning += 1
-                    processed_dataframes[year_month] = cleaned_df
+                    
+                    # Step 3: Save the cleaned dataframe immediately to free up memory
+                    print(f"Saving processed dataframe for {year_month}...")
+                    save_success = self.save_df_to_csv(year_month, cleaned_df)
+                    
+                    if save_success:
+                        successful_saves += 1
+                        print(f"Successfully saved dataframe for {year_month}")
+                    else:
+                        print(f"Failed to save dataframe for {year_month}")
+                        
+                    # Clear the dataframe from memory
+                    del cleaned_df
                 else:
                     print(f"Failed to clean missing values for {year_month}")
             else:
                 print(f"Could not extract year_month from filename: {filename}")
+            
+            # Clear the processed dataframe from memory
+            del processed_df
         
         # Generate and return summary
         summary = {
             "total_files": len(csv_files),
             "successful_preprocessing": successful_preprocessing,
             "successful_cleaning": successful_cleaning,
-            "failed_files": failed_files,
-            "processed_dataframes": processed_dataframes
+            "successful_saves": successful_saves,
+            "failed_files": failed_files
         }
         
         # Print summary
@@ -121,6 +136,7 @@ class TrainingPipeline:
         print(f"Total files processed: {summary['total_files']}")
         print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
         print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
+        print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -142,8 +158,9 @@ class TrainingPipeline:
             The processed DataFrame that was saved to the output file.
         """
         try:
-            # Generate output path and load the dataframe
-            output_file_path, df = generate_output_path(input_file_path)
+            # Load the dataframe from the input file path
+            # Note: We're still using generate_output_path to load the dataframe but won't save it
+            _, df = generate_output_path(input_file_path)
             
             # Extract nested data from the "timeTableRows" column
             cross_records = []
@@ -212,17 +229,14 @@ class TrainingPipeline:
             cross_df = cross_df[cols_order]
             print("Reordered columns")
             
-            # Save the final DataFrame to a CSV file
-            cross_df.to_csv(output_file_path, index=False)
-            print(f"Successfully saved processed data to {output_file_path}")
-            
+            # Return the processed DataFrame without saving to file
             return cross_df
             
         except Exception as e:
             print(f"Error processing file {input_file_path}: {e}")
             return None
         
-    def handle_missing_values(self, file_year_month=None, dataframe=None):
+    def handle_missing_values(self, dataframe=None):
         """
         Handle missing values in preprocessed dataframes.
         
@@ -232,8 +246,6 @@ class TrainingPipeline:
         
         Parameters:
         -----------
-        file_year_month : str
-            Year and month in format "YYYY_MM" to specify which file to save to.
         dataframe : pandas.DataFrame
             The preprocessed dataframe to handle missing values in.
             
@@ -247,14 +259,6 @@ class TrainingPipeline:
             print("Error: Dataframe must be provided")
             return None
             
-        # Determine file path for saving
-        if file_year_month:
-            filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{file_year_month}.csv"
-            file_path = os.path.join(self.output_dir, filename)
-        else:
-            print("Warning: file_year_month not provided, will not save results to disk")
-            file_path = None
-        
         df = dataframe
         print(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
         
@@ -299,9 +303,41 @@ class TrainingPipeline:
             null_percentage = (null_count / len(df_cleaned) * 100) if len(df_cleaned) > 0 else 0
             print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
         
-        # Save the cleaned dataframe back to file if path is available
-        if file_path:
-            df_cleaned.to_csv(file_path, index=False)
-            print(f"Cleaned data saved to {file_path}")
-        
         return df_cleaned
+    
+    def save_df_to_csv(self, year_month, dataframe):
+        """
+        Save a processed dataframe to a CSV file.
+        
+        Parameters:
+        -----------
+        year_month : str
+            Year and month in format "YYYY_MM" for the filename.
+        dataframe : pandas.DataFrame
+            The dataframe to save.
+            
+        Returns:
+        --------
+        bool
+            True if saving was successful, False otherwise.
+        """
+        try:
+            if dataframe is None or dataframe.empty:
+                print(f"Warning: Cannot save empty dataframe for {year_month}")
+                return False
+                
+            # Create the output filename
+            filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}.csv"
+            file_path = os.path.join(self.output_dir, filename)
+            
+            # Ensure output directory exists
+            os.makedirs(self.output_dir, exist_ok=True)
+            
+            # Save the dataframe
+            dataframe.to_csv(file_path, index=False)
+            print(f"Successfully saved dataframe to {file_path}")
+            return True
+            
+        except Exception as e:
+            print(f"Error saving dataframe for {year_month}: {e}")
+            return False
