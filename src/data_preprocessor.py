@@ -1,6 +1,9 @@
+import glob
+import os
 import pandas as pd
 import ast
 
+from config.const import DATA_FILE_PREFIX_FOR_TRAINING, OUTPUT_FOLDER
 from src.file_utils import generate_output_path
 
 def preprocess_csv_file(input_file_path):
@@ -97,4 +100,132 @@ def preprocess_csv_file(input_file_path):
         
     except Exception as e:
         print(f"Error processing file {input_file_path}: {e}")
+        return None
+    
+def handle_missing_values(file_year_month=None, dataframe=None):
+    """
+    Handle missing values in preprocessed CSV files.
+    
+    Either uses the provided dataframe or loads a preprocessed CSV file 
+    from the output folder and handles missing values:
+    - Drop rows where all weather condition columns have missing values
+    - Keep track of how many rows were dropped
+    
+    Parameters:
+    -----------
+    file_year_month : str, optional
+        Year and month in format "YYYY_MM" to specify which file to process/save.
+        Required if no dataframe is provided.
+    dataframe : pandas.DataFrame, optional
+        The preprocessed dataframe to handle missing values in.
+        If provided, the file won't be loaded from disk.
+        
+    Returns:
+    --------
+    pandas.DataFrame
+        The cleaned dataframe with missing values handled.
+    """
+    try:
+        # Determine the script directory and project root for file operations
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        output_dir = os.path.join(project_root, OUTPUT_FOLDER)
+        
+        # If no dataframe is provided, load it from file
+        if dataframe is None:
+            if not file_year_month:
+                print("Error: Either dataframe or file_year_month must be provided")
+                return None
+                
+            # Ensure the output directory exists
+            if not os.path.exists(output_dir):
+                print(f"Error: Output directory {output_dir} not found")
+                return None
+            
+            # Look for a specific file with the given year and month
+            filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{file_year_month}.csv"
+            file_path = os.path.join(output_dir, filename)
+            
+            if not os.path.exists(file_path):
+                print(f"Error: File {filename} not found in {output_dir}")
+                return None
+            
+            # Load the CSV file
+            print(f"Loading file: {filename}")
+            df = pd.read_csv(file_path)
+            print(f"Loaded CSV with {len(df)} rows and {len(df.columns)} columns")
+        else:
+            # Use the provided dataframe
+            df = dataframe
+            print(f"Using provided dataframe with {len(df)} rows and {len(df.columns)} columns")
+            
+            # Determine file path for saving
+            if file_year_month:
+                filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{file_year_month}.csv"
+                file_path = os.path.join(output_dir, filename)
+            else:
+                print("Warning: file_year_month not provided, will not save results to disk")
+                file_path = None
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Count rows before cleaning
+        original_row_count = len(df)
+        
+        # Define the important weather conditions to check
+        important_conditions = [
+            'Air temperature', 
+            'Relative humidity', 
+            'Dew-point temperature', 
+            'Precipitation amount', 
+            'Precipitation intensity', 
+            'Snow depth', 
+            'Horizontal visibility'
+        ]
+        
+        # Filter the list to only include columns that actually exist in the dataframe
+        available_important_cols = [col for col in important_conditions if col in df.columns]
+        
+        if not available_important_cols:
+            print("Warning: None of the specified important weather conditions found in the dataframe")
+            return df
+        
+        print(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
+        
+        # Drop rows where ALL of the important weather conditions are missing
+        # (Keep rows with at least one of the specified conditions)
+        df_cleaned = df.dropna(subset=available_important_cols, how='all')
+        
+        # Count how many rows were dropped
+        dropped_rows = original_row_count - len(df_cleaned)
+        
+        # Report the results
+        print(f"Missing values handling complete:")
+        print(f"- Original row count: {original_row_count}")
+        print(f"- Rows dropped (missing all important weather conditions): {dropped_rows}")
+        print(f"- Remaining rows: {len(df_cleaned)}")
+        
+        # Calculate percentage of data retained
+        if original_row_count > 0:
+            retention_percentage = (len(df_cleaned) / original_row_count) * 100
+            print(f"- Data retention: {retention_percentage:.2f}%")
+            
+        # Additional statistics on the important columns
+        for col in available_important_cols:
+            non_null_count = df_cleaned[col].count()
+            null_count = len(df_cleaned) - non_null_count
+            null_percentage = (null_count / len(df_cleaned) * 100) if len(df_cleaned) > 0 else 0
+            print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
+        
+        # Save the cleaned dataframe back to file if path is available
+        if file_path:
+            df_cleaned.to_csv(file_path, index=False)
+            print(f"Cleaned data saved to {file_path}")
+        
+        return df_cleaned
+        
+    except Exception as e:
+        print(f"Error in handle_missing_values: {e}")
         return None
