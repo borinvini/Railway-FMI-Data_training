@@ -64,6 +64,7 @@ class TrainingPipeline:
         # Initialize counters for summary
         successful_preprocessing = 0
         successful_cleaning = 0
+        successful_deduplication = 0
         successful_saves = 0
         failed_files = 0
         
@@ -101,17 +102,35 @@ class TrainingPipeline:
                     print(f"Successfully cleaned missing values for {year_month}")
                     successful_cleaning += 1
                     
-                    # Step 3: Save the cleaned dataframe immediately to free up memory
-                    print(f"Saving processed dataframe for {year_month}...")
-                    save_success = self.save_df_to_csv(year_month, cleaned_df)
+                    # Step 3: Remove duplicates
+                    print(f"Removing duplicates for {year_month}...")
+                    deduplicated_df = self.remove_duplicates(dataframe=cleaned_df)
                     
-                    if save_success:
-                        successful_saves += 1
-                        print(f"Successfully saved dataframe for {year_month}")
-                    else:
-                        print(f"Failed to save dataframe for {year_month}")
+                    if deduplicated_df is not None:
+                        print(f"Successfully removed duplicates for {year_month}")
+                        successful_deduplication += 1
                         
-                    # Clear the dataframe from memory
+                        # Step 4: Save the deduplicated dataframe immediately to free up memory
+                        print(f"Saving processed dataframe for {year_month}...")
+                        save_success = self.save_df_to_csv(year_month, deduplicated_df)
+                        
+                        if save_success:
+                            successful_saves += 1
+                            print(f"Successfully saved dataframe for {year_month}")
+                        else:
+                            print(f"Failed to save dataframe for {year_month}")
+                            
+                        # Clear the deduplicated dataframe from memory
+                        del deduplicated_df
+                    else:
+                        print(f"Failed to remove duplicates for {year_month}")
+                        # Try to save the cleaned dataframe anyway
+                        print(f"Saving cleaned dataframe for {year_month}...")
+                        save_success = self.save_df_to_csv(year_month, cleaned_df)
+                        if save_success:
+                            successful_saves += 1
+                    
+                    # Clear the cleaned dataframe from memory
                     del cleaned_df
                 else:
                     print(f"Failed to clean missing values for {year_month}")
@@ -126,6 +145,7 @@ class TrainingPipeline:
             "total_files": len(csv_files),
             "successful_preprocessing": successful_preprocessing,
             "successful_cleaning": successful_cleaning,
+            "successful_deduplication": successful_deduplication,
             "successful_saves": successful_saves,
             "failed_files": failed_files
         }
@@ -136,6 +156,7 @@ class TrainingPipeline:
         print(f"Total files processed: {summary['total_files']}")
         print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
         print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
+        print(f"Successfully deduplicated: {summary['successful_deduplication']}")
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
@@ -242,6 +263,7 @@ class TrainingPipeline:
         
         Processes the provided dataframe and handles missing values:
         - Drop rows where all weather condition columns have missing values
+        - Drop rows where differenceInMinutes or cancelled are None
         - Keep track of how many rows were dropped
         
         Parameters:
@@ -269,6 +291,24 @@ class TrainingPipeline:
         # Count rows before cleaning
         original_row_count = len(df)
         
+        # Step 1: Check required columns (differenceInMinutes and cancelled)
+        required_cols = ["differenceInMinutes", "cancelled"]
+        available_required_cols = [col for col in required_cols if col in df.columns]
+        
+        if available_required_cols:
+            print(f"Checking for missing values in required columns: {available_required_cols}")
+            # Store the count before dropping rows
+            before_required_drop = len(df)
+            # Drop rows where any of the required columns are None/NaN
+            df = df.dropna(subset=available_required_cols)
+            # Calculate dropped rows
+            dropped_required = before_required_drop - len(df)
+            print(f"- Dropped {dropped_required} rows with missing values in required columns")
+        else:
+            print("Warning: Required columns (differenceInMinutes, cancelled) not found in dataframe")
+            dropped_required = 0
+        
+        # Step 2: Handle weather condition columns
         # Filter the list to only include columns that actually exist in the dataframe
         available_important_cols = [col for col in self.important_conditions if col in df.columns]
         
@@ -278,17 +318,25 @@ class TrainingPipeline:
         
         print(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
         
+        # Store count before dropping weather condition rows
+        before_weather_drop = len(df)
+        
         # Drop rows where ALL of the important weather conditions are missing
         # (Keep rows with at least one of the specified conditions)
         df_cleaned = df.dropna(subset=available_important_cols, how='all')
         
-        # Count how many rows were dropped
-        dropped_rows = original_row_count - len(df_cleaned)
+        # Count how many rows were dropped due to weather conditions
+        dropped_weather = before_weather_drop - len(df_cleaned)
+        
+        # Count total rows dropped
+        total_dropped = original_row_count - len(df_cleaned)
         
         # Report the results
         print(f"Missing values handling complete:")
         print(f"- Original row count: {original_row_count}")
-        print(f"- Rows dropped (missing all important weather conditions): {dropped_rows}")
+        print(f"- Rows dropped due to missing required columns: {dropped_required}")
+        print(f"- Rows dropped due to missing all weather conditions: {dropped_weather}")
+        print(f"- Total rows dropped: {total_dropped}")
         print(f"- Remaining rows: {len(df_cleaned)}")
         
         # Calculate percentage of data retained
@@ -304,6 +352,62 @@ class TrainingPipeline:
             print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
         
         return df_cleaned
+    
+    def remove_duplicates(self, dataframe=None):
+        """
+        Remove duplicate rows from the processed dataframe.
+        
+        Duplicate rows can affect model training by:
+        - Introducing bias towards duplicated data points
+        - Increasing training time unnecessarily
+        - Preventing simpler models
+        - Causing overfitting
+        - Affecting overall model accuracy
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to deduplicate.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with duplicates removed.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe
+        print(f"Checking for duplicates in dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Count rows before deduplication
+        original_row_count = len(df)
+        
+        # Remove duplicate rows
+        df_deduplicated = df.drop_duplicates()
+        
+        # Count how many rows were removed
+        removed_duplicates = original_row_count - len(df_deduplicated)
+        
+        # Report the results
+        print(f"Duplicate removal complete:")
+        print(f"- Original row count: {original_row_count}")
+        print(f"- Duplicate rows removed: {removed_duplicates}")
+        print(f"- Remaining rows: {len(df_deduplicated)}")
+        
+        # Calculate percentage of data retained
+        if original_row_count > 0:
+            retention_percentage = (len(df_deduplicated) / original_row_count) * 100
+            print(f"- Data retention: {retention_percentage:.2f}%")
+            print(f"- Duplicate percentage: {100 - retention_percentage:.2f}%")
+        
+        return df_deduplicated
     
     def save_df_to_csv(self, year_month, dataframe):
         """
