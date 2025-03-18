@@ -24,8 +24,12 @@ def main():
     # Initialize the TrainingPipeline class
     pipeline = TrainingPipeline()
     
-    # Run the full pipeline on all CSV files
-    results = pipeline.run_pipeline(csv_files)
+    # Define which target feature to keep (one of: 'differenceInMinutes', 'trainDelayed', 'cancelled')
+    # Default is 'differenceInMinutes' if not specified
+    target_feature = 'trainDelayed'
+    
+    # Run the full pipeline on all CSV files with the specified target feature
+    results = pipeline.run_pipeline(csv_files, target_feature=target_feature)
     
     # Access the results if needed for additional operations
     print("\nPipeline execution completed.")

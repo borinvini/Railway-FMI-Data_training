@@ -29,7 +29,7 @@ class TrainingPipeline:
             'Horizontal visibility'
         ]
 
-    def run_pipeline(self, csv_files):
+    def run_pipeline(self, csv_files, target_feature='differenceInMinutes'):
         """
         Run the full processing pipeline on the provided CSV files.
         
@@ -40,16 +40,14 @@ class TrainingPipeline:
         -----------
         csv_files : list
             List of CSV file paths to process.
-            
+        target_feature : str, optional
+            The feature to keep (one of 'differenceInMinutes', 'trainDelayed', or 'cancelled').
+            Defaults to 'differenceInMinutes'.
+                
         Returns:
         --------
         dict
-            A summary of the processing results containing:
-            - total_files: Total number of files processed
-            - successful_preprocessing: Number of files successfully preprocessed
-            - successful_cleaning: Number of files with successful missing value handling
-            - failed_files: Number of files that failed processing
-            - processed_dataframes: Dictionary of processed dataframes (if save_dataframes=True)
+            A summary of the processing results.
         """
         if not csv_files:
             print("\nNo CSV files to process.")
@@ -68,6 +66,7 @@ class TrainingPipeline:
         successful_deduplication = 0
         successful_scaling = 0
         successful_feature_addition = 0
+        successful_target_selection = 0  # New counter
         successful_saves = 0
         failed_files = 0
         
@@ -84,7 +83,7 @@ class TrainingPipeline:
                 print(f"Error occurred during preprocessing of {filename}")
                 failed_files += 1
                 continue
-                
+                    
             print(f"Preprocessing completed successfully for {filename}")
             print(f"Processed data contains {len(processed_df)} rows and {len(processed_df.columns)} columns")
             successful_preprocessing += 1
@@ -129,16 +128,34 @@ class TrainingPipeline:
                                 print(f"Successfully added trainDelayed feature for {year_month}")
                                 successful_feature_addition += 1
                                 
-                                # Step 6: Save the featured dataframe
-                                print(f"Saving processed dataframe for {year_month}...")
-                                save_success = self.save_df_to_csv(year_month, featured_df)
+                                # Step 6: Select target feature
+                                print(f"Selecting target feature '{target_feature}' for {year_month}...")
+                                target_df = self.select_target_feature(dataframe=featured_df, target_feature=target_feature)
                                 
-                                if save_success:
-                                    successful_saves += 1
-                                    print(f"Successfully saved dataframe for {year_month}")
-                                else:
-                                    print(f"Failed to save dataframe for {year_month}")
+                                if target_df is not None:
+                                    print(f"Successfully selected target feature for {year_month}")
+                                    successful_target_selection += 1
                                     
+                                    # Step 7: Save the target dataframe
+                                    print(f"Saving processed dataframe for {year_month}...")
+                                    save_success = self.save_df_to_csv(year_month, target_df)
+                                    
+                                    if save_success:
+                                        successful_saves += 1
+                                        print(f"Successfully saved dataframe for {year_month}")
+                                    else:
+                                        print(f"Failed to save dataframe for {year_month}")
+                                        
+                                    # Clear the target dataframe from memory
+                                    del target_df
+                                else:
+                                    print(f"Failed to select target feature for {year_month}")
+                                    # Try to save the featured dataframe anyway
+                                    print(f"Saving featured dataframe for {year_month}...")
+                                    save_success = self.save_df_to_csv(year_month, featured_df)
+                                    if save_success:
+                                        successful_saves += 1
+                                
                                 # Clear the featured dataframe from memory
                                 del featured_df
                             else:
@@ -178,6 +195,35 @@ class TrainingPipeline:
             
             # Clear the processed dataframe from memory
             del processed_df
+        
+        # Generate and return summary
+        summary = {
+            "total_files": len(csv_files),
+            "successful_preprocessing": successful_preprocessing,
+            "successful_cleaning": successful_cleaning,
+            "successful_deduplication": successful_deduplication,
+            "successful_scaling": successful_scaling,
+            "successful_feature_addition": successful_feature_addition,
+            "successful_target_selection": successful_target_selection,  # New field
+            "successful_saves": successful_saves,
+            "failed_files": failed_files
+        }
+        
+        # Print summary
+        print("\n" + "="*50)
+        print("Processing Summary:")
+        print(f"Total files processed: {summary['total_files']}")
+        print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
+        print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
+        print(f"Successfully deduplicated: {summary['successful_deduplication']}")
+        print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
+        print(f"Successfully added trainDelayed feature: {summary['successful_feature_addition']}")
+        print(f"Successfully selected target feature: {summary['successful_target_selection']}")  # New line
+        print(f"Successfully saved to CSV: {summary['successful_saves']}")
+        print(f"Failed to process: {summary['failed_files']}")
+        print("="*50)
+        
+        return summary
         
         # Generate and return summary
         summary = {
@@ -576,6 +622,62 @@ class TrainingPipeline:
             
         except Exception as e:
             print(f"Error adding 'trainDelayed' column: {e}")
+            return dataframe  # Return original dataframe on error
+        
+
+    def select_target_feature(self, dataframe=None, target_feature=None):
+        """
+        Select one of three features (differenceInMinutes, trainDelayed, cancelled) as the target
+        and drop the other two.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        target_feature : str
+            The feature to keep (one of 'differenceInMinutes', 'trainDelayed', or 'cancelled').
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with only the selected target feature retained.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        # Check if target_feature is valid
+        valid_targets = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+        if target_feature not in valid_targets:
+            print(f"Error: target_feature must be one of {valid_targets}")
+            return dataframe
+            
+        df = dataframe.copy()
+        print(f"Selecting '{target_feature}' as target feature and dropping others")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        try:
+            # Check which of the features exist in the dataframe
+            features_to_drop = [f for f in valid_targets if f != target_feature and f in df.columns]
+            
+            if target_feature not in df.columns:
+                print(f"Error: Target feature '{target_feature}' not found in dataframe")
+                return df
+                
+            # Drop the other features
+            df = df.drop(columns=features_to_drop)
+            
+            print(f"Successfully selected '{target_feature}' as target feature")
+            print(f"Dropped columns: {features_to_drop}")
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error selecting target feature: {e}")
             return dataframe  # Return original dataframe on error
     
     def save_df_to_csv(self, year_month, dataframe):
