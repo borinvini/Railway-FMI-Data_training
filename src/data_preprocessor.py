@@ -840,16 +840,28 @@ class TrainingPipeline:
             print(f"Successfully saved test dataset to {test_path}")
             
             # Print distribution statistics
-            print("\nTraining Set Distribution:")
-            if target_column in ['trainDelayed', 'cancelled']:
-                print(y_train.value_counts())
-            else:
-                print(f"Mean: {y_train.mean():.2f}, Std: {y_train.std():.2f}")
+            print("\nDistribution Statistics:")
             
-            print("\nTest Set Distribution:")
+            # For categorical targets, show the distribution in percentages
             if target_column in ['trainDelayed', 'cancelled']:
-                print(y_test.value_counts())
+                print("\nOriginal Distribution (%):")
+                print(df[target_column].value_counts(normalize=True) * 100)
+                
+                print("\nTraining Set Distribution (%):")
+                print(y_train.value_counts(normalize=True) * 100)
+                
+                print("\nTest Set Distribution (%):")
+                print(y_test.value_counts(normalize=True) * 100)
             else:
+                # For continuous targets like differenceInMinutes, still show basic stats
+                # but also add bins for better visualization of distribution
+                print("\nOriginal Distribution:")
+                print(f"Mean: {df[target_column].mean():.2f}, Std: {df[target_column].std():.2f}")
+                
+                print("\nTraining Set Distribution:")
+                print(f"Mean: {y_train.mean():.2f}, Std: {y_train.std():.2f}")
+                
+                print("\nTest Set Distribution:")
                 print(f"Mean: {y_test.mean():.2f}, Std: {y_test.std():.2f}")
             
             # Return summary
