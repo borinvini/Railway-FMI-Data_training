@@ -1009,6 +1009,9 @@ class TrainingPipeline:
                 print("\nConfusion Matrix:")
                 print(conf_matrix)
                 
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, year_month)
+                
                 # Feature importance
                 feature_importance = pd.DataFrame({
                     'Feature': X_train.columns,
@@ -1041,8 +1044,10 @@ class TrainingPipeline:
                         "model_type": "classification",
                         "accuracy": accuracy,
                         "report": report,
+                        "metrics": metrics_result["metrics"],
                         "model_path": model_path,
-                        "feature_importance_path": importance_path
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
                     }
                     
                 except Exception as e:
@@ -1052,6 +1057,8 @@ class TrainingPipeline:
                         "model_type": "classification",
                         "accuracy": accuracy,
                         "report": report,
+                        "metrics": metrics_result["metrics"],
+                        "metrics_path": metrics_result["metrics_path"],
                         "model_saved": False
                     }
             else:
@@ -1069,3 +1076,64 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
+
+    def extract_and_save_metrics(self, y_test, y_pred, report, year_month):
+        """
+        Extract key metrics from model evaluation and save them to a CSV file.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True labels from the test dataset.
+        y_pred : array-like
+            Predicted labels from the model.
+        report : dict
+            Classification report dictionary from sklearn.
+        year_month : str
+            Year and month in format "YYYY_MM" for the filename.
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing the metrics and the path to the saved metrics file.
+        """
+        # Create metrics dictionary
+        metrics = {}
+        
+        # Basic accuracy
+        from sklearn.metrics import accuracy_score
+        metrics['accuracy'] = accuracy_score(y_test, y_pred)
+        
+        # Extract F1 scores from the classification report
+        metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
+        metrics['macro_avg_f1'] = report['macro avg']['f1-score']
+        
+        # For classification, also extract F1 scores for each class
+        for class_label in report:
+            if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
+                metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
+                
+                # Also store precision and recall for completeness
+                metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
+                metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
+        
+        # Print metrics
+        print("\nModel Metrics:")
+        for name, value in metrics.items():
+            print(f"{name}: {value:.4f}")
+        
+        # Save metrics to a file
+        metrics_filename = f"model_metrics_{year_month}.csv"
+        metrics_path = os.path.join(self.decision_tree_dir, metrics_filename)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        
+        # Save to CSV
+        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        print(f"Model metrics saved to {metrics_path}")
+        
+        return {
+            "metrics": metrics,
+            "metrics_path": metrics_path
+        }
