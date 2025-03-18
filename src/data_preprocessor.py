@@ -225,32 +225,6 @@ class TrainingPipeline:
         
         return summary
         
-        # Generate and return summary
-        summary = {
-            "total_files": len(csv_files),
-            "successful_preprocessing": successful_preprocessing,
-            "successful_cleaning": successful_cleaning,
-            "successful_deduplication": successful_deduplication,
-            "successful_scaling": successful_scaling,
-            "successful_feature_addition": successful_feature_addition,
-            "successful_saves": successful_saves,
-            "failed_files": failed_files
-        }
-        
-        # Print summary
-        print("\n" + "="*50)
-        print("Processing Summary:")
-        print(f"Total files processed: {summary['total_files']}")
-        print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
-        print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
-        print(f"Successfully deduplicated: {summary['successful_deduplication']}")
-        print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
-        print(f"Successfully added trainDelayed feature: {summary['successful_feature_addition']}")
-        print(f"Successfully saved to CSV: {summary['successful_saves']}")
-        print(f"Failed to process: {summary['failed_files']}")
-        print("="*50)
-        
-        return summary
 
     def preprocess_csv_file(self, input_file_path):
         """
