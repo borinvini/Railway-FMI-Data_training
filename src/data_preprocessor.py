@@ -61,14 +61,17 @@ class TrainingPipeline:
         print(f"\nStarting pipeline processing for {len(csv_files)} CSV files.")
         
         # Initialize counters for summary
-        successful_preprocessing = 0
-        successful_cleaning = 0
-        successful_deduplication = 0
-        successful_scaling = 0
-        successful_feature_addition = 0
-        successful_target_selection = 0  # New counter
-        successful_saves = 0
-        failed_files = 0
+        summary = {
+            "total_files": len(csv_files),
+            "successful_preprocessing": 0,
+            "successful_cleaning": 0,
+            "successful_deduplication": 0,
+            "successful_scaling": 0,
+            "successful_feature_addition": 0,
+            "successful_target_selection": 0,
+            "successful_saves": 0,
+            "failed_files": 0
+        }
         
         # Process each file
         for i, input_file_path in enumerate(csv_files):
@@ -81,133 +84,105 @@ class TrainingPipeline:
             
             if processed_df is None:
                 print(f"Error occurred during preprocessing of {filename}")
-                failed_files += 1
+                summary["failed_files"] += 1
                 continue
                     
             print(f"Preprocessing completed successfully for {filename}")
             print(f"Processed data contains {len(processed_df)} rows and {len(processed_df.columns)} columns")
-            successful_preprocessing += 1
+            summary["successful_preprocessing"] += 1
             
-            # Step 2: Handle missing values
             # Extract year and month from the filename
             pattern = r'(\d{4})_(\d{2})'
             match = re.search(pattern, filename)
             
-            if match:
-                year_month = f"{match.group(1)}_{match.group(2)}"
-                print(f"\nHandling missing values for {year_month}...")
-                
-                # Call the handle_missing_values method (now without saving)
-                cleaned_df = self.handle_missing_values(dataframe=processed_df)
-                
-                if cleaned_df is not None:
-                    print(f"Successfully cleaned missing values for {year_month}")
-                    successful_cleaning += 1
-                    
-                    # Step 3: Remove duplicates
-                    print(f"Removing duplicates for {year_month}...")
-                    deduplicated_df = self.remove_duplicates(dataframe=cleaned_df)
-                    
-                    if deduplicated_df is not None:
-                        print(f"Successfully removed duplicates for {year_month}")
-                        successful_deduplication += 1
-                        
-                        # Step 4: Scale numeric columns
-                        print(f"Scaling numeric columns for {year_month}...")
-                        scaled_df = self.scale_numeric_columns(dataframe=deduplicated_df)
-                        
-                        if scaled_df is not None:
-                            print(f"Successfully scaled numeric columns for {year_month}")
-                            successful_scaling += 1
-                            
-                            # Step 5: Add trainDelayed feature
-                            print(f"Adding trainDelayed feature for {year_month}...")
-                            featured_df = self.add_train_delayed_feature(dataframe=scaled_df)
-                            
-                            if featured_df is not None:
-                                print(f"Successfully added trainDelayed feature for {year_month}")
-                                successful_feature_addition += 1
-                                
-                                # Step 6: Select target feature
-                                print(f"Selecting target feature '{target_feature}' for {year_month}...")
-                                target_df = self.select_target_feature(dataframe=featured_df, target_feature=target_feature)
-                                
-                                if target_df is not None:
-                                    print(f"Successfully selected target feature for {year_month}")
-                                    successful_target_selection += 1
-                                    
-                                    # Step 7: Save the target dataframe
-                                    print(f"Saving processed dataframe for {year_month}...")
-                                    save_success = self.save_df_to_csv(year_month, target_df)
-                                    
-                                    if save_success:
-                                        successful_saves += 1
-                                        print(f"Successfully saved dataframe for {year_month}")
-                                    else:
-                                        print(f"Failed to save dataframe for {year_month}")
-                                        
-                                    # Clear the target dataframe from memory
-                                    del target_df
-                                else:
-                                    print(f"Failed to select target feature for {year_month}")
-                                    # Try to save the featured dataframe anyway
-                                    print(f"Saving featured dataframe for {year_month}...")
-                                    save_success = self.save_df_to_csv(year_month, featured_df)
-                                    if save_success:
-                                        successful_saves += 1
-                                
-                                # Clear the featured dataframe from memory
-                                del featured_df
-                            else:
-                                print(f"Failed to add trainDelayed feature for {year_month}")
-                                # Try to save the scaled dataframe anyway
-                                print(f"Saving scaled dataframe for {year_month}...")
-                                save_success = self.save_df_to_csv(year_month, scaled_df)
-                                if save_success:
-                                    successful_saves += 1
-                            
-                            # Clear the scaled dataframe from memory
-                            del scaled_df
-                        else:
-                            print(f"Failed to scale numeric columns for {year_month}")
-                            # Try to save the deduplicated dataframe anyway
-                            print(f"Saving deduplicated dataframe for {year_month}...")
-                            save_success = self.save_df_to_csv(year_month, deduplicated_df)
-                            if save_success:
-                                successful_saves += 1
-                        
-                        # Clear the deduplicated dataframe from memory
-                        del deduplicated_df
-                    else:
-                        print(f"Failed to remove duplicates for {year_month}")
-                        # Try to save the cleaned dataframe anyway
-                        print(f"Saving cleaned dataframe for {year_month}...")
-                        save_success = self.save_df_to_csv(year_month, cleaned_df)
-                        if save_success:
-                            successful_saves += 1
-                    
-                    # Clear the cleaned dataframe from memory
-                    del cleaned_df
-                else:
-                    print(f"Failed to clean missing values for {year_month}")
-            else:
+            if not match:
                 print(f"Could not extract year_month from filename: {filename}")
+                del processed_df  # Free up memory
+                continue
+                
+            year_month = f"{match.group(1)}_{match.group(2)}"
             
-            # Clear the processed dataframe from memory
-            del processed_df
-        
-        # Generate and return summary
-        summary = {
-            "total_files": len(csv_files),
-            "successful_preprocessing": successful_preprocessing,
-            "successful_cleaning": successful_cleaning,
-            "successful_deduplication": successful_deduplication,
-            "successful_scaling": successful_scaling,
-            "successful_feature_addition": successful_feature_addition,
-            "successful_target_selection": successful_target_selection,  # New field
-            "successful_saves": successful_saves,
-            "failed_files": failed_files
-        }
+            # Step 2: Handle missing values
+            print(f"\nHandling missing values for {year_month}...")
+            cleaned_df = self.handle_missing_values(dataframe=processed_df)
+            del processed_df  # Free up memory
+            
+            if cleaned_df is None:
+                print(f"Failed to clean missing values for {year_month}")
+                continue
+                
+            print(f"Successfully cleaned missing values for {year_month}")
+            summary["successful_cleaning"] += 1
+            
+            # Step 3: Remove duplicates
+            print(f"Removing duplicates for {year_month}...")
+            deduplicated_df = self.remove_duplicates(dataframe=cleaned_df)
+            
+            if deduplicated_df is None:
+                print(f"Failed to remove duplicates for {year_month}")
+                if self.save_df_to_csv(year_month, cleaned_df):
+                    summary["successful_saves"] += 1
+                del cleaned_df  # Free up memory
+                continue
+                
+            print(f"Successfully removed duplicates for {year_month}")
+            summary["successful_deduplication"] += 1
+            del cleaned_df  # Free up memory
+            
+            # Step 4: Scale numeric columns
+            print(f"Scaling numeric columns for {year_month}...")
+            scaled_df = self.scale_numeric_columns(dataframe=deduplicated_df)
+            
+            if scaled_df is None:
+                print(f"Failed to scale numeric columns for {year_month}")
+                if self.save_df_to_csv(year_month, deduplicated_df):
+                    summary["successful_saves"] += 1
+                del deduplicated_df  # Free up memory
+                continue
+                
+            print(f"Successfully scaled numeric columns for {year_month}")
+            summary["successful_scaling"] += 1
+            del deduplicated_df  # Free up memory
+            
+            # Step 5: Add trainDelayed feature
+            print(f"Adding trainDelayed feature for {year_month}...")
+            featured_df = self.add_train_delayed_feature(dataframe=scaled_df)
+            
+            if featured_df is None:
+                print(f"Failed to add trainDelayed feature for {year_month}")
+                if self.save_df_to_csv(year_month, scaled_df):
+                    summary["successful_saves"] += 1
+                del scaled_df  # Free up memory
+                continue
+                
+            print(f"Successfully added trainDelayed feature for {year_month}")
+            summary["successful_feature_addition"] += 1
+            del scaled_df  # Free up memory
+            
+            # Step 6: Select target feature
+            print(f"Selecting target feature '{target_feature}' for {year_month}...")
+            target_df = self.select_target_feature(dataframe=featured_df, target_feature=target_feature)
+            
+            if target_df is None:
+                print(f"Failed to select target feature for {year_month}")
+                if self.save_df_to_csv(year_month, featured_df):
+                    summary["successful_saves"] += 1
+                del featured_df  # Free up memory
+                continue
+                
+            print(f"Successfully selected target feature for {year_month}")
+            summary["successful_target_selection"] += 1
+            del featured_df  # Free up memory
+            
+            # Step 7: Save the target dataframe
+            print(f"Saving processed dataframe for {year_month}...")
+            if self.save_df_to_csv(year_month, target_df):
+                summary["successful_saves"] += 1
+                print(f"Successfully saved dataframe for {year_month}")
+            else:
+                print(f"Failed to save dataframe for {year_month}")
+            
+            del target_df  # Free up memory
         
         # Print summary
         print("\n" + "="*50)
@@ -218,7 +193,7 @@ class TrainingPipeline:
         print(f"Successfully deduplicated: {summary['successful_deduplication']}")
         print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
         print(f"Successfully added trainDelayed feature: {summary['successful_feature_addition']}")
-        print(f"Successfully selected target feature: {summary['successful_target_selection']}")  # New line
+        print(f"Successfully selected target feature: {summary['successful_target_selection']}")
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
