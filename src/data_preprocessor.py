@@ -8,7 +8,12 @@ from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 
-from config.const import DATA_FILE_PREFIX_FOR_TRAINING, OUTPUT_FOLDER
+from config.const import (
+    DATA_FILE_PREFIX_FOR_TRAINING, 
+    OUTPUT_FOLDER,
+    PREPROCESSED_OUTPUT_FOLDER,
+    DECISION_TREE_OUTPUT_FOLDER
+)
 from src.file_utils import generate_output_path
 
 class TrainingPipeline:
@@ -20,6 +25,8 @@ class TrainingPipeline:
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.project_root = os.path.dirname(self.script_dir)
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
+        self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
+        self.decision_tree_dir = os.path.join(self.project_root, DECISION_TREE_OUTPUT_FOLDER)
         
         # Define important weather conditions to check
         self.important_conditions = [
@@ -735,10 +742,10 @@ class TrainingPipeline:
                 
             # Create the output filename
             filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}.csv"
-            file_path = os.path.join(self.output_dir, filename)
+            file_path = os.path.join(self.preprocessed_dir, filename)
             
             # Ensure output directory exists
-            os.makedirs(self.output_dir, exist_ok=True)
+            os.makedirs(self.preprocessed_dir, exist_ok=True)
             
             # Save the dataframe
             dataframe.to_csv(file_path, index=False)
@@ -771,7 +778,7 @@ class TrainingPipeline:
         try:
             # Construct file path for the saved CSV
             filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}.csv"
-            file_path = os.path.join(self.output_dir, filename)
+            file_path = os.path.join(self.preprocessed_dir, filename)
             
             # Check if file exists
             if not os.path.exists(file_path):
@@ -849,8 +856,11 @@ class TrainingPipeline:
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_train.csv"
             test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_test.csv"
             
-            train_path = os.path.join(self.output_dir, train_filename)
-            test_path = os.path.join(self.output_dir, test_filename)
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Ensure output directory exists
+            os.makedirs(self.preprocessed_dir, exist_ok=True)
             
             # Save the datasets
             train_df.to_csv(train_path, index=False)
@@ -925,8 +935,8 @@ class TrainingPipeline:
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_train.csv"
             test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_test.csv"
             
-            train_path = os.path.join(self.output_dir, train_filename)
-            test_path = os.path.join(self.output_dir, test_filename)
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
             
             # Check if files exist
             if not os.path.exists(train_path) or not os.path.exists(test_path):
@@ -1011,14 +1021,18 @@ class TrainingPipeline:
                 # Save the model
                 try:
                     import joblib
+                    
+                    # Ensure decision tree output directory exists
+                    os.makedirs(self.decision_tree_dir, exist_ok=True)
+                    
                     model_filename = f"decision_tree_{year_month}.joblib"
-                    model_path = os.path.join(self.output_dir, model_filename)
+                    model_path = os.path.join(self.decision_tree_dir, model_filename)
                     joblib.dump(dt, model_path)
                     print(f"Model saved to {model_path}")
                     
                     # Save feature importance
                     importance_filename = f"feature_importance_{year_month}.csv"
-                    importance_path = os.path.join(self.output_dir, importance_filename)
+                    importance_path = os.path.join(self.decision_tree_dir, importance_filename)
                     feature_importance.to_csv(importance_path, index=False)
                     print(f"Feature importance saved to {importance_path}")
                     
