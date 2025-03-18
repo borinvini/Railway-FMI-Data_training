@@ -67,6 +67,7 @@ class TrainingPipeline:
         successful_cleaning = 0
         successful_deduplication = 0
         successful_scaling = 0
+        successful_feature_addition = 0
         successful_saves = 0
         failed_files = 0
         
@@ -120,16 +121,34 @@ class TrainingPipeline:
                             print(f"Successfully scaled numeric columns for {year_month}")
                             successful_scaling += 1
                             
-                            # Step 5: Save the scaled dataframe immediately to free up memory
-                            print(f"Saving processed dataframe for {year_month}...")
-                            save_success = self.save_df_to_csv(year_month, scaled_df)
+                            # Step 5: Add trainDelayed feature
+                            print(f"Adding trainDelayed feature for {year_month}...")
+                            featured_df = self.add_train_delayed_feature(dataframe=scaled_df)
                             
-                            if save_success:
-                                successful_saves += 1
-                                print(f"Successfully saved dataframe for {year_month}")
-                            else:
-                                print(f"Failed to save dataframe for {year_month}")
+                            if featured_df is not None:
+                                print(f"Successfully added trainDelayed feature for {year_month}")
+                                successful_feature_addition += 1
                                 
+                                # Step 6: Save the featured dataframe
+                                print(f"Saving processed dataframe for {year_month}...")
+                                save_success = self.save_df_to_csv(year_month, featured_df)
+                                
+                                if save_success:
+                                    successful_saves += 1
+                                    print(f"Successfully saved dataframe for {year_month}")
+                                else:
+                                    print(f"Failed to save dataframe for {year_month}")
+                                    
+                                # Clear the featured dataframe from memory
+                                del featured_df
+                            else:
+                                print(f"Failed to add trainDelayed feature for {year_month}")
+                                # Try to save the scaled dataframe anyway
+                                print(f"Saving scaled dataframe for {year_month}...")
+                                save_success = self.save_df_to_csv(year_month, scaled_df)
+                                if save_success:
+                                    successful_saves += 1
+                            
                             # Clear the scaled dataframe from memory
                             del scaled_df
                         else:
@@ -167,6 +186,7 @@ class TrainingPipeline:
             "successful_cleaning": successful_cleaning,
             "successful_deduplication": successful_deduplication,
             "successful_scaling": successful_scaling,
+            "successful_feature_addition": successful_feature_addition,
             "successful_saves": successful_saves,
             "failed_files": failed_files
         }
@@ -179,6 +199,7 @@ class TrainingPipeline:
         print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
         print(f"Successfully deduplicated: {summary['successful_deduplication']}")
         print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
+        print(f"Successfully added trainDelayed feature: {summary['successful_feature_addition']}")
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
@@ -496,6 +517,65 @@ class TrainingPipeline:
             
         except Exception as e:
             print(f"Error scaling numeric columns: {e}")
+            return dataframe  # Return original dataframe on error
+        
+    def add_train_delayed_feature(self, dataframe=None):
+        """
+        Add a binary column 'trainDelayed' based on differenceInMinutes.
+        
+        The column will be:
+        - True when differenceInMinutes < 0 (train is delayed)
+        - False when differenceInMinutes >= 0 (train is on time or early)
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with the added 'trainDelayed' column.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Adding 'trainDelayed' column to dataframe with {len(df)} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        try:
+            # Check if differenceInMinutes column exists
+            if 'differenceInMinutes' not in df.columns:
+                print("Error: 'differenceInMinutes' column not found in dataframe")
+                return df
+            
+            # Create trainDelayed column based on differenceInMinutes
+            df['trainDelayed'] = df['differenceInMinutes'] > 0
+            
+            # Reorder columns to place trainDelayed after differenceInMinutes
+            cols = list(df.columns)
+            # Remove trainDelayed from its current position
+            cols.remove('trainDelayed')
+            # Find the position of differenceInMinutes
+            diff_idx = cols.index('differenceInMinutes')
+            # Insert trainDelayed after differenceInMinutes
+            cols.insert(diff_idx + 1, 'trainDelayed')
+            # Rearrange the dataframe columns
+            df = df[cols]
+            
+            print(f"Successfully added 'trainDelayed' column")
+            print(f"Number of delayed trains: {df['trainDelayed'].sum()} ({df['trainDelayed'].mean() * 100:.2f}%)")
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error adding 'trainDelayed' column: {e}")
             return dataframe  # Return original dataframe on error
     
     def save_df_to_csv(self, year_month, dataframe):
