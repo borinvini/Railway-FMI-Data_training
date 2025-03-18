@@ -4,6 +4,7 @@ import pandas as pd
 import re
 import ast
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
 from config.const import DATA_FILE_PREFIX_FOR_TRAINING, OUTPUT_FOLDER
 from src.file_utils import generate_output_path
@@ -61,8 +62,7 @@ class TrainingPipeline:
         print(f"\nStarting pipeline processing for {len(csv_files)} CSV files.")
         
         # Initialize counters for summary
-        summary = {
-            "total_files": len(csv_files),
+        counters = {
             "successful_preprocessing": 0,
             "successful_cleaning": 0,
             "successful_deduplication": 0,
@@ -70,6 +70,7 @@ class TrainingPipeline:
             "successful_feature_addition": 0,
             "successful_target_selection": 0,
             "successful_saves": 0,
+            "successful_splits": 0,
             "failed_files": 0
         }
         
@@ -78,111 +79,172 @@ class TrainingPipeline:
             filename = os.path.basename(input_file_path)
             print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename}")
             
-            # Step 1: Preprocess the CSV file
-            print(f"Starting preprocessing for {filename}...")
-            processed_df = self.preprocess_csv_file(input_file_path)
-            
-            if processed_df is None:
-                print(f"Error occurred during preprocessing of {filename}")
-                summary["failed_files"] += 1
-                continue
-                    
-            print(f"Preprocessing completed successfully for {filename}")
-            print(f"Processed data contains {len(processed_df)} rows and {len(processed_df.columns)} columns")
-            summary["successful_preprocessing"] += 1
-            
             # Extract year and month from the filename
             pattern = r'(\d{4})_(\d{2})'
             match = re.search(pattern, filename)
             
             if not match:
                 print(f"Could not extract year_month from filename: {filename}")
-                del processed_df  # Free up memory
                 continue
                 
             year_month = f"{match.group(1)}_{match.group(2)}"
             
-            # Step 2: Handle missing values
-            print(f"\nHandling missing values for {year_month}...")
-            cleaned_df = self.handle_missing_values(dataframe=processed_df)
-            del processed_df  # Free up memory
+            # Define all possible pipeline stages
+            stages = [
+                "preprocess",
+                "clean_missing_values",
+                "remove_duplicates",
+                "scale_numeric",
+                "add_train_delayed",
+                "select_target",
+                "save_csv",
+                "split_dataset"
+            ]
             
-            if cleaned_df is None:
-                print(f"Failed to clean missing values for {year_month}")
-                continue
-                
-            print(f"Successfully cleaned missing values for {year_month}")
-            summary["successful_cleaning"] += 1
+            # Initialize pipeline state
+            state = {
+                "current_stage": stages[0],
+                "df": None,
+                "year_month": year_month,
+                "success": True
+            }
             
-            # Step 3: Remove duplicates
-            print(f"Removing duplicates for {year_month}...")
-            deduplicated_df = self.remove_duplicates(dataframe=cleaned_df)
-            
-            if deduplicated_df is None:
-                print(f"Failed to remove duplicates for {year_month}")
-                if self.save_df_to_csv(year_month, cleaned_df):
-                    summary["successful_saves"] += 1
-                del cleaned_df  # Free up memory
-                continue
-                
-            print(f"Successfully removed duplicates for {year_month}")
-            summary["successful_deduplication"] += 1
-            del cleaned_df  # Free up memory
-            
-            # Step 4: Scale numeric columns
-            print(f"Scaling numeric columns for {year_month}...")
-            scaled_df = self.scale_numeric_columns(dataframe=deduplicated_df)
-            
-            if scaled_df is None:
-                print(f"Failed to scale numeric columns for {year_month}")
-                if self.save_df_to_csv(year_month, deduplicated_df):
-                    summary["successful_saves"] += 1
-                del deduplicated_df  # Free up memory
-                continue
-                
-            print(f"Successfully scaled numeric columns for {year_month}")
-            summary["successful_scaling"] += 1
-            del deduplicated_df  # Free up memory
-            
-            # Step 5: Add trainDelayed feature
-            print(f"Adding trainDelayed feature for {year_month}...")
-            featured_df = self.add_train_delayed_feature(dataframe=scaled_df)
-            
-            if featured_df is None:
-                print(f"Failed to add trainDelayed feature for {year_month}")
-                if self.save_df_to_csv(year_month, scaled_df):
-                    summary["successful_saves"] += 1
-                del scaled_df  # Free up memory
-                continue
-                
-            print(f"Successfully added trainDelayed feature for {year_month}")
-            summary["successful_feature_addition"] += 1
-            del scaled_df  # Free up memory
-            
-            # Step 6: Select target feature
-            print(f"Selecting target feature '{target_feature}' for {year_month}...")
-            target_df = self.select_target_feature(dataframe=featured_df, target_feature=target_feature)
-            
-            if target_df is None:
-                print(f"Failed to select target feature for {year_month}")
-                if self.save_df_to_csv(year_month, featured_df):
-                    summary["successful_saves"] += 1
-                del featured_df  # Free up memory
-                continue
-                
-            print(f"Successfully selected target feature for {year_month}")
-            summary["successful_target_selection"] += 1
-            del featured_df  # Free up memory
-            
-            # Step 7: Save the target dataframe
-            print(f"Saving processed dataframe for {year_month}...")
-            if self.save_df_to_csv(year_month, target_df):
-                summary["successful_saves"] += 1
-                print(f"Successfully saved dataframe for {year_month}")
-            else:
-                print(f"Failed to save dataframe for {year_month}")
-            
-            del target_df  # Free up memory
+            # Run the pipeline stages
+            while state["current_stage"] and state["success"]:
+                match state["current_stage"]:
+                    case "preprocess":
+                        print(f"Starting preprocessing for {filename}...")
+                        state["df"] = self.preprocess_csv_file(input_file_path)
+                        
+                        if state["df"] is None:
+                            print(f"Error occurred during preprocessing of {filename}")
+                            counters["failed_files"] += 1
+                            state["success"] = False
+                        else:
+                            print(f"Preprocessing completed successfully for {filename}")
+                            print(f"Processed data contains {len(state['df'])} rows and {len(state['df'].columns)} columns")
+                            counters["successful_preprocessing"] += 1
+                            state["current_stage"] = "clean_missing_values"
+                    
+                    case "clean_missing_values":
+                        print(f"\nHandling missing values for {year_month}...")
+                        cleaned_df = self.handle_missing_values(dataframe=state["df"])
+                        
+                        # Clear previous dataframe from memory
+                        del state["df"]
+                        
+                        if cleaned_df is None:
+                            print(f"Failed to clean missing values for {year_month}")
+                            state["success"] = False
+                        else:
+                            print(f"Successfully cleaned missing values for {year_month}")
+                            counters["successful_cleaning"] += 1
+                            state["df"] = cleaned_df
+                            state["current_stage"] = "remove_duplicates"
+                    
+                    case "remove_duplicates":
+                        print(f"Removing duplicates for {year_month}...")
+                        deduplicated_df = self.remove_duplicates(dataframe=state["df"])
+                        
+                        # Clear previous dataframe from memory
+                        del state["df"]
+                        
+                        if deduplicated_df is None:
+                            print(f"Failed to remove duplicates for {year_month}")
+                            state["success"] = False
+                        else:
+                            print(f"Successfully removed duplicates for {year_month}")
+                            counters["successful_deduplication"] += 1
+                            state["df"] = deduplicated_df
+                            state["current_stage"] = "scale_numeric"
+                    
+                    case "scale_numeric":
+                        print(f"Scaling numeric columns for {year_month}...")
+                        scaled_df = self.scale_numeric_columns(dataframe=state["df"])
+                        
+                        # Clear previous dataframe from memory
+                        del state["df"]
+                        
+                        if scaled_df is None:
+                            print(f"Failed to scale numeric columns for {year_month}")
+                            state["success"] = False
+                        else:
+                            print(f"Successfully scaled numeric columns for {year_month}")
+                            counters["successful_scaling"] += 1
+                            state["df"] = scaled_df
+                            state["current_stage"] = "add_train_delayed"
+                    
+                    case "add_train_delayed":
+                        print(f"Adding trainDelayed feature for {year_month}...")
+                        featured_df = self.add_train_delayed_feature(dataframe=state["df"])
+                        
+                        # Clear previous dataframe from memory
+                        del state["df"]
+                        
+                        if featured_df is None:
+                            print(f"Failed to add trainDelayed feature for {year_month}")
+                            state["success"] = False
+                        else:
+                            print(f"Successfully added trainDelayed feature for {year_month}")
+                            counters["successful_feature_addition"] += 1
+                            state["df"] = featured_df
+                            state["current_stage"] = "select_target"
+                    
+                    case "select_target":
+                        print(f"Selecting target feature '{target_feature}' for {year_month}...")
+                        target_df = self.select_target_feature(dataframe=state["df"], target_feature=target_feature)
+                        
+                        # Clear previous dataframe from memory
+                        del state["df"]
+                        
+                        if target_df is None:
+                            print(f"Failed to select target feature for {year_month}")
+                            state["success"] = False
+                        else:
+                            print(f"Successfully selected target feature for {year_month}")
+                            counters["successful_target_selection"] += 1
+                            state["df"] = target_df
+                            state["current_stage"] = "save_csv"
+                    
+                    case "save_csv":
+                        print(f"Saving processed dataframe for {year_month}...")
+                        save_success = self.save_df_to_csv(year_month, state["df"])
+                        
+                        if not save_success:
+                            print(f"Failed to save dataframe for {year_month}")
+                            state["success"] = False
+                        else:
+                            print(f"Successfully saved dataframe for {year_month}")
+                            counters["successful_saves"] += 1
+                            state["current_stage"] = "split_dataset"
+                    
+                    case "split_dataset":
+                        print(f"Splitting dataset for {year_month}...")
+                        split_result = self.split_dataset(year_month)
+                        
+                        if not split_result.get("success", False):
+                            print(f"Failed to split dataset for {year_month}: {split_result.get('error', 'Unknown error')}")
+                        else:
+                            print(f"Successfully split dataset for {year_month}")
+                            counters["successful_splits"] += 1
+                        
+                        # This is the last stage, so we're done
+                        state["current_stage"] = None
+                        
+                        # Clear the dataframe from memory
+                        if "df" in state and state["df"] is not None:
+                            del state["df"]
+                    
+                    case _:
+                        # Should never reach here
+                        print(f"Unknown pipeline stage: {state['current_stage']}")
+                        state["current_stage"] = None
+        
+        # Generate and return summary
+        summary = {
+            "total_files": len(csv_files),
+            **counters
+        }
         
         # Print summary
         print("\n" + "="*50)
@@ -195,6 +257,7 @@ class TrainingPipeline:
         print(f"Successfully added trainDelayed feature: {summary['successful_feature_addition']}")
         print(f"Successfully selected target feature: {summary['successful_target_selection']}")
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
+        print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -665,3 +728,144 @@ class TrainingPipeline:
         except Exception as e:
             print(f"Error saving dataframe for {year_month}: {e}")
             return False
+        
+
+    def split_dataset(self, year_month, test_size=0.3, random_state=42):
+        """
+        Split a processed dataset into training and testing sets and save them separately.
+        
+        Parameters:
+        -----------
+        year_month : str
+            Year and month in format "YYYY_MM" for the filename.
+        test_size : float, optional
+            Proportion of the dataset to include in the test split. Defaults to 0.3.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        dict
+            A summary of the split results.
+        """
+        try:
+            # Construct file path for the saved CSV
+            filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}.csv"
+            file_path = os.path.join(self.output_dir, filename)
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                print(f"Error: File {file_path} not found")
+                return {
+                    "success": False,
+                    "error": f"File {file_path} not found"
+                }
+            
+            # Load the dataset
+            print(f"Loading dataset from {file_path}")
+            df = pd.read_csv(file_path)
+            
+            if df.empty:
+                print(f"Error: Empty dataset in {file_path}")
+                return {
+                    "success": False,
+                    "error": f"Empty dataset in {file_path}"
+                }
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_column = None
+            
+            for option in target_options:
+                if option in df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X = df.drop(target_column, axis=1)
+            y = df[target_column]
+            
+            # Check if there are any features left after dropping the target
+            if X.empty:
+                print(f"Error: No feature columns found in dataset")
+                return {
+                    "success": False,
+                    "error": "No feature columns found in dataset"
+                }
+            
+            # For stratified split, ensure target is categorical
+            # If target is continuous (like differenceInMinutes), we can't use stratify
+            use_stratify = False
+            if target_column in ['trainDelayed', 'cancelled']:
+                use_stratify = True
+                print(f"Using stratified split on {target_column}")
+            else:
+                print(f"Target {target_column} is continuous, not using stratification")
+            
+            # Perform train-test split
+            if use_stratify:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size, stratify=y, random_state=random_state
+                )
+            else:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size, random_state=random_state
+                )
+            
+            # Recombine features and target for saving
+            train_df = pd.concat([X_train, y_train], axis=1)
+            test_df = pd.concat([X_test, y_test], axis=1)
+            
+            # Create filenames for train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_test.csv"
+            
+            train_path = os.path.join(self.output_dir, train_filename)
+            test_path = os.path.join(self.output_dir, test_filename)
+            
+            # Save the datasets
+            train_df.to_csv(train_path, index=False)
+            test_df.to_csv(test_path, index=False)
+            
+            print(f"Successfully saved train dataset to {train_path}")
+            print(f"Successfully saved test dataset to {test_path}")
+            
+            # Print distribution statistics
+            print("\nTraining Set Distribution:")
+            if target_column in ['trainDelayed', 'cancelled']:
+                print(y_train.value_counts())
+            else:
+                print(f"Mean: {y_train.mean():.2f}, Std: {y_train.std():.2f}")
+            
+            print("\nTest Set Distribution:")
+            if target_column in ['trainDelayed', 'cancelled']:
+                print(y_test.value_counts())
+            else:
+                print(f"Mean: {y_test.mean():.2f}, Std: {y_test.std():.2f}")
+            
+            # Return summary
+            return {
+                "success": True,
+                "train_size": len(train_df),
+                "test_size": len(test_df),
+                "train_path": train_path,
+                "test_path": test_path,
+                "target_column": target_column,
+                "stratified": use_stratify
+            }
+            
+        except Exception as e:
+            print(f"Error splitting dataset for {year_month}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
