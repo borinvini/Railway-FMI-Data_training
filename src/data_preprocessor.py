@@ -5,6 +5,8 @@ import re
 import ast
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 
 from config.const import DATA_FILE_PREFIX_FOR_TRAINING, OUTPUT_FOLDER
 from src.file_utils import generate_output_path
@@ -71,6 +73,8 @@ class TrainingPipeline:
             "successful_target_selection": 0,
             "successful_saves": 0,
             "successful_splits": 0,
+            "successful_decision_tree": 0,  # New counter for decision tree success
+            "failed_decision_tree": 0,      # New counter for decision tree failures
             "failed_files": 0
         }
         
@@ -98,7 +102,8 @@ class TrainingPipeline:
                 "add_train_delayed",
                 "select_target",
                 "save_csv",
-                "split_dataset"
+                "split_dataset",
+                "train_decision_tree"  # New stage for decision tree
             ]
             
             # Initialize pipeline state
@@ -224,14 +229,27 @@ class TrainingPipeline:
                         
                         if not split_result.get("success", False):
                             print(f"Failed to split dataset for {year_month}: {split_result.get('error', 'Unknown error')}")
+                            state["success"] = False
                         else:
                             print(f"Successfully split dataset for {year_month}")
                             counters["successful_splits"] += 1
+                            state["current_stage"] = "train_decision_tree"  # Move to decision tree stage
+                    
+                    case "train_decision_tree":
+                        print(f"Training decision tree model for {year_month}...")
+                        dt_result = self.train_decision_tree(year_month)
+                        
+                        if not dt_result.get("success", False):
+                            print(f"Failed to train decision tree for {year_month}: {dt_result.get('error', 'Unknown error')}")
+                            counters["failed_decision_tree"] += 1
+                        else:
+                            print(f"Successfully trained decision tree for {year_month}")
+                            counters["successful_decision_tree"] += 1
                         
                         # This is the last stage, so we're done
                         state["current_stage"] = None
                         
-                        # Clear the dataframe from memory
+                        # Clear the dataframe from memory if it exists
                         if "df" in state and state["df"] is not None:
                             del state["df"]
                     
@@ -258,6 +276,8 @@ class TrainingPipeline:
         print(f"Successfully selected target feature: {summary['successful_target_selection']}")
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
+        print(f"Successfully trained decision tree models: {summary['successful_decision_tree']}")
+        print(f"Failed to train decision tree models: {summary['failed_decision_tree']}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -877,6 +897,160 @@ class TrainingPipeline:
             
         except Exception as e:
             print(f"Error splitting dataset for {year_month}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+            
+    def train_decision_tree(self, year_month, max_depth=None, random_state=42):
+        """
+        Train a Decision Tree classifier on the preprocessed and split data.
+        
+        Parameters:
+        -----------
+        year_month : str
+            Year and month in format "YYYY_MM" for the filename.
+        max_depth : int, optional
+            Maximum depth of the decision tree. None means unlimited.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_test.csv"
+            
+            train_path = os.path.join(self.output_dir, train_filename)
+            test_path = os.path.join(self.output_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column == 'differenceInMinutes':
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            if is_classification:
+                # Train Decision Tree Classifier
+                dt = DecisionTreeClassifier(max_depth=max_depth, random_state=random_state)
+                print(f"Training Decision Tree classifier with max_depth={max_depth}")
+                dt.fit(X_train, y_train)
+                
+                # Predict
+                y_pred = dt.predict(X_test)
+                
+                # Evaluate model
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nDecision Tree Classifier Results:")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': dt.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # Save the model
+                try:
+                    import joblib
+                    model_filename = f"decision_tree_{year_month}.joblib"
+                    model_path = os.path.join(self.output_dir, model_filename)
+                    joblib.dump(dt, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{year_month}.csv"
+                    importance_path = os.path.join(self.output_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "model_saved": False
+                    }
+            else:
+                # For regression problems we would need a different approach
+                # For now, just note that we don't handle regression
+                print(f"Regression with Decision Trees not implemented for target {target_column}")
+                return {
+                    "success": False,
+                    "error": f"Regression with Decision Trees not implemented for target {target_column}"
+                }
+        
+        except Exception as e:
+            print(f"Error training decision tree for {year_month}: {str(e)}")
             return {
                 "success": False,
                 "error": str(e)

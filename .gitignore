@@ -165,3 +165,6 @@ Desktop.ini
 .vscode/
 *.swp
 *.swo
+
+# Machine learning model files
+*.joblib
