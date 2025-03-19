@@ -39,7 +39,7 @@ class TrainingPipeline:
             'Horizontal visibility'
         ]
 
-    def run_pipeline(self, csv_files, target_feature='differenceInMinutes'):
+    def run_pipeline_data_by_month(self, csv_files, target_feature='differenceInMinutes'):
         """
         Run the full processing pipeline on the provided CSV files.
         

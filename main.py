@@ -29,7 +29,7 @@ def main():
     target_feature = 'trainDelayed'
     
     # Run the full pipeline on all CSV files with the specified target feature
-    results = pipeline.run_pipeline(csv_files, target_feature=target_feature)
+    results = pipeline.run_pipeline_data_by_month(csv_files, target_feature=target_feature)
     
     # Access the results if needed for additional operations
     print("\nPipeline execution completed.")
