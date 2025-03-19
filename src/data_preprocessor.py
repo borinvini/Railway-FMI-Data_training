@@ -7,6 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from imblearn.combine import SMOTETomek
 
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING, 
