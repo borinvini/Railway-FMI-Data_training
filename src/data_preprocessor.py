@@ -13,7 +13,8 @@ from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING, 
     OUTPUT_FOLDER,
     PREPROCESSED_OUTPUT_FOLDER,
-    DECISION_TREE_OUTPUT_FOLDER
+    DECISION_TREE_OUTPUT_FOLDER,
+    IMPORTANCE_THRESHOLD
 )
 from src.file_utils import generate_output_path
 
@@ -300,7 +301,7 @@ class TrainingPipeline:
 
                     case "train_with_important_features":
                         print(f"Training decision tree with important features for {month_id}...")
-                        important_result = self.train_with_important_features(month_id, importance_threshold=0.05)
+                        important_result = self.train_with_important_features(month_id, importance_threshold=IMPORTANCE_THRESHOLD)
                         
                         if not important_result.get("success", False):
                             print(f"Failed to train decision tree with important features for {month_id}: {important_result.get('error', 'Unknown error')}")
@@ -308,7 +309,7 @@ class TrainingPipeline:
                         else:
                             print(f"Successfully trained decision tree with important features for {month_id}")
                             counters["successful_important_features"] = counters.get("successful_important_features", 0) + 1
-    
+
                         # This is the last stage, so we're done
                         state["current_stage"] = None
                         
@@ -1495,7 +1496,7 @@ class TrainingPipeline:
             }
         
 
-    def train_with_important_features(self, month_id, importance_threshold=0.05, max_depth=None, random_state=42):
+    def train_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, max_depth=None, random_state=42):
         """
         Train a Decision Tree classifier on only the important features.
         
@@ -1508,7 +1509,7 @@ class TrainingPipeline:
             Month identifier in format "YYYY-YYYY_MM" for the filename.
         importance_threshold : float, optional
             Threshold for selecting important features. Features with importance scores 
-            above this threshold will be kept. Defaults to 0.05.
+            above this threshold will be kept. Defaults to IMPORTANCE_THRESHOLD.
         max_depth : int, optional
             Maximum depth of the decision tree. None means unlimited.
         random_state : int, optional

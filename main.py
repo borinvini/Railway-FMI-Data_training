@@ -2,6 +2,7 @@ import os
 import argparse
 from src.file_utils import check_csv_files, extract_date_range, load_and_preview_csv
 from src.data_preprocessor import TrainingPipeline  # Import the class
+from config.const import IMPORTANCE_THRESHOLD  # Import the constant
 
 
 def main():
@@ -12,7 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description='Process railway data and train models.')
     parser.add_argument('--target', choices=['differenceInMinutes', 'trainDelayed', 'cancelled'], 
                         default='trainDelayed', help='Target feature to predict')
-    parser.add_argument('--feature-importance-threshold', type=float, default=0.05,
+    parser.add_argument('--feature-importance-threshold', type=float, default=IMPORTANCE_THRESHOLD,
                         help='Threshold for selecting important features')
     parser.add_argument('--skip-important-features', action='store_true',
                         help='Skip training with important features')
