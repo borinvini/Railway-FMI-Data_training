@@ -161,7 +161,8 @@ class TrainingPipeline:
                 "select_target",
                 "save_csv",
                 "split_dataset",
-                "train_decision_tree"
+                "train_decision_tree",
+                "train_with_important_features"
             ]
             
             # Initialize pipeline state
@@ -289,10 +290,25 @@ class TrainingPipeline:
                         if not dt_result.get("success", False):
                             print(f"Failed to train decision tree for {month_id}: {dt_result.get('error', 'Unknown error')}")
                             counters["failed_decision_tree"] += 1
+                            state["success"] = False  # We'll still continue to the next stage even if this fails
                         else:
                             print(f"Successfully trained decision tree for {month_id}")
                             counters["successful_decision_tree"] += 1
                         
+                        # Move to the next stage regardless of success
+                        state["current_stage"] = "train_with_important_features"
+
+                    case "train_with_important_features":
+                        print(f"Training decision tree with important features for {month_id}...")
+                        important_result = self.train_with_important_features(month_id, importance_threshold=0.05)
+                        
+                        if not important_result.get("success", False):
+                            print(f"Failed to train decision tree with important features for {month_id}: {important_result.get('error', 'Unknown error')}")
+                            counters["failed_important_features"] = counters.get("failed_important_features", 0) + 1
+                        else:
+                            print(f"Successfully trained decision tree with important features for {month_id}")
+                            counters["successful_important_features"] = counters.get("successful_important_features", 0) + 1
+    
                         # This is the last stage, so we're done
                         state["current_stage"] = None
                         
@@ -326,7 +342,9 @@ class TrainingPipeline:
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Successfully trained decision tree models: {summary['successful_decision_tree']}")
+        print(f"Successfully trained decision tree models with important features: {summary.get('successful_important_features', 0)}")
         print(f"Failed to train decision tree models: {summary['failed_decision_tree']}")
+        print(f"Failed to train decision tree models with important features: {summary.get('failed_important_features', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -1310,6 +1328,7 @@ class TrainingPipeline:
                 "error": str(e)
             }
         
+        
     def train_month_decision_tree(self, month_id, max_depth=None, random_state=42):
         """
         Train a Decision Tree classifier on the preprocessed and split month data.
@@ -1470,6 +1489,213 @@ class TrainingPipeline:
         
         except Exception as e:
             print(f"Error training decision tree for {month_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        
+
+    def train_with_important_features(self, month_id, importance_threshold=0.05, max_depth=None, random_state=42):
+        """
+        Train a Decision Tree classifier on only the important features.
+        
+        This method first trains a model on all features, identifies the most important features
+        based on the threshold, and then trains a new model using only those features.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        importance_threshold : float, optional
+            Threshold for selecting important features. Features with importance scores 
+            above this threshold will be kept. Defaults to 0.05.
+        max_depth : int, optional
+            Maximum depth of the decision tree. None means unlimited.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column == 'differenceInMinutes':
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            if is_classification:
+                # First, train a model on all features to get feature importance
+                # Use class_weight="balanced" to handle imbalanced classes
+                print(f"Training initial Decision Tree classifier with all features...")
+                dt = DecisionTreeClassifier(class_weight="balanced", max_depth=max_depth, random_state=random_state)
+                dt.fit(X_train, y_train)
+                
+                # Calculate feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': dt.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # Select important features based on threshold
+                important_features = feature_importance[feature_importance['Importance'] > importance_threshold]['Feature'].tolist()
+                
+                if not important_features:
+                    print(f"Warning: No features found with importance > {importance_threshold}. Using top 5 features instead.")
+                    important_features = feature_importance.head(5)['Feature'].tolist()
+                
+                print(f"\nSelected {len(important_features)} important features:")
+                print(important_features)
+                
+                # Train a new model with only the important features
+                print(f"\nTraining new Decision Tree classifier with only important features...")
+                dt_selected = DecisionTreeClassifier(random_state=random_state)  # Note: not using class_weight here as in example
+                dt_selected.fit(X_train[important_features], y_train)
+                
+                # Predict
+                y_pred = dt_selected.predict(X_test[important_features])
+                
+                # Evaluate model
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nDecision Tree Classifier Results (Important Features Only):")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, f"{month_id}_important_features")
+                
+                # Feature importance for the new model
+                selected_feature_importance = pd.DataFrame({
+                    'Feature': important_features,
+                    'Importance': dt_selected.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance for Selected Features:")
+                print(selected_feature_importance)
+                
+                # Save the model and feature list
+                try:
+                    import joblib
+                    
+                    # Ensure decision tree output directory exists
+                    os.makedirs(self.decision_tree_dir, exist_ok=True)
+                    
+                    # Save the model
+                    model_filename = f"decision_tree_{month_id}_important_features.joblib"
+                    model_path = os.path.join(self.decision_tree_dir, model_filename)
+                    joblib.dump(dt_selected, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{month_id}_important_features.csv"
+                    importance_path = os.path.join(self.decision_tree_dir, importance_filename)
+                    selected_feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save the list of important features
+                    features_filename = f"important_features_{month_id}.txt"
+                    features_path = os.path.join(self.decision_tree_dir, features_filename)
+                    with open(features_path, 'w') as f:
+                        for feature in important_features:
+                            f.write(f"{feature}\n")
+                    print(f"Important features list saved to {features_path}")
+                    
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "important_features": important_features,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "metrics": metrics_result["metrics"],
+                        "metrics_path": metrics_result["metrics_path"],
+                        "model_saved": False,
+                        "important_features": important_features
+                    }
+            else:
+                # For regression problems we would need a different approach
+                print(f"Regression with Decision Trees not implemented for target {target_column}")
+                return {
+                    "success": False,
+                    "error": f"Regression with Decision Trees not implemented for target {target_column}"
+                }
+        
+        except Exception as e:
+            print(f"Error training decision tree with important features for {month_id}: {str(e)}")
             return {
                 "success": False,
                 "error": str(e)
