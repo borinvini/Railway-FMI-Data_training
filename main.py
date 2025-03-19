@@ -67,7 +67,7 @@ def main():
                 )
                 
                 if result.get("success", False):
-                    print(f"Successfully trained decision tree with important features for {month_id}")
+                    print(f"Successfully trained decision tree with important feature-s for {month_id}")
                     print(f"Selected {len(result.get('important_features', []))} important features")
                     print(f"Test accuracy: {result.get('accuracy', 0):.4f}")
                 else:

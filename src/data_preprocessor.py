@@ -163,7 +163,8 @@ class TrainingPipeline:
                 "save_csv",
                 "split_dataset",
                 "train_decision_tree",
-                "train_with_important_features"
+                "train_with_important_features",
+                "train_randomized_search_cv" 
             ]
             
             # Initialize pipeline state
@@ -310,6 +311,20 @@ class TrainingPipeline:
                             print(f"Successfully trained decision tree with important features for {month_id}")
                             counters["successful_important_features"] = counters.get("successful_important_features", 0) + 1
 
+                        # This is no longer the last stage, so point to the next stage
+                        state["current_stage"] = "train_randomized_search_cv"
+
+                    case "train_randomized_search_cv":
+                        print(f"Training decision tree with RandomizedSearchCV for {month_id}...")
+                        random_search_result = self.train_randomized_search_cv(month_id)
+                        
+                        if not random_search_result.get("success", False):
+                            print(f"Failed to train decision tree with RandomizedSearchCV for {month_id}: {random_search_result.get('error', 'Unknown error')}")
+                            counters["failed_randomized_search"] = counters.get("failed_randomized_search", 0) + 1
+                        else:
+                            print(f"Successfully trained decision tree with RandomizedSearchCV for {month_id}")
+                            counters["successful_randomized_search"] = counters.get("successful_randomized_search", 0) + 1
+
                         # This is the last stage, so we're done
                         state["current_stage"] = None
                         
@@ -344,8 +359,10 @@ class TrainingPipeline:
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Successfully trained decision tree models: {summary['successful_decision_tree']}")
         print(f"Successfully trained decision tree models with important features: {summary.get('successful_important_features', 0)}")
+        print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
         print(f"Failed to train decision tree models: {summary['failed_decision_tree']}")
         print(f"Failed to train decision tree models with important features: {summary.get('failed_important_features', 0)}")
+        print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -1697,6 +1714,229 @@ class TrainingPipeline:
         
         except Exception as e:
             print(f"Error training decision tree with important features for {month_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        
+
+    def train_randomized_search_cv(self, month_id, param_distributions=None, 
+                                n_iter=None, cv=None, random_state=42):
+        """
+        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+            Defaults to RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS from constants.
+        n_iter : int, optional
+            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
+        cv : int, optional
+            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
+                param_distributions = RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column == 'differenceInMinutes':
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            if is_classification:
+                from sklearn.model_selection import RandomizedSearchCV
+                
+                # Initialize base classifier
+                dt = DecisionTreeClassifier(random_state=random_state)
+                
+                print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
+                
+                # Run RandomizedSearchCV
+                random_search = RandomizedSearchCV(
+                    dt, param_distributions, n_iter=n_iter, cv=cv, 
+                    scoring='accuracy', random_state=random_state, n_jobs=-1
+                )
+                
+                random_search.fit(X_train, y_train)
+                
+                best_params = random_search.best_params_
+                print(f"Best Hyperparameters: {best_params}")
+                
+                # Train model with best parameters
+                best_dt = DecisionTreeClassifier(**best_params, random_state=random_state)
+                best_dt.fit(X_train, y_train)
+                
+                # Predict
+                y_pred = best_dt.predict(X_test)
+                
+                # Evaluate model
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nDecision Tree Classifier Results (Tuned with RandomizedSearchCV):")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, f"{month_id}_randomized_search")
+                
+                # Feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': best_dt.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # Save the model and params
+                try:
+                    import joblib
+                    
+                    # Ensure decision tree output directory exists
+                    os.makedirs(self.decision_tree_dir, exist_ok=True)
+                    
+                    # Save the model
+                    model_filename = f"decision_tree_{month_id}_randomized_search.joblib"
+                    model_path = os.path.join(self.decision_tree_dir, model_filename)
+                    joblib.dump(best_dt, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{month_id}_randomized_search.csv"
+                    importance_path = os.path.join(self.decision_tree_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save best parameters
+                    params_filename = f"best_params_{month_id}_randomized_search.txt"
+                    params_path = os.path.join(self.decision_tree_dir, params_filename)
+                    with open(params_path, 'w') as f:
+                        for param, value in best_params.items():
+                            f.write(f"{param}: {value}\n")
+                    print(f"Best parameters saved to {params_path}")
+                    
+                    # Also compare to baseline model
+                    print("\nComparison with baseline model:")
+                    baseline_metrics_file = os.path.join(self.decision_tree_dir, f"model_metrics_{month_id}.csv")
+                    if os.path.exists(baseline_metrics_file):
+                        baseline_metrics = pd.read_csv(baseline_metrics_file)
+                        baseline_accuracy = baseline_metrics['accuracy'].values[0]
+                        print(f"Baseline model accuracy: {baseline_accuracy:.4f}")
+                        print(f"RandomizedSearchCV model accuracy: {accuracy:.4f}")
+                        improvement = ((accuracy - baseline_accuracy) / baseline_accuracy) * 100
+                        print(f"Improvement: {improvement:.2f}%")
+                    
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "best_params": best_params,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "best_params": best_params,
+                        "metrics": metrics_result["metrics"],
+                        "metrics_path": metrics_result["metrics_path"],
+                        "model_saved": False
+                    }
+            else:
+                # For regression problems we would need a different approach
+                print(f"Regression with Decision Trees not implemented for target {target_column}")
+                return {
+                    "success": False,
+                    "error": f"Regression with Decision Trees not implemented for target {target_column}"
+                }
+        
+        except Exception as e:
+            print(f"Error in RandomizedSearchCV for {month_id}: {str(e)}")
             return {
                 "success": False,
                 "error": str(e)

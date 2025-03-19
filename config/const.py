@@ -1,3 +1,5 @@
+from scipy.stats import randint
+
 # Constants for file processing
 FOLDER_NAME = "data"
 INPUT_FOLDER = "data/input"
@@ -9,3 +11,17 @@ DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.10
+
+
+# Parameter distributions for RandomizedSearchCV
+RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS = {
+    'max_depth': randint(3, 30),
+    'min_samples_split': randint(2, 15),
+    'min_samples_leaf': randint(1, 10),
+    'criterion': ['gini', 'entropy'],
+    'max_features': [None, 'sqrt', 'log2']
+}
+
+# RandomizedSearchCV settings
+RANDOM_SEARCH_ITERATIONS = 50
+RANDOM_SEARCH_CV_FOLDS = 5
