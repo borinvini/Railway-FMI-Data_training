@@ -6,6 +6,7 @@ INPUT_FOLDER = "data/input"
 OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/preprocessed"
 DECISION_TREE_OUTPUT_FOLDER = "data/output/decision_tree"
+RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/randomized_search_cv"
 DATA_FILE_PREFIX = "matched_data_"
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 

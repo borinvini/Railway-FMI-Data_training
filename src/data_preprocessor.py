@@ -8,15 +8,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 from imblearn.combine import SMOTETomek
+from src.file_utils import generate_output_path
 
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING, 
     OUTPUT_FOLDER,
     PREPROCESSED_OUTPUT_FOLDER,
     DECISION_TREE_OUTPUT_FOLDER,
+    RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     IMPORTANCE_THRESHOLD
 )
-from src.file_utils import generate_output_path
+
 
 class TrainingPipeline:
     def __init__(self):
@@ -29,6 +31,7 @@ class TrainingPipeline:
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
         self.decision_tree_dir = os.path.join(self.project_root, DECISION_TREE_OUTPUT_FOLDER)
+        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)  # New line
         
         # Define important weather conditions to check
         self.important_conditions = [
@@ -1720,8 +1723,7 @@ class TrainingPipeline:
             }
         
 
-    def train_randomized_search_cv(self, month_id, param_distributions=None, 
-                                n_iter=None, cv=None, random_state=42):
+    def train_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
         
@@ -1854,7 +1856,7 @@ class TrainingPipeline:
                 print(conf_matrix)
                 
                 # Extract and save metrics
-                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, f"{month_id}_randomized_search")
+                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, f"{month_id}_randomized_search", output_dir=self.randomized_search_dir)
                 
                 # Feature importance
                 feature_importance = pd.DataFrame({
@@ -1869,24 +1871,24 @@ class TrainingPipeline:
                 try:
                     import joblib
                     
-                    # Ensure decision tree output directory exists
-                    os.makedirs(self.decision_tree_dir, exist_ok=True)
+                    # Ensure randomized search output directory exists
+                    os.makedirs(self.randomized_search_dir, exist_ok=True)
                     
                     # Save the model
                     model_filename = f"decision_tree_{month_id}_randomized_search.joblib"
-                    model_path = os.path.join(self.decision_tree_dir, model_filename)
+                    model_path = os.path.join(self.randomized_search_dir, model_filename)
                     joblib.dump(best_dt, model_path)
                     print(f"Model saved to {model_path}")
                     
                     # Save feature importance
                     importance_filename = f"feature_importance_{month_id}_randomized_search.csv"
-                    importance_path = os.path.join(self.decision_tree_dir, importance_filename)
+                    importance_path = os.path.join(self.randomized_search_dir, importance_filename)
                     feature_importance.to_csv(importance_path, index=False)
                     print(f"Feature importance saved to {importance_path}")
                     
                     # Save best parameters
                     params_filename = f"best_params_{month_id}_randomized_search.txt"
-                    params_path = os.path.join(self.decision_tree_dir, params_filename)
+                    params_path = os.path.join(self.randomized_search_dir, params_filename)
                     with open(params_path, 'w') as f:
                         for param, value in best_params.items():
                             f.write(f"{param}: {value}\n")
@@ -1942,7 +1944,7 @@ class TrainingPipeline:
                 "error": str(e)
             }
 
-    def extract_and_save_metrics(self, y_test, y_pred, report, month_id):
+    def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None):
         """
         Extract key metrics from model evaluation and save them to a CSV file.
         
@@ -1956,6 +1958,8 @@ class TrainingPipeline:
             Classification report dictionary from sklearn.
         month_id : str
             Month identifier in format "YYYY-YYYY_MM" for the filename.
+        output_dir : str, optional
+            Directory to save the metrics file. Defaults to decision_tree_dir.
             
         Returns:
         --------
@@ -1964,6 +1968,10 @@ class TrainingPipeline:
         """
         # Create metrics dictionary
         metrics = {}
+        
+        # Use decision_tree_dir as default if output_dir is None
+        if output_dir is None:
+            output_dir = self.decision_tree_dir
         
         # Basic accuracy
         from sklearn.metrics import accuracy_score
@@ -1989,7 +1997,7 @@ class TrainingPipeline:
         
         # Save metrics to a file
         metrics_filename = f"model_metrics_{month_id}.csv"
-        metrics_path = os.path.join(self.decision_tree_dir, metrics_filename)
+        metrics_path = os.path.join(output_dir, metrics_filename)
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
@@ -2002,4 +2010,3 @@ class TrainingPipeline:
             "metrics": metrics,
             "metrics_path": metrics_path
         }
-    
