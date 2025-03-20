@@ -12,6 +12,7 @@ from src.file_utils import generate_output_path
 
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
+    IMPORTANT_FEATURES_OUTPUT_FOLDER,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER, 
     OUTPUT_FOLDER,
     PREPROCESSED_OUTPUT_FOLDER,
@@ -32,9 +33,9 @@ class TrainingPipeline:
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
         self.decision_tree_dir = os.path.join(self.project_root, DECISION_TREE_OUTPUT_FOLDER)
-        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER) 
+        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
-
+        self.important_features_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_OUTPUT_FOLDER)
         
         # Define important weather conditions to check
         self.important_conditions = [
@@ -1665,7 +1666,7 @@ class TrainingPipeline:
                 print(conf_matrix)
                 
                 # Extract and save metrics
-                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, f"{month_id}_important_features")
+                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, f"{month_id}_important_features", output_dir=self.important_features_dir)
                 
                 # Feature importance for the new model
                 selected_feature_importance = pd.DataFrame({
@@ -1681,23 +1682,23 @@ class TrainingPipeline:
                     import joblib
                     
                     # Ensure decision tree output directory exists
-                    os.makedirs(self.decision_tree_dir, exist_ok=True)
+                    os.makedirs(self.important_features_dir, exist_ok=True)
                     
                     # Save the model
                     model_filename = f"decision_tree_{month_id}_important_features.joblib"
-                    model_path = os.path.join(self.decision_tree_dir, model_filename)
+                    model_path = os.path.join(self.important_features_dir, model_filename)
                     joblib.dump(dt_selected, model_path)
                     print(f"Model saved to {model_path}")
                     
                     # Save feature importance
                     importance_filename = f"feature_importance_{month_id}_important_features.csv"
-                    importance_path = os.path.join(self.decision_tree_dir, importance_filename)
+                    importance_path = os.path.join(self.important_features_dir, importance_filename)
                     selected_feature_importance.to_csv(importance_path, index=False)
                     print(f"Feature importance saved to {importance_path}")
                     
                     # Save the list of important features
                     features_filename = f"important_features_{month_id}.txt"
-                    features_path = os.path.join(self.decision_tree_dir, features_filename)
+                    features_path = os.path.join(self.important_features_dir, features_filename)
                     with open(features_path, 'w') as f:
                         for feature in important_features:
                             f.write(f"{feature}\n")
@@ -2191,7 +2192,7 @@ class TrainingPipeline:
                         print(f"Improvement over basic model: {comparison1:.2f}%")
                     
                     # Compare with important features only
-                    important_metrics_file = os.path.join(self.decision_tree_dir, f"model_metrics_{month_id}_important_features.csv")
+                    important_metrics_file = os.path.join(self.important_features_dir, f"model_metrics_{month_id}_important_features.csv")
                     if os.path.exists(important_metrics_file):
                         important_metrics = pd.read_csv(important_metrics_file)
                         important_accuracy = important_metrics['accuracy'].values[0]
