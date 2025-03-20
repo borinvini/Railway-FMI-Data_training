@@ -9,6 +9,8 @@ DECISION_TREE_OUTPUT_FOLDER = "data/output/decision_tree"
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/randomized_search_cv"
 DATA_FILE_PREFIX = "matched_data_"
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
+IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/important_features_randomized_search"
+
 
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.10

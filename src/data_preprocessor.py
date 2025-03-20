@@ -11,7 +11,8 @@ from imblearn.combine import SMOTETomek
 from src.file_utils import generate_output_path
 
 from config.const import (
-    DATA_FILE_PREFIX_FOR_TRAINING, 
+    DATA_FILE_PREFIX_FOR_TRAINING,
+    IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER, 
     OUTPUT_FOLDER,
     PREPROCESSED_OUTPUT_FOLDER,
     DECISION_TREE_OUTPUT_FOLDER,
@@ -31,7 +32,9 @@ class TrainingPipeline:
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
         self.decision_tree_dir = os.path.join(self.project_root, DECISION_TREE_OUTPUT_FOLDER)
-        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)  # New line
+        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER) 
+        self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+
         
         # Define important weather conditions to check
         self.important_conditions = [
@@ -167,7 +170,8 @@ class TrainingPipeline:
                 "split_dataset",
                 "train_decision_tree",
                 "train_with_important_features",
-                "train_randomized_search_cv" 
+                "train_randomized_search_cv",
+                "train_randomized_search_with_important_features"
             ]
             
             # Initialize pipeline state
@@ -328,6 +332,20 @@ class TrainingPipeline:
                             print(f"Successfully trained decision tree with RandomizedSearchCV for {month_id}")
                             counters["successful_randomized_search"] = counters.get("successful_randomized_search", 0) + 1
 
+                        # Point to the new final stage
+                        state["current_stage"] = "train_randomized_search_with_important_features"
+
+                    case "train_randomized_search_with_important_features":
+                        print(f"Training decision tree with RandomizedSearchCV on important features for {month_id}...")
+                        combined_result = self.train_randomized_search_with_important_features(month_id)
+                        
+                        if not combined_result.get("success", False):
+                            print(f"Failed to train with combined approach for {month_id}: {combined_result.get('error', 'Unknown error')}")
+                            counters["failed_combined_approach"] = counters.get("failed_combined_approach", 0) + 1
+                        else:
+                            print(f"Successfully trained with combined approach for {month_id}")
+                            counters["successful_combined_approach"] = counters.get("successful_combined_approach", 0) + 1
+
                         # This is the last stage, so we're done
                         state["current_stage"] = None
                         
@@ -363,9 +381,11 @@ class TrainingPipeline:
         print(f"Successfully trained decision tree models: {summary['successful_decision_tree']}")
         print(f"Successfully trained decision tree models with important features: {summary.get('successful_important_features', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
+        print(f"Successfully trained with RandomizedSearchCV on important features: {summary.get('successful_combined_approach', 0)}")
         print(f"Failed to train decision tree models: {summary['failed_decision_tree']}")
         print(f"Failed to train decision tree models with important features: {summary.get('failed_important_features', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
+        print(f"Failed to train with RandomizedSearchCV on important features: {summary.get('failed_combined_approach', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -1943,6 +1963,292 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
+        
+    def train_randomized_search_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, param_distributions=None, n_iter=None, cv=None, random_state=42):
+        """
+        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV,
+        but only using features that exceed the importance threshold.
+        
+        This method combines feature selection and hyperparameter optimization:
+        1. First trains a model to identify important features
+        2. Then uses RandomizedSearchCV to find optimal hyperparameters on those features only
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        importance_threshold : float, optional
+            Threshold for selecting important features. Features with importance scores
+            above this threshold will be kept. Defaults to IMPORTANCE_THRESHOLD.
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+            Defaults to RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS from constants.
+        n_iter : int, optional
+            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
+        cv : int, optional
+            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
+                param_distributions = RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column == 'differenceInMinutes':
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            if is_classification:
+                from sklearn.model_selection import RandomizedSearchCV
+                
+                # STEP 1: FIRST TRAIN A MODEL TO IDENTIFY IMPORTANT FEATURES
+                print(f"Training initial Decision Tree classifier to identify important features...")
+                dt_initial = DecisionTreeClassifier(random_state=random_state)
+                dt_initial.fit(X_train, y_train)
+                
+                # Calculate feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': dt_initial.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # Select important features based on threshold
+                important_features = feature_importance[feature_importance['Importance'] > importance_threshold]['Feature'].tolist()
+                
+                if not important_features:
+                    print(f"Warning: No features found with importance > {importance_threshold}. Using top 5 features instead.")
+                    important_features = feature_importance.head(5)['Feature'].tolist()
+                
+                print(f"\nSelected {len(important_features)} important features with threshold {importance_threshold}:")
+                print(important_features)
+                
+                # STEP 2: RUN RANDOMIZED SEARCH CV ON IMPORTANT FEATURES ONLY
+                print(f"\nStarting RandomizedSearchCV on important features with {n_iter} iterations and {cv}-fold cross-validation...")
+                
+                # Initialize base classifier for RandomizedSearchCV
+                dt = DecisionTreeClassifier(random_state=random_state)
+                
+                # Run RandomizedSearchCV on the subset of important features
+                random_search = RandomizedSearchCV(
+                    dt, param_distributions, n_iter=n_iter, cv=cv, 
+                    scoring='accuracy', random_state=random_state, n_jobs=-1
+                )
+                
+                # Fit only on the important features
+                random_search.fit(X_train[important_features], y_train)
+                
+                best_params = random_search.best_params_
+                print(f"Best Hyperparameters: {best_params}")
+                
+                # Train model with best parameters on important features
+                best_dt = DecisionTreeClassifier(**best_params, random_state=random_state)
+                best_dt.fit(X_train[important_features], y_train)
+                
+                # Predict using only important features
+                y_pred = best_dt.predict(X_test[important_features])
+                
+                # Evaluate model
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nDecision Tree Results (Important Features + RandomizedSearchCV):")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Create a specific output directory for this combined approach
+                combined_output_dir = os.path.join(self.project_root, "data/output/important_features_randomized_search")
+                os.makedirs(combined_output_dir, exist_ok=True)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(
+                    y_test, y_pred, report, 
+                    f"{month_id}_important_randomized", 
+                    output_dir=combined_output_dir
+                )
+                
+                # Feature importance for the selected features in the final model
+                selected_feature_importance = pd.DataFrame({
+                    'Feature': important_features,
+                    'Importance': best_dt.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance in Final Model:")
+                print(selected_feature_importance)
+                
+                # Save the model and related information
+                try:
+                    import joblib
+                    
+                    # Save the model
+                    model_filename = f"decision_tree_{month_id}_important_randomized.joblib"
+                    model_path = os.path.join(combined_output_dir, model_filename)
+                    joblib.dump(best_dt, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{month_id}_important_randomized.csv"
+                    importance_path = os.path.join(combined_output_dir, importance_filename)
+                    selected_feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save best parameters
+                    params_filename = f"best_params_{month_id}_important_randomized.txt"
+                    params_path = os.path.join(combined_output_dir, params_filename)
+                    with open(params_path, 'w') as f:
+                        f.write(f"Important features ({len(important_features)}):\n")
+                        for feature in important_features:
+                            f.write(f"- {feature}\n")
+                        f.write("\nBest parameters:\n")
+                        for param, value in best_params.items():
+                            f.write(f"{param}: {value}\n")
+                    print(f"Parameters and features saved to {params_path}")
+                    
+                    # Also compare to baseline models
+                    print("\nComparison with other models:")
+                    
+                    # Compare with basic decision tree
+                    baseline_metrics_file = os.path.join(self.decision_tree_dir, f"model_metrics_{month_id}.csv")
+                    if os.path.exists(baseline_metrics_file):
+                        baseline_metrics = pd.read_csv(baseline_metrics_file)
+                        baseline_accuracy = baseline_metrics['accuracy'].values[0]
+                        print(f"Basic Decision Tree accuracy: {baseline_accuracy:.4f}")
+                        comparison1 = ((accuracy - baseline_accuracy) / baseline_accuracy) * 100
+                        print(f"Improvement over basic model: {comparison1:.2f}%")
+                    
+                    # Compare with important features only
+                    important_metrics_file = os.path.join(self.decision_tree_dir, f"model_metrics_{month_id}_important_features.csv")
+                    if os.path.exists(important_metrics_file):
+                        important_metrics = pd.read_csv(important_metrics_file)
+                        important_accuracy = important_metrics['accuracy'].values[0]
+                        print(f"Important Features Only accuracy: {important_accuracy:.4f}")
+                        comparison2 = ((accuracy - important_accuracy) / important_accuracy) * 100
+                        print(f"Improvement over important features model: {comparison2:.2f}%")
+                    
+                    # Compare with randomized search only
+                    random_metrics_file = os.path.join(self.randomized_search_dir, f"model_metrics_{month_id}_randomized_search.csv")
+                    if os.path.exists(random_metrics_file):
+                        random_metrics = pd.read_csv(random_metrics_file)
+                        random_accuracy = random_metrics['accuracy'].values[0]
+                        print(f"RandomizedSearchCV Only accuracy: {random_accuracy:.4f}")
+                        comparison3 = ((accuracy - random_accuracy) / random_accuracy) * 100
+                        print(f"Improvement over randomized search model: {comparison3:.2f}%")
+                    
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "best_params": best_params,
+                        "important_features": important_features,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "best_params": best_params,
+                        "important_features": important_features,
+                        "metrics": metrics_result["metrics"],
+                        "metrics_path": metrics_result["metrics_path"],
+                        "model_saved": False
+                    }
+            else:
+                # For regression problems we would need a different approach
+                print(f"Regression with Decision Trees not implemented for target {target_column}")
+                return {
+                    "success": False,
+                    "error": f"Regression with Decision Trees not implemented for target {target_column}"
+                }
+        
+        except Exception as e:
+            print(f"Error in RandomizedSearchCV with Important Features for {month_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
 
     def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None):
         """
