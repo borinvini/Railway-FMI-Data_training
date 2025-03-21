@@ -3,12 +3,15 @@ import os
 import pandas as pd
 import re
 import ast
+import xgboost as xgb
+import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 from imblearn.combine import SMOTETomek
 from src.file_utils import generate_output_path
+from sklearn.model_selection import RandomizedSearchCV
 
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
@@ -18,7 +21,9 @@ from config.const import (
     PREPROCESSED_OUTPUT_FOLDER,
     DECISION_TREE_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
-    IMPORTANCE_THRESHOLD
+    IMPORTANCE_THRESHOLD,
+    XGBOOST_OUTPUT_FOLDER,
+    XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER
 )
 
 
@@ -36,7 +41,10 @@ class TrainingPipeline:
         self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.important_features_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_OUTPUT_FOLDER)
-        
+        self.xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
+        self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+
+
         # Define important weather conditions to check
         self.important_conditions = [
             'Air temperature', 
@@ -172,7 +180,9 @@ class TrainingPipeline:
                 "train_decision_tree",
                 "train_with_important_features",
                 "train_randomized_search_cv",
-                "train_randomized_search_with_important_features"
+                "train_randomized_search_with_important_features",
+                "train_xgboost",  
+                "train_xgboost_with_randomized_search_cv" 
             ]
             
             # Initialize pipeline state
@@ -347,6 +357,34 @@ class TrainingPipeline:
                             print(f"Successfully trained with combined approach for {month_id}")
                             counters["successful_combined_approach"] = counters.get("successful_combined_approach", 0) + 1
 
+                        # Continue to the XGBoost stage
+                        state["current_stage"] = "train_xgboost"
+
+                    case "train_xgboost":
+                        print(f"Training XGBoost model for {month_id}...")
+                        xgb_result = self.train_xgboost(month_id)
+                        
+                        if not xgb_result.get("success", False):
+                            print(f"Failed to train XGBoost for {month_id}: {xgb_result.get('error', 'Unknown error')}")
+                            counters["failed_xgboost"] = counters.get("failed_xgboost", 0) + 1
+                        else:
+                            print(f"Successfully trained XGBoost for {month_id}")
+                            counters["successful_xgboost"] = counters.get("successful_xgboost", 0) + 1
+
+                        # Move to the next stage regardless of success
+                        state["current_stage"] = "train_xgboost_with_randomized_search_cv"
+
+                    case "train_xgboost_with_randomized_search_cv":
+                        print(f"Training XGBoost model with RandomizedSearchCV for {month_id}...")
+                        xgb_rs_result = self.train_xgboost_with_randomized_search_cv(month_id)
+                        
+                        if not xgb_rs_result.get("success", False):
+                            print(f"Failed to train XGBoost with RandomizedSearchCV for {month_id}: {xgb_rs_result.get('error', 'Unknown error')}")
+                            counters["failed_xgboost_rs"] = counters.get("failed_xgboost_rs", 0) + 1
+                        else:
+                            print(f"Successfully trained XGBoost with RandomizedSearchCV for {month_id}")
+                            counters["successful_xgboost_rs"] = counters.get("successful_xgboost_rs", 0) + 1
+
                         # This is the last stage, so we're done
                         state["current_stage"] = None
                         
@@ -383,10 +421,14 @@ class TrainingPipeline:
         print(f"Successfully trained decision tree models with important features: {summary.get('successful_important_features', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
         print(f"Successfully trained with RandomizedSearchCV on important features: {summary.get('successful_combined_approach', 0)}")
+        print(f"Successfully trained XGBoost models: {summary.get('successful_xgboost', 0)}")
+        print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
         print(f"Failed to train decision tree models: {summary['failed_decision_tree']}")
         print(f"Failed to train decision tree models with important features: {summary.get('failed_important_features', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
         print(f"Failed to train with RandomizedSearchCV on important features: {summary.get('failed_combined_approach', 0)}")
+        print(f"Failed to train XGBoost models: {summary.get('failed_xgboost', 0)}")
+        print(f"Failed to train XGBoost models with RandomizedSearchCV: {summary.get('failed_xgboost_rs', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -2350,3 +2392,555 @@ class TrainingPipeline:
             "metrics": metrics,
             "metrics_path": metrics_path
         }
+    
+    def train_xgboost(self, month_id, params=None, random_state=42):
+        """
+        Train an XGBoost classifier on the preprocessed and split month data.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        params : dict, optional
+            Parameters for XGBoost model. If None, default parameters are used.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default parameters if none provided
+            if params is None:
+                from config.const import XGBOOST_DEFAULT_PARAMS
+                params = XGBOOST_DEFAULT_PARAMS
+            
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+
+            # Drop the data_year column if it exists
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column == 'differenceInMinutes':
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+                
+                # Modify objective for regression
+                params['objective'] = 'reg:squarederror'
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+                
+                # Ensure we have the right objective for classification
+                if target_column == 'trainDelayed':
+                    params['objective'] = 'binary:logistic'
+                else:  # For multi-class problems like 'cancelled' with >2 classes
+                    params['objective'] = 'multi:softprob'
+                    
+                    # Count unique classes
+                    num_classes = len(y_train.unique())
+                    params['num_class'] = num_classes
+                    print(f"Multi-class classification with {num_classes} classes")
+            
+            # Train XGBoost model
+            print(f"Training XGBoost model with parameters: {params}")
+            
+            if is_classification:
+                # For classification
+                xgb_model = xgb.XGBClassifier(**params, random_state=random_state)
+                xgb_model.fit(X_train, y_train)
+                
+                # Predict
+                y_pred = xgb_model.predict(X_test)
+                
+                # Evaluate model
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nXGBoost Classifier Results:")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Create XGBoost output directory
+                xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
+                os.makedirs(xgboost_dir, exist_ok=True)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(
+                    y_test, y_pred, report, f"{month_id}", 
+                    output_dir=xgboost_dir
+                )
+            else:
+                # For regression
+                from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+                
+                xgb_model = xgb.XGBRegressor(**params, random_state=random_state)
+                xgb_model.fit(X_train, y_train)
+                
+                # Predict
+                y_pred = xgb_model.predict(X_test)
+                
+                mse = mean_squared_error(y_test, y_pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(y_test, y_pred)
+                r2 = r2_score(y_test, y_pred)
+                
+                print(f"\nXGBoost Regressor Results:")
+                print(f"RMSE: {rmse:.4f}")
+                print(f"MAE: {mae:.4f}")
+                print(f"R²: {r2:.4f}")
+                
+                # Create a metrics dictionary for regression
+                metrics = {
+                    'mse': mse,
+                    'rmse': rmse,
+                    'mae': mae,
+                    'r2': r2
+                }
+                
+                # Create XGBoost output directory
+                xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
+                os.makedirs(xgboost_dir, exist_ok=True)
+                
+                # Save regression metrics
+                metrics_filename = f"model_metrics_{month_id}.csv"
+                metrics_path = os.path.join(xgboost_dir, metrics_filename)
+                
+                # Save to CSV
+                pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+                print(f"Model metrics saved to {metrics_path}")
+                
+                # Set metrics_result for consistent return
+                metrics_result = {
+                    "metrics": metrics,
+                    "metrics_path": metrics_path
+                }
+            
+            # Get feature importance
+            feature_importance = pd.DataFrame({
+                'Feature': X_train.columns,
+                'Importance': xgb_model.feature_importances_
+            }).sort_values(by='Importance', ascending=False)
+            
+            print("\nFeature Importance (top 10):")
+            print(feature_importance.head(10))
+            
+            # Save the model and feature importance
+            try:
+                import joblib
+                
+                # Save the model
+                model_filename = f"xgboost_{month_id}.joblib"
+                model_path = os.path.join(xgboost_dir, model_filename)
+                joblib.dump(xgb_model, model_path)
+                print(f"Model saved to {model_path}")
+                
+                # Save feature importance
+                importance_filename = f"feature_importance_{month_id}.csv"
+                importance_path = os.path.join(xgboost_dir, importance_filename)
+                feature_importance.to_csv(importance_path, index=False)
+                print(f"Feature importance saved to {importance_path}")
+                
+                if is_classification:
+                    return {
+                        "success": True,
+                        "model_type": "classification" if is_classification else "regression",
+                        "accuracy": accuracy if is_classification else None,
+                        "report": report if is_classification else None,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "model_type": "regression",
+                        "rmse": rmse,
+                        "r2": r2,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                    
+            except Exception as e:
+                print(f"Warning: Could not save model: {str(e)}")
+                return {
+                    "success": True,
+                    "model_type": "classification" if is_classification else "regression",
+                    "metrics": metrics_result["metrics"],
+                    "metrics_path": metrics_result["metrics_path"],
+                    "model_saved": False
+                }
+        
+        except Exception as e:
+            print(f"Error training XGBoost for {month_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def train_xgboost_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
+        """
+        Train an XGBoost classifier with hyperparameter tuning using RandomizedSearchCV.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+            Defaults to XGBOOST_PARAM_DISTRIBUTIONS from constants.
+        n_iter : int, optional
+            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
+        cv : int, optional
+            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import XGBOOST_PARAM_DISTRIBUTIONS
+                param_distributions = XGBOOST_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column == 'differenceInMinutes':
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            # Initialize base model
+            if is_classification:
+                if target_column == 'trainDelayed':  # Binary classification
+                    xgb_model = xgb.XGBClassifier(objective='binary:logistic', random_state=random_state)
+                else:  # Multi-class classification
+                    # Count unique classes
+                    num_classes = len(y_train.unique())
+                    xgb_model = xgb.XGBClassifier(
+                        objective='multi:softprob', 
+                        num_class=num_classes,
+                        random_state=random_state
+                    )
+            else:  # Regression
+                xgb_model = xgb.XGBRegressor(objective='reg:squarederror', random_state=random_state)
+            
+            print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
+            
+            # Run RandomizedSearchCV
+            random_search = RandomizedSearchCV(
+                xgb_model, param_distributions, n_iter=n_iter, cv=cv, 
+                scoring='accuracy' if is_classification else 'neg_mean_squared_error',
+                random_state=random_state, n_jobs=-1, verbose=1
+            )
+            
+            random_search.fit(X_train, y_train)
+            
+            best_params = random_search.best_params_
+            print(f"Best Hyperparameters: {best_params}")
+            
+            # Get the best model
+            best_model = random_search.best_estimator_
+            
+            # Predict
+            y_pred = best_model.predict(X_test)
+            
+            # Create output directory
+            xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+            os.makedirs(xgboost_rs_dir, exist_ok=True)
+            
+            # Evaluate model
+            if is_classification:
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nXGBoost Classifier Results (Tuned with RandomizedSearchCV):")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(
+                    y_test, y_pred, report, f"{month_id}_randomized_search", 
+                    output_dir=xgboost_rs_dir
+                )
+            else:
+                # For regression
+                from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+                
+                mse = mean_squared_error(y_test, y_pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(y_test, y_pred)
+                r2 = r2_score(y_test, y_pred)
+                
+                print(f"\nXGBoost Regressor Results (Tuned with RandomizedSearchCV):")
+                print(f"RMSE: {rmse:.4f}")
+                print(f"MAE: {mae:.4f}")
+                print(f"R²: {r2:.4f}")
+                
+                # Create a metrics dictionary for regression
+                metrics = {
+                    'mse': mse,
+                    'rmse': rmse,
+                    'mae': mae,
+                    'r2': r2
+                }
+                
+                # Save regression metrics
+                metrics_filename = f"model_metrics_{month_id}_randomized_search.csv"
+                metrics_path = os.path.join(xgboost_rs_dir, metrics_filename)
+                
+                # Save to CSV
+                pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+                print(f"Model metrics saved to {metrics_path}")
+                
+                # Set metrics_result for consistent return
+                metrics_result = {
+                    "metrics": metrics,
+                    "metrics_path": metrics_path
+                }
+            
+            # Get feature importance
+            feature_importance = pd.DataFrame({
+                'Feature': X_train.columns,
+                'Importance': best_model.feature_importances_
+            }).sort_values(by='Importance', ascending=False)
+            
+            print("\nFeature Importance (top 10):")
+            print(feature_importance.head(10))
+            
+            # Save the model and related information
+            try:
+                import joblib
+                
+                # Save the model
+                model_filename = f"xgboost_{month_id}_randomized_search.joblib"
+                model_path = os.path.join(xgboost_rs_dir, model_filename)
+                joblib.dump(best_model, model_path)
+                print(f"Model saved to {model_path}")
+                
+                # Save feature importance
+                importance_filename = f"feature_importance_{month_id}_randomized_search.csv"
+                importance_path = os.path.join(xgboost_rs_dir, importance_filename)
+                feature_importance.to_csv(importance_path, index=False)
+                print(f"Feature importance saved to {importance_path}")
+                
+                # Save best parameters
+                params_filename = f"best_params_{month_id}_randomized_search.txt"
+                params_path = os.path.join(xgboost_rs_dir, params_filename)
+                with open(params_path, 'w') as f:
+                    for param, value in best_params.items():
+                        f.write(f"{param}: {value}\n")
+                print(f"Best parameters saved to {params_path}")
+                
+                # Compare with baseline XGBoost model if available
+                baseline_metrics_file = os.path.join(
+                    self.project_root, XGBOOST_OUTPUT_FOLDER, f"model_metrics_{month_id}.csv"
+                )
+                
+                if os.path.exists(baseline_metrics_file):
+                    baseline_metrics = pd.read_csv(baseline_metrics_file)
+                    if is_classification:
+                        baseline_accuracy = baseline_metrics['accuracy'].values[0]
+                        print(f"Baseline XGBoost accuracy: {baseline_accuracy:.4f}")
+                        print(f"Tuned XGBoost accuracy: {accuracy:.4f}")
+                        improvement = ((accuracy - baseline_accuracy) / baseline_accuracy) * 100
+                        print(f"Improvement: {improvement:.2f}%")
+                    else:
+                        baseline_rmse = baseline_metrics['rmse'].values[0]
+                        print(f"Baseline XGBoost RMSE: {baseline_rmse:.4f}")
+                        print(f"Tuned XGBoost RMSE: {rmse:.4f}")
+                        improvement = ((baseline_rmse - rmse) / baseline_rmse) * 100
+                        print(f"Improvement: {improvement:.2f}%")
+                
+                if is_classification:
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "best_params": best_params,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "model_type": "regression",
+                        "rmse": rmse,
+                        "r2": r2,
+                        "best_params": best_params,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                    
+            except Exception as e:
+                print(f"Warning: Could not save model: {str(e)}")
+                if is_classification:
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "best_params": best_params,
+                        "metrics": metrics_result["metrics"],
+                        "metrics_path": metrics_result["metrics_path"],
+                        "model_saved": False
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "model_type": "regression",
+                        "rmse": rmse,
+                        "r2": r2,
+                        "best_params": best_params,
+                        "metrics": metrics_result["metrics"],
+                        "metrics_path": metrics_result["metrics_path"],
+                        "model_saved": False
+                    }
+        
+        except Exception as e:
+            print(f"Error in XGBoost RandomizedSearchCV for {month_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }

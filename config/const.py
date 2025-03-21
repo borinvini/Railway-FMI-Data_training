@@ -11,6 +11,9 @@ DATA_FILE_PREFIX = "matched_data_"
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/important_features_randomized_search"
 IMPORTANT_FEATURES_OUTPUT_FOLDER = "data/output/important_features_decision_tree"
+XGBOOST_OUTPUT_FOLDER = "data/output/xgboost"
+XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost/randomized_search"
+
 
 
 # Model training parameters
@@ -24,6 +27,24 @@ RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS = {
     'min_samples_leaf': randint(1, 10),
     'criterion': ['gini', 'entropy'],
     'max_features': [None, 'sqrt', 'log2']
+}
+
+# Parameter distributions for XGBoost with RandomizedSearchCV
+XGBOOST_PARAM_DISTRIBUTIONS = {
+    'n_estimators': randint(50, 500),
+    'max_depth': randint(3, 10),
+    'learning_rate': [0.01, 0.05, 0.1, 0.2],
+    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
+    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
+    'gamma': [0, 0.1, 0.2, 0.3, 0.4]
+}
+
+# XGBoost default parameters for non-tuned model
+XGBOOST_DEFAULT_PARAMS = {
+    'n_estimators': 100,
+    'max_depth': 6,
+    'learning_rate': 0.1,
+    'objective': 'binary:logistic'
 }
 
 # RandomizedSearchCV settings
