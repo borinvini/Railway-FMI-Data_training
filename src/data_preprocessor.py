@@ -1437,6 +1437,15 @@ class TrainingPipeline:
             
             X_test = test_df.drop(target_column, axis=1)
             y_test = test_df[target_column]
+
+            # Drop the data_year column if it exists
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
             
             # Check if we have classification or regression problem
             is_classification = True
@@ -1609,6 +1618,14 @@ class TrainingPipeline:
             
             X_test = test_df.drop(target_column, axis=1)
             y_test = test_df[target_column]
+
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+            
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
             
             # Check if we have classification or regression problem
             is_classification = True
@@ -1828,6 +1845,14 @@ class TrainingPipeline:
             
             X_test = test_df.drop(target_column, axis=1)
             y_test = test_df[target_column]
+
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
             
             # Check if we have classification or regression problem
             is_classification = True
@@ -2057,6 +2082,14 @@ class TrainingPipeline:
             
             X_test = test_df.drop(target_column, axis=1)
             y_test = test_df[target_column]
+
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
             
             # Check if we have classification or regression problem
             is_classification = True
