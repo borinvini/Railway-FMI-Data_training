@@ -2394,7 +2394,7 @@ class TrainingPipeline:
     
     def train_xgboost(self, month_id, params=None, random_state=42):
         """
-        Train an XGBoost classifier on the preprocessed and split month data.
+        Train an XGBoost model (classifier or regressor) on the preprocessed and split month data.
         
         Parameters:
         -----------
@@ -2414,7 +2414,12 @@ class TrainingPipeline:
             # Use default parameters if none provided
             if params is None:
                 from config.const import XGBOOST_DEFAULT_PARAMS
-                params = XGBOOST_DEFAULT_PARAMS
+                params = XGBOOST_DEFAULT_PARAMS.copy()  # Create a copy to avoid modifying the original
+            else:
+                params = params.copy()  # Create a copy to avoid modifying the original
+            
+            # Add random state to params
+            params['random_state'] = random_state
             
             # Construct file paths for the train and test sets
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
@@ -2465,90 +2470,52 @@ class TrainingPipeline:
             y_test = test_df[target_column]
 
             # Drop the data_year column if it exists
-            if 'data_year' in X_train.columns:
-                print(f"Dropping 'data_year' column from training features")
-                X_train = X_train.drop('data_year', axis=1)
-                
-            if 'data_year' in X_test.columns:
-                print(f"Dropping 'data_year' column from test features")
-                X_test = X_test.drop('data_year', axis=1)
-            
-            # Check if we have classification or regression problem
-            is_classification = True
-            if target_column == 'differenceInMinutes':
-                is_classification = False
-                print(f"Target '{target_column}' indicates a regression problem")
-                
-                # Modify objective for regression
-                params['objective'] = 'reg:squarederror'
-            else:
-                print(f"Target '{target_column}' indicates a classification problem")
-                
-                # Ensure we have the right objective for classification
-                if target_column == 'trainDelayed':
-                    params['objective'] = 'binary:logistic'
-                else:  # For multi-class problems like 'cancelled' with >2 classes
-                    params['objective'] = 'multi:softprob'
+            for col in ['data_year']:
+                if col in X_train.columns:
+                    print(f"Dropping '{col}' column from training features")
+                    X_train = X_train.drop(col, axis=1)
                     
-                    # Count unique classes
-                    num_classes = len(y_train.unique())
-                    params['num_class'] = num_classes
-                    print(f"Multi-class classification with {num_classes} classes")
+                if col in X_test.columns:
+                    print(f"Dropping '{col}' column from test features")
+                    X_test = X_test.drop(col, axis=1)
             
-            # Train XGBoost model
-            print(f"Training XGBoost model with parameters: {params}")
+            # Create output directory
+            xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
+            os.makedirs(xgboost_dir, exist_ok=True)
             
-            if is_classification:
-                # For classification
-                xgb_model = xgb.XGBClassifier(**params, random_state=random_state)
+            # Determine if it's a regression or classification problem
+            from config.const import DEFAULT_TARGET_FEATURE
+            is_regression = (target_column == DEFAULT_TARGET_FEATURE)
+            
+            if is_regression:
+                # REGRESSION CASE
+                print(f"Target '{target_column}' indicates a regression problem")
+                print("Training XGBoost Regressor")
+                
+                # Set regression-specific parameters
+                params['objective'] = 'reg:squarederror'
+                
+                # Train the model
+                xgb_model = xgb.XGBRegressor(**params)
                 xgb_model.fit(X_train, y_train)
                 
-                # Predict
+                # Make predictions
                 y_pred = xgb_model.predict(X_test)
                 
-                # Evaluate model
-                accuracy = accuracy_score(y_test, y_pred)
-                report = classification_report(y_test, y_pred, output_dict=True)
-                conf_matrix = confusion_matrix(y_test, y_pred)
-                
-                print(f"\nXGBoost Classifier Results:")
-                print(f"Accuracy: {accuracy:.4f}")
-                print("\nClassification Report:")
-                print(classification_report(y_test, y_pred))
-                
-                print("\nConfusion Matrix:")
-                print(conf_matrix)
-                
-                # Create XGBoost output directory
-                xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
-                os.makedirs(xgboost_dir, exist_ok=True)
-                
-                # Extract and save metrics
-                metrics_result = self.extract_and_save_metrics(
-                    y_test, y_pred, report, f"{month_id}", 
-                    output_dir=xgboost_dir
-                )
-            else:
-                # For regression
+                # Calculate regression metrics
                 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-                
-                xgb_model = xgb.XGBRegressor(**params, random_state=random_state)
-                xgb_model.fit(X_train, y_train)
-                
-                # Predict
-                y_pred = xgb_model.predict(X_test)
-                
                 mse = mean_squared_error(y_test, y_pred)
                 rmse = np.sqrt(mse)
                 mae = mean_absolute_error(y_test, y_pred)
                 r2 = r2_score(y_test, y_pred)
                 
+                # Print metrics
                 print(f"\nXGBoost Regressor Results:")
                 print(f"RMSE: {rmse:.4f}")
                 print(f"MAE: {mae:.4f}")
                 print(f"R²: {r2:.4f}")
                 
-                # Create a metrics dictionary for regression
+                # Create metrics dictionary
                 metrics = {
                     'mse': mse,
                     'rmse': rmse,
@@ -2556,15 +2523,9 @@ class TrainingPipeline:
                     'r2': r2
                 }
                 
-                # Create XGBoost output directory
-                xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
-                os.makedirs(xgboost_dir, exist_ok=True)
-                
-                # Save regression metrics
+                # Save metrics
                 metrics_filename = f"model_metrics_{month_id}.csv"
                 metrics_path = os.path.join(xgboost_dir, metrics_filename)
-                
-                # Save to CSV
                 pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
                 print(f"Model metrics saved to {metrics_path}")
                 
@@ -2573,8 +2534,67 @@ class TrainingPipeline:
                     "metrics": metrics,
                     "metrics_path": metrics_path
                 }
+                
+                # Create summary result
+                result = {
+                    "success": True,
+                    "model_type": "regression",
+                    "rmse": rmse,
+                    "mae": mae,
+                    "r2": r2
+                }
+                
+            else:
+                # CLASSIFICATION CASE
+                print(f"Target '{target_column}' indicates a classification problem")
+                print("Training XGBoost Classifier")
+                
+                # Set classification parameters
+                if target_column == 'trainDelayed':
+                    params['objective'] = 'binary:logistic'
+                    print("Using binary classification")
+                else:
+                    # For multi-class problems like 'cancelled' with >2 classes
+                    num_classes = len(y_train.unique())
+                    params['objective'] = 'multi:softprob'
+                    params['num_class'] = num_classes
+                    print(f"Using multi-class classification with {num_classes} classes")
+                
+                # Train the model
+                xgb_model = xgb.XGBClassifier(**params)
+                xgb_model.fit(X_train, y_train)
+                
+                # Make predictions
+                y_pred = xgb_model.predict(X_test)
+                
+                # Calculate classification metrics
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                # Print metrics
+                print(f"\nXGBoost Classifier Results:")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(
+                    y_test, y_pred, report, month_id, 
+                    output_dir=xgboost_dir
+                )
+                
+                # Create summary result
+                result = {
+                    "success": True,
+                    "model_type": "classification",
+                    "accuracy": accuracy,
+                    "report": report
+                }
             
-            # Get feature importance
+            # Feature importance is common for both regression and classification
             feature_importance = pd.DataFrame({
                 'Feature': X_train.columns,
                 'Importance': xgb_model.feature_importances_
@@ -2599,41 +2619,29 @@ class TrainingPipeline:
                 feature_importance.to_csv(importance_path, index=False)
                 print(f"Feature importance saved to {importance_path}")
                 
-                if is_classification:
-                    return {
-                        "success": True,
-                        "model_type": "classification" if is_classification else "regression",
-                        "accuracy": accuracy if is_classification else None,
-                        "report": report if is_classification else None,
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
-                    }
-                else:
-                    return {
-                        "success": True,
-                        "model_type": "regression",
-                        "rmse": rmse,
-                        "r2": r2,
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
-                    }
+                # Add paths to result
+                result.update({
+                    "metrics": metrics_result["metrics"],
+                    "model_path": model_path,
+                    "feature_importance_path": importance_path,
+                    "metrics_path": metrics_result["metrics_path"]
+                })
+                
+                return result
                     
             except Exception as e:
                 print(f"Warning: Could not save model: {str(e)}")
-                return {
-                    "success": True,
-                    "model_type": "classification" if is_classification else "regression",
+                result.update({
                     "metrics": metrics_result["metrics"],
                     "metrics_path": metrics_result["metrics_path"],
                     "model_saved": False
-                }
+                })
+                return result
         
         except Exception as e:
             print(f"Error training XGBoost for {month_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {
                 "success": False,
                 "error": str(e)
