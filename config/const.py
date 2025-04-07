@@ -12,7 +12,7 @@ DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/important_features_randomized_search"
 IMPORTANT_FEATURES_OUTPUT_FOLDER = "data/output/important_features_decision_tree"
 XGBOOST_OUTPUT_FOLDER = "data/output/xgboost"
-XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost/randomized_search"
+XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 
 
 
