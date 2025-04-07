@@ -309,7 +309,6 @@ class TrainingPipeline:
                         if not dt_result.get("success", False):
                             print(f"Failed to train decision tree for {month_id}: {dt_result.get('error', 'Unknown error')}")
                             counters["failed_decision_tree"] += 1
-                            state["success"] = False  # We'll still continue to the next stage even if this fails
                         else:
                             print(f"Successfully trained decision tree for {month_id}")
                             counters["successful_decision_tree"] += 1
