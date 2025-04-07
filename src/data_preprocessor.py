@@ -2323,74 +2323,6 @@ class TrainingPipeline:
                 "error": str(e)
             }
 
-
-    def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None):
-        """
-        Extract key metrics from model evaluation and save them to a CSV file.
-        
-        Parameters:
-        -----------
-        y_test : array-like
-            True labels from the test dataset.
-        y_pred : array-like
-            Predicted labels from the model.
-        report : dict
-            Classification report dictionary from sklearn.
-        month_id : str
-            Month identifier in format "YYYY-YYYY_MM" for the filename.
-        output_dir : str, optional
-            Directory to save the metrics file. Defaults to decision_tree_dir.
-            
-        Returns:
-        --------
-        dict
-            Dictionary containing the metrics and the path to the saved metrics file.
-        """
-        # Create metrics dictionary
-        metrics = {}
-        
-        # Use decision_tree_dir as default if output_dir is None
-        if output_dir is None:
-            output_dir = self.decision_tree_dir
-        
-        # Basic accuracy
-        from sklearn.metrics import accuracy_score
-        metrics['accuracy'] = accuracy_score(y_test, y_pred)
-        
-        # Extract F1 scores from the classification report
-        metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
-        metrics['macro_avg_f1'] = report['macro avg']['f1-score']
-        
-        # For classification, also extract F1 scores for each class
-        for class_label in report:
-            if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
-                metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
-                
-                # Also store precision and recall for completeness
-                metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
-                metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
-        
-        # Print metrics
-        print("\nModel Metrics:")
-        for name, value in metrics.items():
-            print(f"{name}: {value:.4f}")
-        
-        # Save metrics to a file
-        metrics_filename = f"model_metrics_{month_id}.csv"
-        metrics_path = os.path.join(output_dir, metrics_filename)
-        
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
-        
-        # Save to CSV
-        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
-        print(f"Model metrics saved to {metrics_path}")
-        
-        return {
-            "metrics": metrics,
-            "metrics_path": metrics_path
-        }
-    
     def train_xgboost(self, month_id, params=None, random_state=42):
         """
         Train an XGBoost model (classifier or regressor) on the preprocessed and split month data.
@@ -2648,7 +2580,7 @@ class TrainingPipeline:
 
     def train_xgboost_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
-        Train an XGBoost classifier with hyperparameter tuning using manual CV instead of RandomizedSearchCV.
+        Train an XGBoost model (classifier or regressor) with hyperparameter tuning using manual CV.
         
         Parameters:
         -----------
@@ -2854,6 +2786,10 @@ class TrainingPipeline:
             
             xgb_model.fit(X_train, y_train)
             
+            # Create XGBoost RandomizedSearch output directory
+            xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+            os.makedirs(xgboost_rs_dir, exist_ok=True)
+            
             # Evaluate on test set
             if is_classification:
                 y_pred = xgb_model.predict(X_test)
@@ -2869,10 +2805,6 @@ class TrainingPipeline:
                 print("\nConfusion Matrix:")
                 print(conf_matrix)
                 
-                # Create XGBoost RandomizedSearch output directory
-                xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
-                os.makedirs(xgboost_rs_dir, exist_ok=True)
-                
                 # Extract and save metrics
                 metrics_result = self.extract_and_save_metrics(
                     y_test, y_pred, report, f"{month_id}_rs", 
@@ -2880,45 +2812,24 @@ class TrainingPipeline:
                 )
             else:
                 # Handle regression evaluation
-                from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-                
                 y_pred = xgb_model.predict(X_test)
                 
-                mse = mean_squared_error(y_test, y_pred)
-                rmse = np.sqrt(mse)
-                mae = mean_absolute_error(y_test, y_pred)
-                r2 = r2_score(y_test, y_pred)
+                # Use the regression metrics function
+                metrics_result = self.extract_and_save_regression_metrics(
+                    y_test, y_pred, f"{month_id}_rs", 
+                    output_dir=xgboost_rs_dir
+                )
+                
+                # Keep these lines for printing to console
+                mse = metrics_result["metrics"]["mse"]
+                rmse = metrics_result["metrics"]["rmse"]
+                mae = metrics_result["metrics"]["mae"]
+                r2 = metrics_result["metrics"]["r2"]
                 
                 print(f"\nXGBoost Regressor Results:")
                 print(f"RMSE: {rmse:.4f}")
                 print(f"MAE: {mae:.4f}")
                 print(f"R²: {r2:.4f}")
-                
-                # Create metrics dictionary for regression
-                metrics = {
-                    'mse': mse,
-                    'rmse': rmse,
-                    'mae': mae,
-                    'r2': r2
-                }
-                
-                # Create XGBoost RandomizedSearch output directory
-                xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
-                os.makedirs(xgboost_rs_dir, exist_ok=True)
-                
-                # Save regression metrics
-                metrics_filename = f"model_metrics_{month_id}_rs.csv"
-                metrics_path = os.path.join(xgboost_rs_dir, metrics_filename)
-                
-                # Save to CSV
-                pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
-                print(f"Model metrics saved to {metrics_path}")
-                
-                # Set metrics_result for consistent return
-                metrics_result = {
-                    "metrics": metrics,
-                    "metrics_path": metrics_path
-                }
             
             # Get feature importance
             feature_importance = pd.DataFrame({
@@ -2983,14 +2894,27 @@ class TrainingPipeline:
                     
             except Exception as e:
                 print(f"Warning: Could not save model: {str(e)}")
-                return {
-                    "success": True,
-                    "model_type": "classification" if is_classification else "regression",
-                    "metrics": metrics_result["metrics"],
-                    "metrics_path": metrics_result["metrics_path"],
-                    "model_saved": False,
-                    "best_params": best_params
-                }
+                if is_classification:
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy if 'accuracy' in locals() else None,
+                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
+                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
+                        "model_saved": False,
+                        "best_params": best_params
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "model_type": "regression",
+                        "rmse": rmse if 'rmse' in locals() else None,
+                        "r2": r2 if 'r2' in locals() else None,
+                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
+                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
+                        "model_saved": False,
+                        "best_params": best_params
+                    }
                 
         except Exception as e:
             import traceback
@@ -3001,3 +2925,135 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
+        
+
+    def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None):
+        """
+        Extract key metrics from model evaluation and save them to a CSV file.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True labels from the test dataset.
+        y_pred : array-like
+            Predicted labels from the model.
+        report : dict
+            Classification report dictionary from sklearn.
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        output_dir : str, optional
+            Directory to save the metrics file. Defaults to decision_tree_dir.
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing the metrics and the path to the saved metrics file.
+        """
+        # Create metrics dictionary
+        metrics = {}
+        
+        # Use decision_tree_dir as default if output_dir is None
+        if output_dir is None:
+            output_dir = self.decision_tree_dir
+        
+        # Basic accuracy
+        from sklearn.metrics import accuracy_score
+        metrics['accuracy'] = accuracy_score(y_test, y_pred)
+        
+        # Extract F1 scores from the classification report
+        metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
+        metrics['macro_avg_f1'] = report['macro avg']['f1-score']
+        
+        # For classification, also extract F1 scores for each class
+        for class_label in report:
+            if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
+                metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
+                
+                # Also store precision and recall for completeness
+                metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
+                metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
+        
+        # Print metrics
+        print("\nModel Metrics:")
+        for name, value in metrics.items():
+            print(f"{name}: {value:.4f}")
+        
+        # Save metrics to a file
+        metrics_filename = f"model_metrics_{month_id}.csv"
+        metrics_path = os.path.join(output_dir, metrics_filename)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        
+        # Save to CSV
+        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        print(f"Model metrics saved to {metrics_path}")
+        
+        return {
+            "metrics": metrics,
+            "metrics_path": metrics_path
+        }
+    
+    def extract_and_save_regression_metrics(self, y_test, y_pred, month_id, output_dir=None):
+        """
+        Extract key metrics from regression model evaluation and save them to a CSV file.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True target values from the test dataset.
+        y_pred : array-like
+            Predicted target values from the model.
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        output_dir : str, optional
+            Directory to save the metrics file. Defaults to xgboost_dir.
+                
+        Returns:
+        --------
+        dict
+            Dictionary containing the metrics and the path to the saved metrics file.
+        """
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        import pandas as pd
+        import os
+        
+        # Create metrics dictionary
+        metrics = {}
+        
+        # Use xgboost_dir as default if output_dir is None
+        if output_dir is None:
+            output_dir = self.xgboost_dir
+        
+        # Calculate regression metrics
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        # Store metrics
+        metrics['mse'] = mse
+        metrics['rmse'] = rmse
+        metrics['mae'] = mae
+        metrics['r2'] = r2
+        
+        # Print metrics
+        print("\nRegression Metrics:")
+        for name, value in metrics.items():
+            print(f"{name}: {value:.4f}")
+        
+        # Save metrics to a file
+        metrics_filename = f"model_metrics_{month_id}.csv"
+        metrics_path = os.path.join(output_dir, metrics_filename)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        
+        # Save to CSV
+        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        print(f"Model metrics saved to {metrics_path}")
+        
+        return {
+            "metrics": metrics,
+            "metrics_path": metrics_path
+        }
