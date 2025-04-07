@@ -14,6 +14,8 @@ IMPORTANT_FEATURES_OUTPUT_FOLDER = "data/output/important_features_decision_tree
 XGBOOST_OUTPUT_FOLDER = "data/output/xgboost"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 
+# Target feature to use for prediction
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  # Possible values: 'differenceInMinutes', 'trainDelayed', 'cancelled'
 
 
 # Model training parameters

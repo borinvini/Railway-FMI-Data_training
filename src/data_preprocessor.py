@@ -24,7 +24,8 @@ from config.const import (
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     IMPORTANCE_THRESHOLD,
     XGBOOST_OUTPUT_FOLDER,
-    XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER
+    XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    DEFAULT_TARGET_FEATURE
 )
 
 
@@ -45,6 +46,8 @@ class TrainingPipeline:
         self.xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
 
+        # Add this line to make the constant available as an instance attribute
+        self.DATA_FILE_PREFIX_FOR_TRAINING = DATA_FILE_PREFIX_FOR_TRAINING
 
         # Define important weather conditions to check
         self.important_conditions = [
@@ -57,7 +60,7 @@ class TrainingPipeline:
             'Horizontal visibility'
         ]
 
-    def run_pipeline_data_by_month(self, csv_files, target_feature='differenceInMinutes'):
+    def run_pipeline_data_by_month(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
         """
         Run the full processing pipeline on the provided CSV files, grouping by month across years.
         
@@ -70,12 +73,7 @@ class TrainingPipeline:
             List of CSV file paths to process.
         target_feature : str, optional
             The feature to keep (one of 'differenceInMinutes', 'trainDelayed', or 'cancelled').
-            Defaults to 'differenceInMinutes'.
-                
-        Returns:
-        --------
-        dict
-            A summary of the processing results.
+            Defaults to DEFAULT_TARGET_FEATURE from the constants.
         """
         if not csv_files:
             print("\nNo CSV files to process.")
