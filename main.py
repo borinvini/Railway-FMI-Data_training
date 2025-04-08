@@ -11,8 +11,10 @@ def main():
     """
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Process railway data and train models.')
-    parser.add_argument('--target', choices=['differenceInMinutes', 'trainDelayed', 'cancelled'], 
-                        default=DEFAULT_TARGET_FEATURE, help='Target feature to predict')
+    parser.add_argument('--target', 
+                    choices=['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes'], 
+                    default=DEFAULT_TARGET_FEATURE, 
+                    help='Target feature to predict')
     parser.add_argument('--feature-importance-threshold', type=float, default=IMPORTANCE_THRESHOLD,
                         help='Threshold for selecting important features')
     parser.add_argument('--skip-important-features', action='store_true',

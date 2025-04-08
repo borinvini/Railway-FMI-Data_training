@@ -15,8 +15,8 @@ XGBOOST_OUTPUT_FOLDER = "data/output/xgboost"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  # Possible values: 'differenceInMinutes', 'trainDelayed', 'cancelled'
-
+DEFAULT_TARGET_FEATURE = 'relative_differenceInMinutes'  
+# Possible values: 'differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled'
 
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.10

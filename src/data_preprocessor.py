@@ -13,6 +13,8 @@ from sklearn.metrics import classification_report, accuracy_score, confusion_mat
 from imblearn.combine import SMOTETomek
 from src.file_utils import generate_output_path
 from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import ParameterSampler, KFold, StratifiedKFold
+
 
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
@@ -885,7 +887,7 @@ class TrainingPipeline:
             return None
             
         # Check if target_feature is valid
-        valid_targets = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+        valid_targets = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
         if target_feature not in valid_targets:
             print(f"Error: target_feature must be one of {valid_targets}")
             return dataframe
@@ -1190,7 +1192,7 @@ class TrainingPipeline:
                 }
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
             target_column = None
             
             for option in target_options:
@@ -1510,7 +1512,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
             target_column = None
             
             for option in target_options:
@@ -1545,7 +1547,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column == 'differenceInMinutes':
+            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -1691,7 +1693,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
             target_column = None
             
             for option in target_options:
@@ -1725,7 +1727,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column == 'differenceInMinutes':
+            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -1918,7 +1920,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
             target_column = None
             
             for option in target_options:
@@ -1952,7 +1954,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column == 'differenceInMinutes':
+            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -2155,7 +2157,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
             target_column = None
             
             for option in target_options:
@@ -2189,7 +2191,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column == 'differenceInMinutes':
+            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -2432,7 +2434,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
             target_column = None
             
             for option in target_options:
@@ -2471,8 +2473,7 @@ class TrainingPipeline:
             os.makedirs(xgboost_dir, exist_ok=True)
             
             # Determine if it's a regression or classification problem
-            from config.const import DEFAULT_TARGET_FEATURE
-            is_regression = (target_column == DEFAULT_TARGET_FEATURE)
+            is_regression = (target_column in ['differenceInMinutes', 'relative_differenceInMinutes'])
             
             if is_regression:
                 # REGRESSION CASE
@@ -2698,7 +2699,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
             target_column = None
             
             for option in target_options:
@@ -2739,16 +2740,13 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column == 'differenceInMinutes':
+            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
                 print(f"Target '{target_column}' indicates a classification problem")
             
-            # --------- MANUAL HYPERPARAMETER TUNING APPROACH ---------
-            from sklearn.model_selection import ParameterSampler, KFold, StratifiedKFold
-            import numpy as np
-            
+            # --------- MANUAL HYPERPARAMETER TUNING APPROACH ---------            
             print(f"Starting manual hyperparameter tuning with {n_iter} iterations and {cv}-fold cross-validation...")
             
             # Generate parameter combinations
