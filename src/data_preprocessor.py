@@ -436,7 +436,7 @@ class TrainingPipeline:
     def preprocess_csv_file(self, input_file_path):
         """
         Preprocess a CSV file by extracting nested data from timeTableRows,
-        keeping only essential columns, and expanding weather conditions.
+        keeping only essential columns, adding relative_differenceInMinutes, and expanding weather conditions.
         
         Parameters:
         -----------
@@ -446,20 +446,24 @@ class TrainingPipeline:
         Returns:
         --------
         pandas.DataFrame
-            The processed DataFrame that was saved to the output file.
+            The processed DataFrame with calculated relative_differenceInMinutes.
         """
         try:
             # Load the dataframe from the input file path
-            # Note: We're still using generate_output_path to load the dataframe but won't save it
             _, df = generate_output_path(input_file_path)
             
+            # Dictionary to store stops by train
+            train_stops = {}
+            
             # Extract nested data from the "timeTableRows" column
-            cross_records = []
             for index, row in df.iterrows():
                 ttr = row.get("timeTableRows", None)
                 if ttr is None or pd.isnull(ttr):
                     continue  # Skip empty values
-                    
+                
+                # Get train identifier (use trainNumber if available, otherwise use row index)
+                train_id = row.get("trainNumber", f"train_{index}")
+                
                 # If the value is a string, attempt to convert it
                 if isinstance(ttr, str):
                     try:
@@ -471,17 +475,67 @@ class TrainingPipeline:
                         continue
                 else:
                     stops = ttr  # Assume it's already a Python object
-                    
+                
                 # Ensure stops is a list; if not, wrap it in a list
                 if not isinstance(stops, list):
                     stops = [stops]
-                    
+                
+                # Store stops with train_id
                 for stop in stops:
+                    # Add train_id to each stop record
+                    stop['train_id'] = train_id
+                    
+                    # If train_id not in dictionary, initialize with empty list
+                    if train_id not in train_stops:
+                        train_stops[train_id] = []
+                    
+                    # Add stop to the train's stops list
+                    train_stops[train_id].append(stop)
+            
+            print(f"Extracted stops for {len(train_stops)} different trains")
+            
+            # Process each train's stops to calculate relative_differenceInMinutes
+            cross_records = []
+            
+            for train_id, stops in train_stops.items():
+                # Try to sort stops by a timestamp field if available
+                if stops and any('scheduledTime' in stop for stop in stops):
+                    stops.sort(key=lambda x: x.get('scheduledTime', ''))
+                elif stops and any('actualTime' in stop for stop in stops):
+                    stops.sort(key=lambda x: x.get('actualTime', ''))
+                # Otherwise use order from the JSON (which might already be chronological)
+                
+                # Process stops in order
+                prev_diff = None
+                for i, stop in enumerate(stops):
+                    # For first stop, set relative_differenceInMinutes to 0
+                    if i == 0:
+                        stop['relative_differenceInMinutes'] = 0
+                    else:
+                        current_diff = stop.get('differenceInMinutes')
+                        
+                        # Check if valid values for calculation
+                        if (current_diff is None or pd.isnull(current_diff) or
+                            prev_diff is None or pd.isnull(prev_diff)):
+                            stop['relative_differenceInMinutes'] = 0  # Using 0 for invalid cases too
+                        else:
+                            # Calculate the difference between current and previous stop
+                            try:
+                                current_diff = float(current_diff)
+                                prev_diff = float(prev_diff)
+                                stop['relative_differenceInMinutes'] = current_diff - prev_diff
+                            except (ValueError, TypeError):
+                                stop['relative_differenceInMinutes'] = 0  # Using 0 for calculation errors
+                    
+                    # Update prev_diff for next iteration
+                    prev_diff = stop.get('differenceInMinutes')
+                    
+                    # Add to final records
                     cross_records.append(stop)
             
-            print(f"Extracted {len(cross_records)} records from timeTableRows")
+            print(f"Processed a total of {len(cross_records)} stops with relative_differenceInMinutes")
             
-            # Create a DataFrame from the extracted dictionaries
+            # Create DataFrame from processed records
             cross_df = pd.DataFrame(cross_records)
             
             # Rename 'weather_observations' to 'weather_conditions' if it exists
@@ -489,18 +543,17 @@ class TrainingPipeline:
                 cross_df = cross_df.rename(columns={"weather_observations": "weather_conditions"})
                 print("Renamed 'weather_observations' to 'weather_conditions'")
             
-            # Keep only the columns: "differenceInMinutes", "cancelled", and "weather_conditions"
-            expected_cols = ["differenceInMinutes", "cancelled", "weather_conditions"]
+            # Keep only the essential columns, including our new calculated column
+            expected_cols = ["differenceInMinutes", "relative_differenceInMinutes", "cancelled", "weather_conditions"]
             available_cols = [col for col in expected_cols if col in cross_df.columns]
             
-            if set(expected_cols).issubset(cross_df.columns):
-                cross_df = cross_df[expected_cols]
-                print(f"Kept only columns: {expected_cols}")
-            else:
-                print(f"Warning: Not all expected columns are available. Available columns:")
-                print(list(cross_df.columns))
-                print(f"Keeping available columns from expected list: {available_cols}")
+            if len(available_cols) > 0:
                 cross_df = cross_df[available_cols]
+                print(f"Kept only columns: {available_cols}")
+            else:
+                print(f"Warning: None of the expected columns are available. Available columns:")
+                print(list(cross_df.columns))
+                # Keep all columns if none of the expected ones are found
             
             # Expand the 'weather_conditions' dictionaries into separate columns
             if "weather_conditions" in cross_df.columns:
@@ -513,18 +566,21 @@ class TrainingPipeline:
                 cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
                 print("Expanded weather_conditions into separate columns")
             
-            # Reorder columns: differenceInMinutes, cancelled, then the expanded weather columns
-            base_cols = [col for col in ["differenceInMinutes", "cancelled"] if col in cross_df.columns]
+            # Reorder columns: differenceInMinutes, relative_differenceInMinutes, cancelled, then others
+            base_cols = [col for col in ["differenceInMinutes", "relative_differenceInMinutes", "cancelled"] 
+                        if col in cross_df.columns]
             other_cols = [col for col in cross_df.columns if col not in base_cols]
             cols_order = base_cols + other_cols
             cross_df = cross_df[cols_order]
             print("Reordered columns")
             
-            # Return the processed DataFrame without saving to file
+            # Return the processed DataFrame
             return cross_df
             
         except Exception as e:
             print(f"Error processing file {input_file_path}: {e}")
+            import traceback
+            traceback.print_exc()  # Print full traceback for debugging
             return None
         
     def handle_missing_values(self, dataframe=None):
