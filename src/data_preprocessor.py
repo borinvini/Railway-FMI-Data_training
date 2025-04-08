@@ -620,7 +620,7 @@ class TrainingPipeline:
         original_row_count = len(df)
         
         # Step 1: Check required columns (differenceInMinutes and cancelled)
-        required_cols = ["differenceInMinutes", "cancelled"]
+        required_cols = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
         available_required_cols = [col for col in required_cols if col in df.columns]
         
         if available_required_cols:
