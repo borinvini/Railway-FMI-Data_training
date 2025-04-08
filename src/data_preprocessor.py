@@ -778,8 +778,8 @@ class TrainingPipeline:
                 return df
             
             # Exclude differenceInMinutes from scaling if it exists
-            columns_to_scale = [col for col in all_numeric_columns if col != 'differenceInMinutes']
-            
+            columns_to_scale = [col for col in all_numeric_columns if col not in ['differenceInMinutes', 'relative_differenceInMinutes']]
+                
             # Report which columns will be scaled and which ones are excluded
             excluded_columns = set(all_numeric_columns) - set(columns_to_scale)
             print(f"Found {len(all_numeric_columns)} numeric columns.")
