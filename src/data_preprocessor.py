@@ -567,6 +567,11 @@ class TrainingPipeline:
                 # Join the expanded weather conditions back to the main DataFrame
                 cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
                 print("Expanded weather_conditions into separate columns")
+
+            # Fill NA values in commercialStop with False
+            if "commercialStop" in cross_df.columns:
+                cross_df["commercialStop"] = cross_df["commercialStop"].fillna(False)
+                print("Filled NA values in 'commercialStop' column with False")
             
             # Reorder columns: differenceInMinutes, relative_differenceInMinutes, cancelled, then others
             base_cols = [col for col in ["differenceInMinutes", "relative_differenceInMinutes", "cancelled"] 
