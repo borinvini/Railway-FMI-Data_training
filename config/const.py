@@ -18,6 +18,10 @@ XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search
 DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  
 # Possible values: 'differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled'
 
+# Boolean features that need to be converted to numeric
+NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
+
+
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.10
 

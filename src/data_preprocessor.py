@@ -19,7 +19,8 @@ from sklearn.model_selection import ParameterSampler, KFold, StratifiedKFold
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
     IMPORTANT_FEATURES_OUTPUT_FOLDER,
-    IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER, 
+    IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    NON_NUMERIC_FEATURES, 
     OUTPUT_FOLDER,
     PREPROCESSED_OUTPUT_FOLDER,
     DECISION_TREE_OUTPUT_FOLDER,
@@ -568,6 +569,12 @@ class TrainingPipeline:
                 cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
                 print("Expanded weather_conditions into separate columns")
             
+            for col in NON_NUMERIC_FEATURES:
+                if col in cross_df.columns:
+                    # Convert boolean values to integers (False -> 0, True -> 1)
+                    cross_df[col] = cross_df[col].astype(int)
+                    print(f"Converted {col} to numeric (0/1)")
+
             # Reorder columns: differenceInMinutes, relative_differenceInMinutes, cancelled, then others
             base_cols = [col for col in ["differenceInMinutes", "relative_differenceInMinutes", "cancelled"] 
                         if col in cross_df.columns]
@@ -620,18 +627,13 @@ class TrainingPipeline:
         # Count rows before cleaning
         original_row_count = len(df)
         
-        # Step 1: Handle boolean columns first to prevent them from being dropped
-        # Fill missing values in trainStopping and commercialStop with False
-        if 'trainStopping' in df.columns:
-            train_stopping_nulls = df['trainStopping'].isna().sum()
-            df['trainStopping'] = df['trainStopping'].fillna(False)
-            print(f"- Filled {train_stopping_nulls} missing values in 'trainStopping' with False")
-        
-        if 'commercialStop' in df.columns:
-            commercial_stop_nulls = df['commercialStop'].isna().sum()
-            df['commercialStop'] = df['commercialStop'].fillna(False)
-            print(f"- Filled {commercial_stop_nulls} missing values in 'commercialStop' with False")
-        
+        # Fill missing values in trainStopping and commercialStop with 0 (since they're now numeric)
+        for col in NON_NUMERIC_FEATURES:
+            if col in df.columns:
+                nulls = df[col].isna().sum()
+                df[col] = df[col].fillna(0)  # Fill with 0 instead of False since they're now numeric
+                print(f"- Filled {nulls} missing values in '{col}' with 0")
+
         # Step 2: Check required columns (differenceInMinutes and cancelled)
         required_cols = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
         available_required_cols = [col for col in required_cols if col in df.columns]
