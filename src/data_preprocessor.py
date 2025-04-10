@@ -567,11 +567,6 @@ class TrainingPipeline:
                 # Join the expanded weather conditions back to the main DataFrame
                 cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
                 print("Expanded weather_conditions into separate columns")
-
-            # Fill NA values in commercialStop with False
-            if "commercialStop" in cross_df.columns:
-                cross_df["commercialStop"] = cross_df["commercialStop"].fillna(False)
-                print("Filled NA values in 'commercialStop' column with False")
             
             # Reorder columns: differenceInMinutes, relative_differenceInMinutes, cancelled, then others
             base_cols = [col for col in ["differenceInMinutes", "relative_differenceInMinutes", "cancelled"] 
@@ -597,6 +592,7 @@ class TrainingPipeline:
         Processes the provided dataframe and handles missing values:
         - Drop rows where all weather condition columns have missing values
         - Drop rows where differenceInMinutes or cancelled are None
+        - Fill missing values in trainStopping and commercialStop with False
         - Keep track of how many rows were dropped
         
         Parameters:
@@ -624,7 +620,19 @@ class TrainingPipeline:
         # Count rows before cleaning
         original_row_count = len(df)
         
-        # Step 1: Check required columns (differenceInMinutes and cancelled)
+        # Step 1: Handle boolean columns first to prevent them from being dropped
+        # Fill missing values in trainStopping and commercialStop with False
+        if 'trainStopping' in df.columns:
+            train_stopping_nulls = df['trainStopping'].isna().sum()
+            df['trainStopping'] = df['trainStopping'].fillna(False)
+            print(f"- Filled {train_stopping_nulls} missing values in 'trainStopping' with False")
+        
+        if 'commercialStop' in df.columns:
+            commercial_stop_nulls = df['commercialStop'].isna().sum()
+            df['commercialStop'] = df['commercialStop'].fillna(False)
+            print(f"- Filled {commercial_stop_nulls} missing values in 'commercialStop' with False")
+        
+        # Step 2: Check required columns (differenceInMinutes and cancelled)
         required_cols = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
         available_required_cols = [col for col in required_cols if col in df.columns]
         
@@ -641,7 +649,7 @@ class TrainingPipeline:
             print("Warning: Required columns (differenceInMinutes, cancelled) not found in dataframe")
             dropped_required = 0
         
-        # Step 2: Handle weather condition columns
+        # Step 3: Handle weather condition columns
         # Filter the list to only include columns that actually exist in the dataframe
         available_important_cols = [col for col in self.important_conditions if col in df.columns]
         
@@ -683,6 +691,17 @@ class TrainingPipeline:
             null_count = len(df_cleaned) - non_null_count
             null_percentage = (null_count / len(df_cleaned) * 100) if len(df_cleaned) > 0 else 0
             print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
+        
+        # Additional statistics for trainStopping and commercialStop if they exist
+        boolean_cols = ['trainStopping', 'commercialStop']
+        available_boolean_cols = [col for col in boolean_cols if col in df_cleaned.columns]
+        
+        if available_boolean_cols:
+            print("\nBoolean columns statistics:")
+            for col in available_boolean_cols:
+                true_count = df_cleaned[col].sum()
+                true_percentage = (true_count / len(df_cleaned) * 100) if len(df_cleaned) > 0 else 0
+                print(f"  - {col}: {true_count} True values ({true_percentage:.2f}% True)")
         
         return df_cleaned
     
@@ -783,7 +802,9 @@ class TrainingPipeline:
                 return df
             
             # Exclude differenceInMinutes from scaling if it exists
-            columns_to_scale = [col for col in all_numeric_columns if col not in ['differenceInMinutes', 'relative_differenceInMinutes']]
+            columns_to_scale = [col for col in all_numeric_columns if col not in 
+                    ['differenceInMinutes', 'relative_differenceInMinutes', 
+                    'trainStopping', 'commercialStop']]
                 
             # Report which columns will be scaled and which ones are excluded
             excluded_columns = set(all_numeric_columns) - set(columns_to_scale)
