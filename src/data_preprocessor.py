@@ -546,7 +546,7 @@ class TrainingPipeline:
                 print("Renamed 'weather_observations' to 'weather_conditions'")
             
             # Keep only the essential columns, including our new calculated column
-            expected_cols = ["differenceInMinutes", "relative_differenceInMinutes", "cancelled", "weather_conditions"]
+            expected_cols = ["differenceInMinutes", "relative_differenceInMinutes", "cancelled", "weather_conditions", "trainStopping", "commercialStop"]
             available_cols = [col for col in expected_cols if col in cross_df.columns]
             
             if len(available_cols) > 0:
