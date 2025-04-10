@@ -571,6 +571,11 @@ class TrainingPipeline:
             
             for col in NON_NUMERIC_FEATURES:
                 if col in cross_df.columns:
+                    # Fill NaN values with 0 before converting to integer
+                    nulls = cross_df[col].isna().sum()
+                    if nulls > 0:
+                        print(f"Filling {nulls} NaN values in {col} with 0 before conversion")
+                    cross_df[col] = cross_df[col].fillna(0)
                     # Convert boolean values to integers (False -> 0, True -> 1)
                     cross_df[col] = cross_df[col].astype(int)
                     print(f"Converted {col} to numeric (0/1)")
