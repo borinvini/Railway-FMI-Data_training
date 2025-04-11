@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import re
 import ast
+from sklearn.impute import SimpleImputer
 import xgboost as xgb
 import numpy as np
 import psutil
@@ -14,7 +15,10 @@ from imblearn.combine import SMOTETomek
 from src.file_utils import generate_output_path
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.model_selection import ParameterSampler, KFold, StratifiedKFold
-
+from sklearn.linear_model import Lasso, Ridge
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+            
 
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
@@ -26,6 +30,7 @@ from config.const import (
     DECISION_TREE_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     IMPORTANCE_THRESHOLD,
+    REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     XGBOOST_OUTPUT_FOLDER,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE
@@ -48,6 +53,8 @@ class TrainingPipeline:
         self.important_features_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_OUTPUT_FOLDER)
         self.xgboost_dir = os.path.join(self.project_root, XGBOOST_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+        self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
+
 
         # Add this line to make the constant available as an instance attribute
         self.DATA_FILE_PREFIX_FOR_TRAINING = DATA_FILE_PREFIX_FOR_TRAINING
@@ -117,8 +124,11 @@ class TrainingPipeline:
             "successful_saves": 0,
             "successful_splits": 0,
             "successful_decision_tree": 0,
+            "successful_regularized_regression": 0,
             "failed_decision_tree": 0,
+            "failed_regularized_regression": 0,
             "failed_files": 0
+
         }
         
         # Process each month's data
@@ -179,6 +189,7 @@ class TrainingPipeline:
                 "select_target",
                 "save_csv",
                 "split_dataset",
+                "train_regularized_regression", 
                 "train_decision_tree",
                 "train_with_important_features",
                 "train_randomized_search_cv",
@@ -303,8 +314,41 @@ class TrainingPipeline:
                         else:
                             print(f"Successfully split dataset for {month_id}")
                             counters["successful_splits"] += 1
-                            state["current_stage"] = "train_decision_tree"
+                            state["current_stage"] = "train_regularized_regression"
                     
+                    case "train_regularized_regression":
+                        print(f"Checking for numeric target for regularized regression in {month_id}...")
+                        
+                        # We need to identify the target column from the dataframe
+                        df = state["df"]
+                        numeric_targets = ['differenceInMinutes', 'relative_differenceInMinutes']
+                        target_column = None
+                        
+                        # Find which numeric target exists in the dataframe (should be only one after select_target stage)
+                        for option in numeric_targets:
+                            if option in df.columns:
+                                target_column = option
+                                break
+                        
+                        is_numeric_target = target_column is not None
+                        
+                        if is_numeric_target:
+                            print(f"Found numeric target '{target_column}' for {month_id}")
+                            print(f"Training regularized regression for {month_id}...")
+                            reg_result = self.train_regularized_regression(month_id)
+                            
+                            if not reg_result.get("success", False):
+                                print(f"Failed to train regularized regression for {month_id}: {reg_result.get('error', 'Unknown error')}")
+                                counters["failed_regularized_regression"] += 1
+                            else:
+                                print(f"Successfully trained regularized regression for {month_id}")
+                                counters["successful_regularized_regression"] += 1
+                        else:
+                            print(f"Skipping regularized regression for {month_id} (non-numeric target)")
+                        
+                        # Move to the next stage regardless of success/failure
+                        state["current_stage"] = "train_decision_tree"
+
                     case "train_decision_tree":
                         print(f"Training decision tree model for {month_id}...")
                         dt_result = self.train_month_decision_tree(month_id)
@@ -418,12 +462,14 @@ class TrainingPipeline:
         print(f"Successfully selected target feature: {summary['successful_target_selection']}")
         print(f"Successfully saved to CSV: {summary['successful_saves']}")
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
+        print(f"Successfully trained regularized regression models: {summary.get('successful_regularized_regression', 0)}")
         print(f"Successfully trained decision tree models: {summary['successful_decision_tree']}")
         print(f"Successfully trained decision tree models with important features: {summary.get('successful_important_features', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
         print(f"Successfully trained with RandomizedSearchCV on important features: {summary.get('successful_combined_approach', 0)}")
         print(f"Successfully trained XGBoost models: {summary.get('successful_xgboost', 0)}")
         print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
+        print(f"Failed to train regularized regression models: {summary.get('failed_regularized_regression', 0)}")
         print(f"Failed to train decision tree models: {summary['failed_decision_tree']}")
         print(f"Failed to train decision tree models with important features: {summary.get('failed_important_features', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
@@ -3185,3 +3231,250 @@ class TrainingPipeline:
             "metrics": metrics,
             "metrics_path": metrics_path
         }
+    
+    def train_regularized_regression(self, month_id, alpha_lasso=0.1, alpha_ridge=1.0, random_state=42):
+        """
+        Train Lasso and Ridge regression models for feature importance analysis on numeric targets.
+        With missing value handling.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        alpha_lasso : float, optional
+            Regularization strength for Lasso regression. Defaults to 0.1.
+        alpha_ridge : float, optional
+            Regularization strength for Ridge regression. Defaults to 1.0.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics and coefficients.
+        """
+        try:
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column
+            target_options = ['differenceInMinutes', 'relative_differenceInMinutes']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print("No numeric target column found. Skipping regularized regression.")
+                return {
+                    "success": False,
+                    "error": "No numeric target column found"
+                }
+            
+            print(f"Identified numeric target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+            
+            # Drop non-numeric columns and the data_year column if they exist
+            non_numeric_cols = X_train.select_dtypes(exclude=['number']).columns.tolist()
+            if 'data_year' in X_train.columns:
+                non_numeric_cols.append('data_year')
+                
+            if non_numeric_cols:
+                print(f"Dropping non-numeric columns for linear regression: {non_numeric_cols}")
+                X_train = X_train.drop(columns=non_numeric_cols)
+                X_test = X_test.drop(columns=non_numeric_cols)
+            
+            # Check for missing values
+            train_missing = X_train.isna().sum().sum()
+            test_missing = X_test.isna().sum().sum()
+            
+            if train_missing > 0 or test_missing > 0:
+                print(f"Detected missing values: {train_missing} in training data, {test_missing} in test data")
+                print("Using median imputation to handle missing values")
+                
+                # Initialize imputer
+                imputer = SimpleImputer(strategy='median')
+                
+                # Fit and transform data
+                X_train_imputed = imputer.fit_transform(X_train)
+                X_test_imputed = imputer.transform(X_test)
+                
+                # Convert back to DataFrame to keep column names
+                X_train = pd.DataFrame(X_train_imputed, columns=X_train.columns)
+                X_test = pd.DataFrame(X_test_imputed, columns=X_test.columns)
+            
+            # Store feature names for later use
+            feature_names = X_train.columns.tolist()
+            
+            # Create output directory
+            reg_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
+            os.makedirs(reg_regression_dir, exist_ok=True)
+            
+            results = {
+                "success": True,
+                "target_column": target_column,
+                "models": {}
+            }
+            
+            # Train Lasso Regression
+            print(f"\nTraining Lasso Regression (alpha={alpha_lasso})...")
+            lasso_model = Lasso(alpha=alpha_lasso, random_state=random_state)
+            lasso_model.fit(X_train, y_train)
+            
+            # Make predictions
+            y_pred_lasso = lasso_model.predict(X_test)
+            
+            # Calculate metrics
+            lasso_mse = mean_squared_error(y_test, y_pred_lasso)
+            lasso_rmse = np.sqrt(lasso_mse)
+            lasso_mae = mean_absolute_error(y_test, y_pred_lasso)
+            lasso_r2 = r2_score(y_test, y_pred_lasso)
+            
+            print(f"Lasso Regression Results:")
+            print(f"RMSE: {lasso_rmse:.4f}")
+            print(f"MAE: {lasso_mae:.4f}")
+            print(f"R²: {lasso_r2:.4f}")
+            
+            # Get coefficients and their importance
+            lasso_coefs = pd.DataFrame({
+                'Feature': feature_names,
+                'Coefficient': lasso_model.coef_,
+                'Abs_Coefficient': np.abs(lasso_model.coef_)
+            }).sort_values(by='Abs_Coefficient', ascending=False)
+            
+            # Count non-zero coefficients
+            non_zero_coefs = np.sum(lasso_model.coef_ != 0)
+            print(f"Number of features selected by Lasso: {non_zero_coefs} out of {len(feature_names)}")
+            
+            # Save Lasso results
+            lasso_coefs_file = os.path.join(reg_regression_dir, f"lasso_coefficients_{month_id}.csv")
+            lasso_coefs.to_csv(lasso_coefs_file, index=False)
+            
+            lasso_metrics = {
+                'mse': lasso_mse,
+                'rmse': lasso_rmse,
+                'mae': lasso_mae,
+                'r2': lasso_r2,
+                'non_zero_features': non_zero_coefs
+            }
+            
+            lasso_metrics_file = os.path.join(reg_regression_dir, f"lasso_metrics_{month_id}.csv")
+            pd.DataFrame([lasso_metrics]).to_csv(lasso_metrics_file, index=False)
+            
+            # Add to results
+            results["models"]["lasso"] = {
+                "metrics": lasso_metrics,
+                "coefficients_path": lasso_coefs_file,
+                "metrics_path": lasso_metrics_file
+            }
+            
+            # Train Ridge Regression
+            print(f"\nTraining Ridge Regression (alpha={alpha_ridge})...")
+            ridge_model = Ridge(alpha=alpha_ridge, random_state=random_state)
+            ridge_model.fit(X_train, y_train)
+            
+            # Make predictions
+            y_pred_ridge = ridge_model.predict(X_test)
+            
+            # Calculate metrics
+            ridge_mse = mean_squared_error(y_test, y_pred_ridge)
+            ridge_rmse = np.sqrt(ridge_mse)
+            ridge_mae = mean_absolute_error(y_test, y_pred_ridge)
+            ridge_r2 = r2_score(y_test, y_pred_ridge)
+            
+            print(f"Ridge Regression Results:")
+            print(f"RMSE: {ridge_rmse:.4f}")
+            print(f"MAE: {ridge_mae:.4f}")
+            print(f"R²: {ridge_r2:.4f}")
+            
+            # Get coefficients and their importance
+            ridge_coefs = pd.DataFrame({
+                'Feature': feature_names,
+                'Coefficient': ridge_model.coef_,
+                'Abs_Coefficient': np.abs(ridge_model.coef_)
+            }).sort_values(by='Abs_Coefficient', ascending=False)
+            
+            # Save Ridge results
+            ridge_coefs_file = os.path.join(reg_regression_dir, f"ridge_coefficients_{month_id}.csv")
+            ridge_coefs.to_csv(ridge_coefs_file, index=False)
+            
+            ridge_metrics = {
+                'mse': ridge_mse,
+                'rmse': ridge_rmse,
+                'mae': ridge_mae,
+                'r2': ridge_r2,
+            }
+            
+            ridge_metrics_file = os.path.join(reg_regression_dir, f"ridge_metrics_{month_id}.csv")
+            pd.DataFrame([ridge_metrics]).to_csv(ridge_metrics_file, index=False)
+            
+            # Add to results
+            results["models"]["ridge"] = {
+                "metrics": ridge_metrics,
+                "coefficients_path": ridge_coefs_file,
+                "metrics_path": ridge_metrics_file
+            }
+            
+            # Save comparison of top features from both models
+            print("\nTop 10 Features by Importance:")
+            print("\nLasso Top Features:")
+            print(lasso_coefs[lasso_coefs['Coefficient'] != 0].head(10))
+            
+            print("\nRidge Top Features:")
+            print(ridge_coefs.head(10))
+            
+            # Save the models
+            try:
+                import joblib
+                lasso_model_file = os.path.join(reg_regression_dir, f"lasso_model_{month_id}.joblib")
+                ridge_model_file = os.path.join(reg_regression_dir, f"ridge_model_{month_id}.joblib")
+                
+                joblib.dump(lasso_model, lasso_model_file)
+                joblib.dump(ridge_model, ridge_model_file)
+                
+                # Add model paths to results
+                results["models"]["lasso"]["model_path"] = lasso_model_file
+                results["models"]["ridge"]["model_path"] = ridge_model_file
+                
+                print(f"Models saved to {reg_regression_dir}")
+            except Exception as e:
+                print(f"Warning: Could not save models: {str(e)}")
+            
+            return results
+            
+        except Exception as e:
+            print(f"Error training regularized regression for {month_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }

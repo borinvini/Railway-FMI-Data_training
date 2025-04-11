@@ -13,6 +13,7 @@ IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/important_feat
 IMPORTANT_FEATURES_OUTPUT_FOLDER = "data/output/important_features_decision_tree"
 XGBOOST_OUTPUT_FOLDER = "data/output/xgboost"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
+REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
 # Target feature to use for prediction
 DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  
