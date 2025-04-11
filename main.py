@@ -26,7 +26,7 @@ def main():
     
     # Check for CSV files
     csv_files = check_csv_files()
-    
+            
     # Extract date range from filenames
     date_range = extract_date_range(csv_files)
     
