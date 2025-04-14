@@ -2926,6 +2926,7 @@ class TrainingPipeline:
     def train_xgboost_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train an XGBoost model (classifier or regressor) with hyperparameter tuning using manual CV.
+        Supports sample weights based on delay magnitude for classification tasks.
         
         Parameters:
         -----------
@@ -3034,8 +3035,40 @@ class TrainingPipeline:
             else:
                 print(f"Target '{target_column}' indicates a classification problem")
             
+            # Create sample weights for classification if delay info is available
+            sample_weights = None
+            if is_classification and 'differenceInMinutes' in train_df.columns:
+                print("Using weighted samples based on delay magnitude for randomized search")
+                # Create sample weights based on delay magnitude
+                delay_col = 'differenceInMinutes'
+                sample_weights = np.ones(len(y_train))
+                
+                # Get delay values for each training sample
+                delays = train_df[delay_col].values
+                
+                # Apply weights - higher delays get higher weights
+                # For delayed trains, weight proportional to delay amount
+                delayed_idx = (delays > 0)
+                if np.any(delayed_idx):
+                    # Normalize delay values by mean positive delay, using more moderate weights
+                    mean_delay = delays[delayed_idx].mean()
+                    # Cap weights at 5 instead of 10 for more stability
+                    sample_weights[delayed_idx] = np.minimum(5, 1 + delays[delayed_idx]/mean_delay)
+                
+                print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
             # --------- MANUAL HYPERPARAMETER TUNING APPROACH ---------            
             print(f"Starting manual hyperparameter tuning with {n_iter} iterations and {cv}-fold cross-validation...")
+
+            # Define custom objective function for regression if needed
+            def stable_weighted_mse(y_pred, dtrain):
+                y_true = dtrain.get_label()
+                # More moderate weighting approach with capped weights
+                weights = np.minimum(3.0, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
+                # More stable gradient calculation
+                grad = weights * (y_pred - y_true)
+                hess = weights
+                return grad, hess
             
             # Generate parameter combinations
             param_list = list(ParameterSampler(param_distributions, n_iter=n_iter, random_state=random_state))
@@ -3048,85 +3081,190 @@ class TrainingPipeline:
             
             best_score = float('-inf')
             best_params = None
+            best_method = None  # To track if custom objective was best
             
             # Memory tracking
             process = psutil.Process()
             before_mem = process.memory_info().rss / 1024 / 1024
             print(f"Memory usage before training: {before_mem:.2f} MB")
             
-            # Try each parameter combination
+            # Define methods to try based on problem type
+            methods_to_try = []
+            
+            if is_classification:
+                # For classification, just use standard method, possibly with sample weights
+                methods_to_try = [{"name": "standard", "obj": None}]
+            else:
+                # For regression, try both standard and custom objective
+                methods_to_try = [
+                    {"name": "standard", "obj": None},
+                    {"name": "weighted", "obj": stable_weighted_mse}
+                ]
+                print(f"For regression, will try {len(methods_to_try)} different objective approaches")
+            
+            # Try each parameter combination and each method
+            overall_best_score = float('-inf')
+            
             for i, params in enumerate(param_list):
-                print(f"Testing parameter combination {i+1}/{len(param_list)}")
-                
-                # Make a copy of params to modify
-                current_params = params.copy()
-                
-                # Set the objective based on problem type
-                if is_classification:
-                    if target_column == 'trainDelayed':  # Binary classification
-                        current_params['objective'] = 'binary:logistic'
-                    else:  # Multi-class
-                        current_params['objective'] = 'multi:softprob'
-                        current_params['num_class'] = len(np.unique(y_train))
-                else:
-                    current_params['objective'] = 'reg:squarederror'
-                
-                # Add random_state for reproducibility
-                current_params['random_state'] = random_state
-                
-                # Perform cross-validation
-                cv_scores = []
-                for train_idx, val_idx in cv_splitter.split(X_train, y_train if is_classification else np.zeros(len(y_train))):
-                    # Get train and validation sets for this fold
-                    X_fold_train = X_train.iloc[train_idx]
-                    y_fold_train = y_train.iloc[train_idx]
-                    X_fold_val = X_train.iloc[val_idx]
-                    y_fold_val = y_train.iloc[val_idx]
+                for method in methods_to_try:
+                    method_name = method["name"]
+                    obj_function = method["obj"]
                     
-                    # Initialize and train model
+                    print(f"Testing parameter combination {i+1}/{len(param_list)} with method '{method_name}'")
+                    
+                    # Make a copy of params to modify
+                    current_params = params.copy()
+                    
+                    # Set the objective based on problem type
                     if is_classification:
-                        model = xgb.XGBClassifier(**current_params)
+                        if target_column == 'trainDelayed':  # Binary classification
+                            current_params['objective'] = 'binary:logistic'
+                        else:  # Multi-class
+                            current_params['objective'] = 'multi:softprob'
+                            current_params['num_class'] = len(np.unique(y_train))
                     else:
-                        model = xgb.XGBRegressor(**current_params)
+                        # For regression, only set objective if not using custom objective
+                        if obj_function is None:
+                            current_params['objective'] = 'reg:squarederror'
                     
-                    model.fit(X_fold_train, y_fold_train)
+                    # Add random_state for reproducibility
+                    current_params['random_state'] = random_state
                     
-                    # Evaluate model
-                    y_pred = model.predict(X_fold_val)
+                    # Perform cross-validation
+                    cv_scores = []
+                    for train_idx, val_idx in cv_splitter.split(X_train, y_train if is_classification else np.zeros(len(y_train))):
+                        # Get train and validation sets for this fold
+                        X_fold_train = X_train.iloc[train_idx]
+                        y_fold_train = y_train.iloc[train_idx]
+                        X_fold_val = X_train.iloc[val_idx]
+                        y_fold_val = y_train.iloc[val_idx]
+                        
+                        # Get fold-specific sample weights if weights are being used
+                        fold_sample_weights = None
+                        if sample_weights is not None:
+                            fold_sample_weights = sample_weights[train_idx]
+                        
+                        # Use different approaches based on problem type and method
+                        if is_classification:
+                            # For classification, use XGBClassifier
+                            model = xgb.XGBClassifier(**current_params)
+                            
+                            # Fit model with sample weights if available
+                            if fold_sample_weights is not None:
+                                model.fit(X_fold_train, y_fold_train, sample_weight=fold_sample_weights)
+                            else:
+                                model.fit(X_fold_train, y_fold_train)
+                                
+                            # Predict
+                            y_pred = model.predict(X_fold_val)
+                            
+                            # Evaluate
+                            from sklearn.metrics import accuracy_score
+                            score = accuracy_score(y_fold_val, y_pred)
+                            
+                        else:
+                            # For regression with custom objective, use lower-level API
+                            if obj_function is not None:
+                                # Create DMatrix objects
+                                dtrain = xgb.DMatrix(X_fold_train, label=y_fold_train)
+                                dval = xgb.DMatrix(X_fold_val, label=y_fold_val)
+                                
+                                # Set up parameters for training
+                                xgb_params = {
+                                    'max_depth': current_params.get('max_depth', 6),
+                                    'eta': current_params.get('learning_rate', 0.1),
+                                    'subsample': current_params.get('subsample', 0.8),
+                                    'colsample_bytree': current_params.get('colsample_bytree', 0.8),
+                                    'seed': random_state,
+                                    'alpha': 0.5,  # L1 regularization
+                                    'lambda': 1.0,  # L2 regularization
+                                }
+                                # Note: 'silent' parameter has been removed as it's deprecated
+                                
+                                # Train the model with custom objective
+                                model = xgb.train(
+                                    xgb_params,
+                                    dtrain,
+                                    num_boost_round=current_params.get('n_estimators', 100),
+                                    obj=obj_function
+                                )
+                                
+                                # Predict
+                                y_pred = model.predict(dval)
+                                
+                            else:
+                                # Standard regression using XGBRegressor
+                                model = xgb.XGBRegressor(**current_params)
+                                model.fit(X_fold_train, y_fold_train)
+                                y_pred = model.predict(X_fold_val)
+                            
+                            # Evaluate regression performance
+                            from sklearn.metrics import mean_squared_error
+                            score = -mean_squared_error(y_fold_val, y_pred)  # Negative for higher=better
+                        
+                        cv_scores.append(score)
                     
-                    # Calculate score based on problem type
-                    if is_classification:
-                        from sklearn.metrics import accuracy_score
-                        score = accuracy_score(y_fold_val, y_pred)
-                    else:
-                        from sklearn.metrics import mean_squared_error
-                        score = -mean_squared_error(y_fold_val, y_pred)  # Negative for higher=better
+                    # Calculate average score across folds
+                    avg_score = np.mean(cv_scores)
+                    print(f"  Method '{method_name}' - Average CV score: {avg_score:.4f}")
                     
-                    cv_scores.append(score)
-                
-                # Calculate average score across folds
-                avg_score = np.mean(cv_scores)
-                print(f"  Average CV score: {avg_score:.4f}")
-                
-                # Update best if better
-                if avg_score > best_score:
-                    best_score = avg_score
-                    best_params = current_params.copy()
-                    print(f"  New best score: {best_score:.4f}")
+                    # Update best if better
+                    if avg_score > overall_best_score:
+                        overall_best_score = avg_score
+                        best_score = avg_score
+                        best_params = current_params.copy()
+                        best_method = method_name
+                        print(f"  New best score: {best_score:.4f} with method '{best_method}'")
             
             after_mem = process.memory_info().rss / 1024 / 1024
             print(f"Memory usage after training: {after_mem:.2f} MB (Δ: {after_mem - before_mem:.2f} MB)")
             
             print(f"Best Hyperparameters: {best_params}")
+            print(f"Best Method: {best_method}")
             print(f"Best CV Score: {best_score:.4f}")
             
             # Train final model with best parameters
             if is_classification:
                 xgb_model = xgb.XGBClassifier(**best_params)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    xgb_model.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    xgb_model.fit(X_train, y_train)
+                    
             else:
-                xgb_model = xgb.XGBRegressor(**best_params)
-            
-            xgb_model.fit(X_train, y_train)
+                # For regression, check if best method uses custom objective
+                if best_method == "weighted":
+                    print("Training final model with custom weighted objective function")
+                    # Create DMatrix objects
+                    dtrain = xgb.DMatrix(X_train, label=y_train)
+                    dtest = xgb.DMatrix(X_test, label=y_test)
+                    
+                    # Set up parameters for training
+                    xgb_params = {
+                        'max_depth': best_params.get('max_depth', 6),
+                        'eta': best_params.get('learning_rate', 0.1),
+                        'subsample': best_params.get('subsample', 0.8),
+                        'colsample_bytree': best_params.get('colsample_bytree', 0.8),
+                        'seed': random_state,
+                        'alpha': 0.5,  # L1 regularization
+                        'lambda': 1.0,  # L2 regularization
+                    }
+                    # Note: 'silent' parameter has been removed as it's deprecated
+                    
+                    # Train the model with custom objective
+                    xgb_model = xgb.train(
+                        xgb_params,
+                        dtrain,
+                        num_boost_round=best_params.get('n_estimators', 100),
+                        obj=stable_weighted_mse
+                    )
+                else:
+                    print("Training final model with standard objective")
+                    xgb_model = xgb.XGBRegressor(**best_params)
+                    xgb_model.fit(X_train, y_train)
             
             # Create XGBoost RandomizedSearch output directory
             xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
@@ -3153,8 +3291,14 @@ class TrainingPipeline:
                     output_dir=xgboost_rs_dir
                 )
             else:
-                # Handle regression evaluation
-                y_pred = xgb_model.predict(X_test)
+                # Handle regression evaluation - check if using booster or regressor
+                if best_method == "weighted" and hasattr(xgb_model, 'predict'):
+                    # If using booster with custom objective (has predict method)
+                    dtest = xgb.DMatrix(X_test)
+                    y_pred = xgb_model.predict(dtest)
+                else:
+                    # Standard XGBRegressor
+                    y_pred = xgb_model.predict(X_test)
                 
                 # Use the regression metrics function
                 metrics_result = self.extract_and_save_regression_metrics(
@@ -3174,10 +3318,23 @@ class TrainingPipeline:
                 print(f"R²: {r2:.4f}")
             
             # Get feature importance
-            feature_importance = pd.DataFrame({
-                'Feature': X_train.columns,
-                'Importance': xgb_model.feature_importances_
-            }).sort_values(by='Importance', ascending=False)
+            if best_method == "weighted" and hasattr(xgb_model, 'get_score'):
+                # For booster with custom objective
+                importance_scores = xgb_model.get_score(importance_type='gain')
+                # Normalize the importance scores
+                total_importance = sum(importance_scores.values())
+                normalized_scores = {k: v/total_importance for k, v in importance_scores.items()}
+                
+                feature_importance = pd.DataFrame({
+                    'Feature': normalized_scores.keys(),
+                    'Importance': normalized_scores.values()
+                }).sort_values(by='Importance', ascending=False)
+            else:
+                # For standard XGBClassifier/XGBRegressor
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': xgb_model.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
             
             print("\nFeature Importance (top 10):")
             print(feature_importance.head(10))
@@ -3209,6 +3366,16 @@ class TrainingPipeline:
                         f.write(f"{param}: {value}\n")
                 print(f"Best parameters saved to {params_path}")
                 
+                # If sample weights were used, save their distribution
+                if sample_weights is not None:
+                    weights_df = pd.DataFrame({
+                        'weight': sample_weights
+                    })
+                    weights_filename = f"sample_weights_distribution_{month_id}.csv"
+                    weights_path = os.path.join(xgboost_rs_dir, weights_filename)
+                    weights_df.describe().to_csv(weights_path)
+                    print(f"Weight distribution saved to {weights_path}")
+                
                 if is_classification:
                     return {
                         "success": True,
@@ -3216,10 +3383,12 @@ class TrainingPipeline:
                         "accuracy": accuracy,
                         "report": report,
                         "best_params": best_params,
+                        "best_method": best_method,
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
+                        "metrics_path": metrics_result["metrics_path"],
+                        "used_sample_weights": sample_weights is not None
                     }
                 else:
                     return {
@@ -3228,6 +3397,8 @@ class TrainingPipeline:
                         "rmse": rmse,
                         "r2": r2,
                         "best_params": best_params,
+                        "best_method": best_method,
+                        "custom_objective": best_method == "weighted",
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
@@ -3244,7 +3415,9 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
                         "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
                         "model_saved": False,
-                        "best_params": best_params
+                        "best_params": best_params,
+                        "best_method": best_method,
+                        "used_sample_weights": sample_weights is not None
                     }
                 else:
                     return {
@@ -3255,7 +3428,9 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
                         "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
                         "model_saved": False,
-                        "best_params": best_params
+                        "best_params": best_params,
+                        "best_method": best_method,
+                        "custom_objective": best_method == "weighted"
                     }
                 
         except Exception as e:
