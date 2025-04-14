@@ -24,7 +24,7 @@ NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 
 
 # Model training parameters
-IMPORTANCE_THRESHOLD = 0.10
+IMPORTANCE_THRESHOLD = 0.05
 
 
 # Parameter distributions for RandomizedSearchCV

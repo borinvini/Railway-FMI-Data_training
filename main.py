@@ -67,7 +67,7 @@ def main():
                     month_id, 
                     importance_threshold=args.feature_importance_threshold
                 )
-                
+                   
                 if result.get("success", False):
                     print(f"Successfully trained decision tree with important feature-s for {month_id}")
                     print(f"Selected {len(result.get('important_features', []))} important features")
