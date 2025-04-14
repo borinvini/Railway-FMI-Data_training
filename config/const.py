@@ -25,6 +25,8 @@ NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.05
+# Number of top features to select for XGBoost important features
+TOP_FEATURES_COUNT = 5
 
 
 # Parameter distributions for RandomizedSearchCV
