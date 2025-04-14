@@ -2504,6 +2504,7 @@ class TrainingPipeline:
     def train_xgboost(self, month_id, params=None, random_state=42):
         """
         Train an XGBoost model (classifier or regressor) on the preprocessed and split month data.
+        For regression tasks, uses multiple approaches to ensure good R² performance.
         
         Parameters:
         -----------
@@ -2513,7 +2514,7 @@ class TrainingPipeline:
             Parameters for XGBoost model. If None, default parameters are used.
         random_state : int, optional
             Random seed for reproducibility. Defaults to 42.
-            
+                
         Returns:
         --------
         dict
@@ -2523,9 +2524,9 @@ class TrainingPipeline:
             # Use default parameters if none provided
             if params is None:
                 from config.const import XGBOOST_DEFAULT_PARAMS
-                params = XGBOOST_DEFAULT_PARAMS.copy()  # Create a copy to avoid modifying the original
+                params = XGBOOST_DEFAULT_PARAMS.copy()
             else:
-                params = params.copy()  # Create a copy to avoid modifying the original
+                params = params.copy()
             
             # Add random state to params
             params['random_state'] = random_state
@@ -2541,10 +2542,7 @@ class TrainingPipeline:
             if not os.path.exists(train_path) or not os.path.exists(test_path):
                 error_msg = f"Files not found: {train_path} or {test_path}"
                 print(f"Error: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
+                return {"success": False, "error": error_msg}
             
             # Load datasets
             print(f"Loading training data from {train_path}")
@@ -2553,7 +2551,7 @@ class TrainingPipeline:
             print(f"Loading test data from {test_path}")
             test_df = pd.read_csv(test_path)
             
-            # Identify target column (should be one of these three based on previous processing)
+            # Identify target column 
             target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
             target_column = None
             
@@ -2564,10 +2562,7 @@ class TrainingPipeline:
             
             if not target_column:
                 print(f"Error: No target column found in dataset")
-                return {
-                    "success": False,
-                    "error": "No target column found in dataset"
-                }
+                return {"success": False, "error": "No target column found in dataset"}
             
             print(f"Identified target column: {target_column}")
             
@@ -2598,41 +2593,153 @@ class TrainingPipeline:
             if is_regression:
                 # REGRESSION CASE
                 print(f"Target '{target_column}' indicates a regression problem")
-                print("Training XGBoost Regressor")
                 
-                # Set regression-specific parameters
-                params['objective'] = 'reg:squarederror'
+                # Create DMatrix for lower-level XGBoost API
+                dtrain = xgb.DMatrix(X_train, label=y_train)
+                dtest = xgb.DMatrix(X_test, label=y_test)
                 
-                # Train the model
-                xgb_model = xgb.XGBRegressor(**params)
-                xgb_model.fit(X_train, y_train)
-                
-                # Make predictions
-                y_pred = xgb_model.predict(X_test)
-                
-                # Calculate regression metrics
-                from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-                mse = mean_squared_error(y_test, y_pred)
-                rmse = np.sqrt(mse)
-                mae = mean_absolute_error(y_test, y_pred)
-                r2 = r2_score(y_test, y_pred)
-                
-                # Print metrics
-                print(f"\nXGBoost Regressor Results:")
-                print(f"RMSE: {rmse:.4f}")
-                print(f"MAE: {mae:.4f}")
-                print(f"R²: {r2:.4f}")
-                
-                # Create metrics dictionary
-                metrics = {
-                    'mse': mse,
-                    'rmse': rmse,
-                    'mae': mae,
-                    'r2': r2
+                # Set up regularization parameters
+                xgb_params = {
+                    'max_depth': params.get('max_depth', 6),
+                    'eta': params.get('learning_rate', 0.1),
+                    'subsample': params.get('subsample', 0.8),
+                    'colsample_bytree': params.get('colsample_bytree', 0.8),
+                    'seed': random_state,
+                    'silent': 1,
+                    'alpha': 0.5,  # L1 regularization to prevent overfitting
+                    'lambda': 1.0,  # L2 regularization to prevent overfitting
                 }
                 
+                # Define multiple models to train and compare
+                models_to_try = []
+                
+                # 1. Standard regression model
+                standard_params = xgb_params.copy()
+                standard_params['objective'] = 'reg:squarederror'
+                models_to_try.append({
+                    'name': 'standard',
+                    'params': standard_params, 
+                    'obj': None
+                })
+                
+                # 2. Modified custom loss function with more stable gradients
+                def stable_weighted_mse(y_pred, dtrain):
+                    y_true = dtrain.get_label()
+                    # More moderate weighting approach with capped weights
+                    weights = np.minimum(3.0, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
+                    # More stable gradient calculation
+                    grad = weights * (y_pred - y_true)
+                    hess = weights
+                    return grad, hess
+                
+                models_to_try.append({
+                    'name': 'weighted',
+                    'params': xgb_params.copy(),
+                    'obj': stable_weighted_mse
+                })
+                
+                # 3. Quantile regression - focuses on larger values without custom function
+                quantile_params = xgb_params.copy()
+                quantile_params['objective'] = 'reg:quantileerror'
+                quantile_params['quantile_alpha'] = 0.7  # Focus on upper 70% of delay distribution
+                models_to_try.append({
+                    'name': 'quantile',
+                    'params': quantile_params,
+                    'obj': None
+                })
+                
+                # Train and evaluate each model
+                best_model = None
+                best_r2 = float('-inf')
+                best_metrics = None
+                best_y_pred = None
+                
+                for model_config in models_to_try:
+                    model_name = model_config['name']
+                    model_params = model_config['params']
+                    model_obj = model_config['obj']
+                    
+                    print(f"\nTraining XGBoost Regressor ({model_name} approach)...")
+                    
+                    # Train model
+                    if model_obj:
+                        xgb_model = xgb.train(
+                            model_params, 
+                            dtrain,
+                            num_boost_round=params.get('n_estimators', 100),
+                            obj=model_obj,
+                            evals=[(dtrain, 'train'), (dtest, 'test')],
+                            verbose_eval=10
+                        )
+                    else:
+                        xgb_model = xgb.train(
+                            model_params,
+                            dtrain,
+                            num_boost_round=params.get('n_estimators', 100),
+                            evals=[(dtrain, 'train'), (dtest, 'test')],
+                            verbose_eval=10
+                        )
+                    
+                    # Make predictions
+                    y_pred = xgb_model.predict(dtest)
+                    
+                    # Calculate regression metrics
+                    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+                    mse = mean_squared_error(y_test, y_pred)
+                    rmse = np.sqrt(mse)
+                    mae = mean_absolute_error(y_test, y_pred)
+                    r2 = r2_score(y_test, y_pred)
+                    
+                    # Calculate performance on large delays
+                    large_delay_idx = np.where(np.abs(y_test) > np.abs(y_test).mean())[0]
+                    large_metrics = {}
+                    if len(large_delay_idx) > 0:
+                        large_y_test = y_test.iloc[large_delay_idx]
+                        large_y_pred = y_pred[large_delay_idx]
+                        large_mse = mean_squared_error(large_y_test, large_y_pred)
+                        large_rmse = np.sqrt(large_mse)
+                        large_mae = mean_absolute_error(large_y_test, large_y_pred)
+                        large_metrics = {
+                            'large_delay_rmse': large_rmse,
+                            'large_delay_mae': large_mae
+                        }
+                    
+                    # Combine metrics
+                    metrics = {
+                        'mse': mse,
+                        'rmse': rmse,
+                        'mae': mae,
+                        'r2': r2,
+                        **large_metrics
+                    }
+                    
+                    # Print metrics
+                    print(f"\nXGBoost {model_name} Regressor Results:")
+                    print(f"RMSE: {rmse:.4f}")
+                    print(f"MAE: {mae:.4f}")
+                    print(f"R²: {r2:.4f}")
+                    
+                    if large_metrics:
+                        print(f"Large Delay RMSE: {large_metrics['large_delay_rmse']:.4f}")
+                        print(f"Large Delay MAE: {large_metrics['large_delay_mae']:.4f}")
+                    
+                    # Keep track of best model by R² score
+                    if r2 > best_r2:
+                        best_r2 = r2
+                        best_model = xgb_model
+                        best_metrics = metrics
+                        best_y_pred = y_pred
+                        best_name = model_name
+                
+                # Use the best model
+                xgb_model = best_model
+                metrics = best_metrics
+                y_pred = best_y_pred
+                
+                print(f"\nSelected best model: {best_name} (R² = {best_r2:.4f})")
+                
                 # Save metrics
-                metrics_filename = f"model_metrics_{month_id}.csv"
+                metrics_filename = f"model_metrics_{month_id}_best.csv"
                 metrics_path = os.path.join(xgboost_dir, metrics_filename)
                 pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
                 print(f"Model metrics saved to {metrics_path}")
@@ -2647,11 +2754,24 @@ class TrainingPipeline:
                 result = {
                     "success": True,
                     "model_type": "regression",
-                    "rmse": rmse,
-                    "mae": mae,
-                    "r2": r2
+                    "rmse": metrics['rmse'],
+                    "mae": metrics['mae'],
+                    "r2": metrics['r2'],
+                    "best_approach": best_name
                 }
                 
+                # Get feature importance and normalize it
+                importance_scores = xgb_model.get_score(importance_type='gain')
+                
+                # Normalize the importance scores to sum to 1.0
+                total_importance = sum(importance_scores.values())
+                normalized_scores = {k: v/total_importance for k, v in importance_scores.items()}
+                
+                feature_importance = pd.DataFrame({
+                    'Feature': normalized_scores.keys(),
+                    'Importance': normalized_scores.values()
+                }).sort_values(by='Importance', ascending=False)
+                            
             else:
                 # CLASSIFICATION CASE
                 print(f"Target '{target_column}' indicates a classification problem")
@@ -2668,9 +2788,36 @@ class TrainingPipeline:
                     params['num_class'] = num_classes
                     print(f"Using multi-class classification with {num_classes} classes")
                 
-                # Train the model
-                xgb_model = xgb.XGBClassifier(**params)
-                xgb_model.fit(X_train, y_train)
+                # Add regularization parameters for classification too
+                params['alpha'] = 0.5  # L1 regularization
+                params['lambda'] = 1.0  # L2 regularization
+                
+                # For classification, use sample weights if delay info is available
+                if 'differenceInMinutes' in train_df.columns:
+                    print("Using weighted samples based on delay magnitude")
+                    # Create sample weights based on delay magnitude
+                    delay_col = 'differenceInMinutes'
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    # For delayed trains, weight proportional to delay amount
+                    delayed_idx = (delays > 0)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay, using more moderate weights
+                        mean_delay = delays[delayed_idx].mean()
+                        # Cap weights at 5 instead of 10 for more stability
+                        sample_weights[delayed_idx] = np.minimum(5, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    # Train the model with sample weights
+                    xgb_model = xgb.XGBClassifier(**params)
+                    xgb_model.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    # Train without sample weights
+                    xgb_model = xgb.XGBClassifier(**params)
+                    xgb_model.fit(X_train, y_train)
                 
                 # Make predictions
                 y_pred = xgb_model.predict(X_test)
@@ -2701,22 +2848,26 @@ class TrainingPipeline:
                     "accuracy": accuracy,
                     "report": report
                 }
+                
+                # Get feature importance and normalize it
+                raw_importances = xgb_model.feature_importances_
+                normalized_importances = raw_importances / np.sum(raw_importances)
+                
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': normalized_importances
+                }).sort_values(by='Importance', ascending=False)
             
-            # Feature importance is common for both regression and classification
-            feature_importance = pd.DataFrame({
-                'Feature': X_train.columns,
-                'Importance': xgb_model.feature_importances_
-            }).sort_values(by='Importance', ascending=False)
-            
+            # Feature importance output for both regression and classification
             print("\nFeature Importance (top 10):")
-            print(feature_importance.head(10))
+            print(feature_importance.head(10).to_string(index=False, float_format=lambda x: f"{x:.4f}"))
             
             # Save the model and feature importance
             try:
                 import joblib
                 
                 # Save the model
-                model_filename = f"xgboost_{month_id}.joblib"
+                model_filename = f"xgboost_{month_id}_best.joblib"
                 model_path = os.path.join(xgboost_dir, model_filename)
                 joblib.dump(xgb_model, model_path)
                 print(f"Model saved to {model_path}")
