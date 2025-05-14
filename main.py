@@ -2,7 +2,7 @@ import os
 import argparse
 from src.file_utils import check_csv_files, extract_date_range, load_and_preview_csv
 from src.data_preprocessor import TrainingPipeline  # Import the class
-from config.const import DEFAULT_TARGET_FEATURE, IMPORTANCE_THRESHOLD  # Import the constant
+from config.const import DEFAULT_TARGET_FEATURE, FILTER_TRAINS_BY_STATIONS, IMPORTANCE_THRESHOLD, REQUIRED_STATIONS  # Import the constant
 
 
 def main():
@@ -23,6 +23,12 @@ def main():
     args = parser.parse_args()
     
     print("Starting Railway FMI Data Check...")
+
+    if FILTER_TRAINS_BY_STATIONS:
+        print(f"\n⚠️  WARNING: Train filtering is ENABLED!")
+        print(f"Only trains passing through ALL of these stations will be processed: {', '.join(REQUIRED_STATIONS)}")
+        print(f"This may significantly reduce the amount of data available for training.\n")
+    
     
     # Check for CSV files
     csv_files = check_csv_files()

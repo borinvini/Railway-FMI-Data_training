@@ -31,9 +31,12 @@ from config.const import (
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     IMPORTANCE_THRESHOLD,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
+    TOP_FEATURES_COUNT,
     XGBOOST_OUTPUT_FOLDER,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
-    DEFAULT_TARGET_FEATURE
+    DEFAULT_TARGET_FEATURE,
+    FILTER_TRAINS_BY_STATIONS,
+    REQUIRED_STATIONS
 )
 
 
@@ -444,6 +447,20 @@ class TrainingPipeline:
                             print(f"Successfully trained XGBoost with important features for {month_id}")
                             counters["successful_xgboost_important"] = counters.get("successful_xgboost_important", 0) + 1
 
+                        # Move to the next stage
+                        state["current_stage"] = "train_xgboost_rs_with_important_features"
+
+                    case "train_xgboost_rs_with_important_features":
+                        print(f"Training XGBoost with RandomizedSearchCV on top {TOP_FEATURES_COUNT} features for {month_id}...")
+                        xgb_rs_important_result = self.train_xgboost_rs_with_important_features(month_id)
+                        
+                        if not xgb_rs_important_result.get("success", False):
+                            print(f"Failed to train XGBoost with RandomizedSearchCV on top features for {month_id}: {xgb_rs_important_result.get('error', 'Unknown error')}")
+                            counters["failed_xgboost_rs_important"] = counters.get("failed_xgboost_rs_important", 0) + 1
+                        else:
+                            print(f"Successfully trained XGBoost with RandomizedSearchCV on top features for {month_id}")
+                            counters["successful_xgboost_rs_important"] = counters.get("successful_xgboost_rs_important", 0) + 1
+
                         # This is the last stage, so we're done
                         state["current_stage"] = None
                         
@@ -494,11 +511,13 @@ class TrainingPipeline:
 
         print(f"Successfully trained XGBoost models with important features: {summary.get('successful_xgboost_important', 0)}")
         print(f"Failed to train XGBoost models with important features: {summary.get('failed_xgboost_important', 0)}")
+        print(f"Successfully trained XGBoost models with RandomizedSearchCV on top features: {summary.get('successful_xgboost_rs_important', 0)}")
+        print(f"Failed to train XGBoost models with RandomizedSearchCV on top features: {summary.get('failed_xgboost_rs_important', 0)}")
+
         print("="*50)
         
         return summary
         
-
     def preprocess_csv_file(self, input_file_path):
         """
         Preprocess a CSV file by extracting nested data from timeTableRows,
@@ -560,6 +579,35 @@ class TrainingPipeline:
             
             print(f"Extracted stops for {len(train_stops)} different trains")
             
+            # Filter trains by required stations if enabled
+            if FILTER_TRAINS_BY_STATIONS and REQUIRED_STATIONS:
+                print(f"\nFiltering trains that pass through all required stations: {REQUIRED_STATIONS}")
+                
+                filtered_train_stops = {}
+                
+                for train_id, stops in train_stops.items():
+                    # Extract all station codes for this train
+                    train_stations = set()
+                    for stop in stops:
+                        station_code = stop.get('stationShortCode')
+                        if station_code:
+                            train_stations.add(station_code)
+                    
+                    # Check if this train passes through all required stations
+                    if all(station in train_stations for station in REQUIRED_STATIONS):
+                        filtered_train_stops[train_id] = stops
+                    
+                print(f"Filtered from {len(train_stops)} to {len(filtered_train_stops)} trains")
+                print(f"Kept only trains passing through: {', '.join(REQUIRED_STATIONS)}")
+                
+                # Replace the original dictionary with the filtered one
+                train_stops = filtered_train_stops
+                
+                # Early return if no trains match the criteria
+                if not train_stops:
+                    print(f"Warning: No trains found passing through all required stations: {REQUIRED_STATIONS}")
+                    return pd.DataFrame()  # Return empty DataFrame
+
             # Process each train's stops to calculate relative_differenceInMinutes
             cross_records = []
             
@@ -4108,6 +4156,601 @@ class TrainingPipeline:
         except Exception as e:
             print(f"Error training regularized regression for {month_id}: {str(e)}")
             import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def train_xgboost_rs_with_important_features(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
+        """
+        Train an XGBoost model with RandomizedSearchCV using only the top features identified
+        from a previous XGBoost RandomizedSearchCV run.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+        n_iter : int, optional
+            Number of parameter settings that are sampled.
+        cv : int, optional
+            Number of cross-validation folds.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                    
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import XGBOOST_PARAM_DISTRIBUTIONS
+                param_distributions = XGBOOST_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            # Import TOP_FEATURES_COUNT for selecting top features
+            from config.const import TOP_FEATURES_COUNT
+            
+            # MEMORY OPTIMIZATION: Limit parameters for better memory usage
+            n_iter = min(n_iter, 20)  # Reduce number of iterations
+            cv = min(cv, 3)  # Reduce CV folds
+            
+            # Step 1: Check if we already have feature importance from a previous run
+            xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+            feature_importance_path = os.path.join(xgboost_rs_dir, f"feature_importance_{month_id}_rs.csv")
+            
+            # Create output directory for this method's results
+            output_dir = os.path.join(self.project_root, "data/output/xgboost_rs_important_features")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            important_features = None
+            
+            # If feature importance exists, read it
+            if os.path.exists(feature_importance_path):
+                print(f"Using existing feature importance from {feature_importance_path}")
+                feature_importance = pd.read_csv(feature_importance_path)
+                important_features = feature_importance.sort_values(by='Importance', ascending=False).head(TOP_FEATURES_COUNT)['Feature'].tolist()
+            else:
+                # If not, run the regular randomized search to get feature importance
+                print(f"No existing feature importance found. Running XGBoost RandomizedSearchCV first...")
+                rs_result = self.train_xgboost_with_randomized_search_cv(month_id, param_distributions, n_iter, cv, random_state)
+                
+                if not rs_result.get("success", False):
+                    print(f"Failed to run initial RandomizedSearchCV: {rs_result.get('error', 'Unknown error')}")
+                    return {
+                        "success": False,
+                        "error": f"Failed to run initial RandomizedSearchCV: {rs_result.get('error', 'Unknown error')}"
+                    }
+                
+                # Now check if the feature importance was saved
+                if os.path.exists(feature_importance_path):
+                    feature_importance = pd.read_csv(feature_importance_path)
+                    important_features = feature_importance.sort_values(by='Importance', ascending=False).head(TOP_FEATURES_COUNT)['Feature'].tolist()
+                else:
+                    print(f"Error: Feature importance not found after running RandomizedSearchCV")
+                    return {
+                        "success": False,
+                        "error": "Feature importance not found after running RandomizedSearchCV"
+                    }
+            
+            print(f"Selected top {TOP_FEATURES_COUNT} features: {important_features}")
+            
+            # Now load the datasets and prepare for training with only important features
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+
+            # Drop the data_year column if it exists
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
+            
+            # DATA VALIDATION: Check for non-numeric columns
+            non_numeric_cols = X_train.select_dtypes(exclude=['number']).columns.tolist()
+            if non_numeric_cols:
+                print(f"Warning: Dropping non-numeric columns: {non_numeric_cols}")
+                X_train = X_train.select_dtypes(include=['number'])
+                X_test = X_test.select_dtypes(include=['number'])
+            
+            # Check if all important features exist in the dataset
+            missing_features = [f for f in important_features if f not in X_train.columns]
+            if missing_features:
+                print(f"Warning: Some important features are missing from the dataset: {missing_features}")
+                # Filter out missing features
+                important_features = [f for f in important_features if f in X_train.columns]
+                print(f"Using available features: {important_features}")
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            # Create sample weights for classification if delay info is available
+            sample_weights = None
+            if is_classification and 'differenceInMinutes' in train_df.columns:
+                print("Using weighted samples based on delay magnitude for randomized search")
+                # Create sample weights based on delay magnitude
+                delay_col = 'differenceInMinutes'
+                sample_weights = np.ones(len(y_train))
+                
+                # Get delay values for each training sample
+                delays = train_df[delay_col].values
+                
+                # Apply weights - higher delays get higher weights
+                delayed_idx = (delays > 0)
+                if np.any(delayed_idx):
+                    # Normalize delay values by mean positive delay, using more moderate weights
+                    mean_delay = delays[delayed_idx].mean()
+                    # Cap weights at 5 instead of 10 for more stability
+                    sample_weights[delayed_idx] = np.minimum(5, 1 + delays[delayed_idx]/mean_delay)
+                
+                print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+            
+            # Subset data to include only important features
+            X_train_important = X_train[important_features]
+            X_test_important = X_test[important_features]
+            
+            print(f"Training with only {len(important_features)} features instead of {X_train.shape[1]} features")
+            
+            # --------- MANUAL HYPERPARAMETER TUNING APPROACH ---------            
+            print(f"Starting manual hyperparameter tuning with {n_iter} iterations and {cv}-fold cross-validation...")
+
+            # Define custom objective function for regression if needed
+            def stable_weighted_mse(y_pred, dtrain):
+                y_true = dtrain.get_label()
+                # More moderate weighting approach with capped weights
+                weights = np.minimum(3.0, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
+                # More stable gradient calculation
+                grad = weights * (y_pred - y_true)
+                hess = weights
+                return grad, hess
+            
+            # Generate parameter combinations
+            param_list = list(ParameterSampler(param_distributions, n_iter=n_iter, random_state=random_state))
+            
+            # Setup cross-validation
+            if is_classification:
+                cv_splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+            else:
+                cv_splitter = KFold(n_splits=cv, shuffle=True, random_state=random_state)
+            
+            best_score = float('-inf')
+            best_params = None
+            best_method = None  # To track if custom objective was best
+            
+            # Memory tracking
+            process = psutil.Process()
+            before_mem = process.memory_info().rss / 1024 / 1024
+            print(f"Memory usage before training: {before_mem:.2f} MB")
+            
+            # Define methods to try based on problem type
+            methods_to_try = []
+            
+            if is_classification:
+                # For classification, just use standard method, possibly with sample weights
+                methods_to_try = [{"name": "standard", "obj": None}]
+            else:
+                # For regression, try both standard and custom objective
+                methods_to_try = [
+                    {"name": "standard", "obj": None},
+                    {"name": "weighted", "obj": stable_weighted_mse}
+                ]
+                print(f"For regression, will try {len(methods_to_try)} different objective approaches")
+            
+            # Try each parameter combination and each method
+            overall_best_score = float('-inf')
+            
+            for i, params in enumerate(param_list):
+                for method in methods_to_try:
+                    method_name = method["name"]
+                    obj_function = method["obj"]
+                    
+                    print(f"Testing parameter combination {i+1}/{len(param_list)} with method '{method_name}'")
+                    
+                    # Make a copy of params to modify
+                    current_params = params.copy()
+                    
+                    # Set the objective based on problem type
+                    if is_classification:
+                        if target_column == 'trainDelayed':  # Binary classification
+                            current_params['objective'] = 'binary:logistic'
+                        else:  # Multi-class
+                            current_params['objective'] = 'multi:softprob'
+                            current_params['num_class'] = len(np.unique(y_train))
+                    else:
+                        # For regression, only set objective if not using custom objective
+                        if obj_function is None:
+                            current_params['objective'] = 'reg:squarederror'
+                    
+                    # Add random_state for reproducibility
+                    current_params['random_state'] = random_state
+                    
+                    # Perform cross-validation
+                    cv_scores = []
+                    for train_idx, val_idx in cv_splitter.split(X_train_important, y_train if is_classification else np.zeros(len(y_train))):
+                        # Get train and validation sets for this fold
+                        X_fold_train = X_train_important.iloc[train_idx]
+                        y_fold_train = y_train.iloc[train_idx]
+                        X_fold_val = X_train_important.iloc[val_idx]
+                        y_fold_val = y_train.iloc[val_idx]
+                        
+                        # Get fold-specific sample weights if weights are being used
+                        fold_sample_weights = None
+                        if sample_weights is not None:
+                            fold_sample_weights = sample_weights[train_idx]
+                        
+                        # Use different approaches based on problem type and method
+                        if is_classification:
+                            # For classification, use XGBClassifier
+                            model = xgb.XGBClassifier(**current_params)
+                            
+                            # Fit model with sample weights if available
+                            if fold_sample_weights is not None:
+                                model.fit(X_fold_train, y_fold_train, sample_weight=fold_sample_weights)
+                            else:
+                                model.fit(X_fold_train, y_fold_train)
+                                
+                            # Predict
+                            y_pred = model.predict(X_fold_val)
+                            
+                            # Evaluate
+                            from sklearn.metrics import accuracy_score
+                            score = accuracy_score(y_fold_val, y_pred)
+                            
+                        else:
+                            # For regression with custom objective, use lower-level API
+                            if obj_function is not None:
+                                # Create DMatrix objects
+                                dtrain = xgb.DMatrix(X_fold_train, label=y_fold_train)
+                                dval = xgb.DMatrix(X_fold_val, label=y_fold_val)
+                                
+                                # Set up parameters for training
+                                xgb_params = {
+                                    'max_depth': current_params.get('max_depth', 6),
+                                    'eta': current_params.get('learning_rate', 0.1),
+                                    'subsample': current_params.get('subsample', 0.8),
+                                    'colsample_bytree': current_params.get('colsample_bytree', 0.8),
+                                    'seed': random_state,
+                                    'alpha': 0.5,  # L1 regularization
+                                    'lambda': 1.0,  # L2 regularization
+                                }
+                                
+                                # Train the model with custom objective
+                                model = xgb.train(
+                                    xgb_params,
+                                    dtrain,
+                                    num_boost_round=current_params.get('n_estimators', 100),
+                                    obj=obj_function
+                                )
+                                
+                                # Predict
+                                y_pred = model.predict(dval)
+                                
+                            else:
+                                # Standard regression using XGBRegressor
+                                model = xgb.XGBRegressor(**current_params)
+                                model.fit(X_fold_train, y_fold_train)
+                                y_pred = model.predict(X_fold_val)
+                            
+                            # Evaluate regression performance
+                            from sklearn.metrics import mean_squared_error
+                            score = -mean_squared_error(y_fold_val, y_pred)  # Negative for higher=better
+                        
+                        cv_scores.append(score)
+                    
+                    # Calculate average score across folds
+                    avg_score = np.mean(cv_scores)
+                    print(f"  Method '{method_name}' - Average CV score: {avg_score:.4f}")
+                    
+                    # Update best if better
+                    if avg_score > overall_best_score:
+                        overall_best_score = avg_score
+                        best_score = avg_score
+                        best_params = current_params.copy()
+                        best_method = method_name
+                        print(f"  New best score: {best_score:.4f} with method '{best_method}'")
+            
+            after_mem = process.memory_info().rss / 1024 / 1024
+            print(f"Memory usage after training: {after_mem:.2f} MB (Δ: {after_mem - before_mem:.2f} MB)")
+            
+            print(f"Best Hyperparameters: {best_params}")
+            print(f"Best Method: {best_method}")
+            print(f"Best CV Score: {best_score:.4f}")
+            
+            # Train final model with best parameters
+            if is_classification:
+                xgb_model = xgb.XGBClassifier(**best_params)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    xgb_model.fit(X_train_important, y_train, sample_weight=sample_weights)
+                else:
+                    xgb_model.fit(X_train_important, y_train)
+                    
+            else:
+                # For regression, check if best method uses custom objective
+                if best_method == "weighted":
+                    print("Training final model with custom weighted objective function")
+                    # Create DMatrix objects
+                    dtrain = xgb.DMatrix(X_train_important, label=y_train)
+                    dtest = xgb.DMatrix(X_test_important, label=y_test)
+                    
+                    # Set up parameters for training
+                    xgb_params = {
+                        'max_depth': best_params.get('max_depth', 6),
+                        'eta': best_params.get('learning_rate', 0.1),
+                        'subsample': best_params.get('subsample', 0.8),
+                        'colsample_bytree': best_params.get('colsample_bytree', 0.8),
+                        'seed': random_state,
+                        'alpha': 0.5,  # L1 regularization
+                        'lambda': 1.0,  # L2 regularization
+                    }
+                    
+                    # Train the model with custom objective
+                    xgb_model = xgb.train(
+                        xgb_params,
+                        dtrain,
+                        num_boost_round=best_params.get('n_estimators', 100),
+                        obj=stable_weighted_mse
+                    )
+                else:
+                    print("Training final model with standard objective")
+                    xgb_model = xgb.XGBRegressor(**best_params)
+                    xgb_model.fit(X_train_important, y_train)
+            
+            # Evaluate on test set
+            if is_classification:
+                y_pred = xgb_model.predict(X_test_important)
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nXGBoost Classifier Results (Top {TOP_FEATURES_COUNT} Features Only):")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(
+                    y_test, y_pred, report, f"{month_id}_rs_important", 
+                    output_dir=output_dir
+                )
+            else:
+                # Handle regression evaluation - check if using booster or regressor
+                if best_method == "weighted" and hasattr(xgb_model, 'predict'):
+                    # If using booster with custom objective (has predict method)
+                    dtest = xgb.DMatrix(X_test_important)
+                    y_pred = xgb_model.predict(dtest)
+                else:
+                    # Standard XGBRegressor
+                    y_pred = xgb_model.predict(X_test_important)
+                
+                # Use the regression metrics function
+                metrics_result = self.extract_and_save_regression_metrics(
+                    y_test, y_pred, f"{month_id}_rs_important", 
+                    output_dir=output_dir
+                )
+                
+                # Keep these lines for printing to console
+                mse = metrics_result["metrics"]["mse"]
+                rmse = metrics_result["metrics"]["rmse"]
+                mae = metrics_result["metrics"]["mae"]
+                r2 = metrics_result["metrics"]["r2"]
+                
+                print(f"\nXGBoost Regressor Results (Top {TOP_FEATURES_COUNT} Features Only):")
+                print(f"RMSE: {rmse:.4f}")
+                print(f"MAE: {mae:.4f}")
+                print(f"R²: {r2:.4f}")
+            
+            # Get feature importance of the final model
+            if hasattr(xgb_model, 'feature_importances_'):
+                # For standard XGBClassifier/XGBRegressor
+                selected_feature_importance = pd.DataFrame({
+                    'Feature': important_features,
+                    'Importance': xgb_model.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+            elif hasattr(xgb_model, 'get_score'):
+                # For booster with custom objective
+                importance_scores = xgb_model.get_score(importance_type='gain')
+                # Normalize the importance scores
+                total_importance = sum(importance_scores.values())
+                normalized_scores = {k: v/total_importance for k, v in importance_scores.items()}
+                
+                selected_feature_importance = pd.DataFrame({
+                    'Feature': normalized_scores.keys(),
+                    'Importance': normalized_scores.values()
+                }).sort_values(by='Importance', ascending=False)
+            else:
+                selected_feature_importance = pd.DataFrame({
+                    'Feature': important_features,
+                    'Importance': [1.0/len(important_features)] * len(important_features)
+                })
+            
+            print("\nFeature Importance in Final Model:")
+            print(selected_feature_importance)
+            
+            # Save the model, feature importance, and parameters
+            try:
+                import joblib
+                
+                # Save the model
+                model_filename = f"xgboost_{month_id}_rs_important.joblib"
+                model_path = os.path.join(output_dir, model_filename)
+                joblib.dump(xgb_model, model_path)
+                print(f"Model saved to {model_path}")
+                
+                # Save feature importance
+                importance_filename = f"feature_importance_{month_id}_rs_important.csv"
+                importance_path = os.path.join(output_dir, importance_filename)
+                selected_feature_importance.to_csv(importance_path, index=False)
+                print(f"Feature importance saved to {importance_path}")
+                
+                # Save best parameters
+                params_filename = f"best_params_{month_id}_rs_important.txt"
+                params_path = os.path.join(output_dir, params_filename)
+                with open(params_path, 'w') as f:
+                    f.write(f"Important features ({len(important_features)}):\n")
+                    for feature in important_features:
+                        f.write(f"- {feature}\n")
+                    f.write("\nBest parameters:\n")
+                    for param, value in best_params.items():
+                        f.write(f"{param}: {value}\n")
+                print(f"Parameters and features saved to {params_path}")
+                
+                # Compare with the full-features model
+                full_model_metrics_file = os.path.join(xgboost_rs_dir, f"model_metrics_{month_id}_rs.csv")
+                if os.path.exists(full_model_metrics_file):
+                    full_metrics = pd.read_csv(full_model_metrics_file)
+                    
+                    if is_classification:
+                        if 'accuracy' in full_metrics:
+                            full_accuracy = full_metrics['accuracy'].values[0]
+                            print(f"\nComparison with full-features model:")
+                            print(f"Full features model accuracy: {full_accuracy:.4f}")
+                            print(f"Top {TOP_FEATURES_COUNT} features model accuracy: {accuracy:.4f}")
+                            acc_change = ((accuracy - full_accuracy) / full_accuracy) * 100
+                            print(f"Accuracy change: {acc_change:.2f}%")
+                    else:
+                        if 'rmse' in full_metrics:
+                            full_rmse = full_metrics['rmse'].values[0]
+                            print(f"\nComparison with full-features model:")
+                            print(f"Full features model RMSE: {full_rmse:.4f}")
+                            print(f"Top {TOP_FEATURES_COUNT} features model RMSE: {rmse:.4f}")
+                            rmse_change = ((rmse - full_rmse) / full_rmse) * 100
+                            print(f"RMSE change: {rmse_change:.2f}%")
+                
+                # Create result dictionary
+                if is_classification:
+                    result = {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy,
+                        "report": report,
+                        "best_params": best_params,
+                        "best_method": best_method,
+                        "important_features": important_features,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"],
+                        "used_sample_weights": sample_weights is not None
+                    }
+                else:
+                    result = {
+                        "success": True,
+                        "model_type": "regression",
+                        "rmse": rmse,
+                        "r2": r2,
+                        "best_params": best_params,
+                        "best_method": best_method,
+                        "custom_objective": best_method == "weighted",
+                        "important_features": important_features,
+                        "metrics": metrics_result["metrics"],
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "metrics_path": metrics_result["metrics_path"]
+                    }
+                
+                return result
+                    
+            except Exception as e:
+                print(f"Warning: Could not save model: {str(e)}")
+                # Create minimal result dictionary
+                if is_classification:
+                    return {
+                        "success": True,
+                        "model_type": "classification",
+                        "accuracy": accuracy if 'accuracy' in locals() else None,
+                        "best_params": best_params,
+                        "best_method": best_method,
+                        "important_features": important_features,
+                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
+                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
+                        "model_saved": False
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "model_type": "regression",
+                        "rmse": rmse if 'rmse' in locals() else None,
+                        "r2": r2 if 'r2' in locals() else None,
+                        "best_params": best_params,
+                        "best_method": best_method,
+                        "important_features": important_features,
+                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
+                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
+                        "model_saved": False
+                    }
+        
+        except Exception as e:
+            import traceback
+            print(f"Error in XGBoost RandomizedSearchCV with Important Features for {month_id}: {str(e)}")
+            print("\nDetailed traceback:")
             traceback.print_exc()
             return {
                 "success": False,

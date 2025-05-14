@@ -16,12 +16,15 @@ XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  
+DEFAULT_TARGET_FEATURE = 'relative_differenceInMinutes'  
 # Possible values: 'differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled'
 
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 
+# Train filtering configuration
+FILTER_TRAINS_BY_STATIONS = True  # Set to True to filter trains by required stations
+REQUIRED_STATIONS = ['HKI', 'OL']  # Trains must pass through ALL of these stations
 
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.05
