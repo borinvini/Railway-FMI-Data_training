@@ -16,8 +16,8 @@ XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'relative_differenceInMinutes'  
-# Possible values: 'differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled'
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes_offset'  
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled'
 
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']

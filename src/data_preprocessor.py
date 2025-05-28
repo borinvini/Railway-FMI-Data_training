@@ -324,7 +324,7 @@ class TrainingPipeline:
                         
                         # We need to identify the target column from the dataframe
                         df = state["df"]
-                        numeric_targets = ['differenceInMinutes', 'relative_differenceInMinutes']
+                        numeric_targets = ['differenceInMinutes', 'differenceInMinutes_offset']
                         target_column = None
                         
                         # Find which numeric target exists in the dataframe (should be only one after select_target stage)
@@ -521,7 +521,7 @@ class TrainingPipeline:
     def preprocess_csv_file(self, input_file_path):
         """
         Preprocess a CSV file by extracting nested data from timeTableRows,
-        keeping only essential columns, adding relative_differenceInMinutes, and expanding weather conditions.
+        keeping only essential columns and expanding weather conditions.
         
         Parameters:
         -----------
@@ -531,7 +531,7 @@ class TrainingPipeline:
         Returns:
         --------
         pandas.DataFrame
-            The processed DataFrame with calculated relative_differenceInMinutes.
+            The processed DataFrame.
         """
         try:
             # Load the dataframe from the input file path
@@ -608,47 +608,14 @@ class TrainingPipeline:
                     print(f"Warning: No trains found passing through all required stations: {REQUIRED_STATIONS}")
                     return pd.DataFrame()  # Return empty DataFrame
 
-            # Process each train's stops to calculate relative_differenceInMinutes
+            # Process each train's stops (no longer calculating differenceInMinutes_offset)
             cross_records = []
             
             for train_id, stops in train_stops.items():
-                # Try to sort stops by a timestamp field if available
-                if stops and any('scheduledTime' in stop for stop in stops):
-                    stops.sort(key=lambda x: x.get('scheduledTime', ''))
-                elif stops and any('actualTime' in stop for stop in stops):
-                    stops.sort(key=lambda x: x.get('actualTime', ''))
-                # Otherwise use order from the JSON (which might already be chronological)
-                
-                # Process stops in order
-                prev_diff = None
-                for i, stop in enumerate(stops):
-                    # For first stop, set relative_differenceInMinutes to 0
-                    if i == 0:
-                        stop['relative_differenceInMinutes'] = 0
-                    else:
-                        current_diff = stop.get('differenceInMinutes')
-                        
-                        # Check if valid values for calculation
-                        if (current_diff is None or pd.isnull(current_diff) or
-                            prev_diff is None or pd.isnull(prev_diff)):
-                            stop['relative_differenceInMinutes'] = 0  # Using 0 for invalid cases too
-                        else:
-                            # Calculate the difference between current and previous stop
-                            try:
-                                current_diff = float(current_diff)
-                                prev_diff = float(prev_diff)
-                                stop['relative_differenceInMinutes'] = current_diff - prev_diff
-                            except (ValueError, TypeError):
-                                stop['relative_differenceInMinutes'] = 0  # Using 0 for calculation errors
-                    
-                    # Update prev_diff for next iteration
-                    prev_diff = stop.get('differenceInMinutes')
-                    
-                    # Add to final records
-                    cross_records.append(stop)
+                # Add all stops to final records
+                cross_records.extend(stops)
             
-            print(f"Processed a total of {len(cross_records)} stops with relative_differenceInMinutes")
-            
+            print(f"Processed a total of {len(cross_records)} stops")
             # Create DataFrame from processed records
             cross_df = pd.DataFrame(cross_records)
             
@@ -658,7 +625,7 @@ class TrainingPipeline:
                 print("Renamed 'weather_observations' to 'weather_conditions'")
             
             # Keep only the essential columns, including our new calculated column
-            expected_cols = ["differenceInMinutes", "relative_differenceInMinutes", "cancelled", "weather_conditions", "trainStopping", "commercialStop"]
+            expected_cols = ["differenceInMinutes", "differenceInMinutes_offset", "cancelled", "weather_conditions", "trainStopping", "commercialStop"]
             available_cols = [col for col in expected_cols if col in cross_df.columns]
             
             if len(available_cols) > 0:
@@ -691,8 +658,8 @@ class TrainingPipeline:
                     cross_df[col] = cross_df[col].astype(int)
                     print(f"Converted {col} to numeric (0/1)")
 
-            # Reorder columns: differenceInMinutes, relative_differenceInMinutes, cancelled, then others
-            base_cols = [col for col in ["differenceInMinutes", "relative_differenceInMinutes", "cancelled"] 
+            # Reorder columns: differenceInMinutes, differenceInMinutes_offset, cancelled, then others
+            base_cols = [col for col in ["differenceInMinutes", "differenceInMinutes_offset", "cancelled"] 
                         if col in cross_df.columns]
             other_cols = [col for col in cross_df.columns if col not in base_cols]
             cols_order = base_cols + other_cols
@@ -753,7 +720,7 @@ class TrainingPipeline:
                 print(f"- Filled {nulls} missing values in '{col}' with 0")
 
         # Step 2: Check required columns (differenceInMinutes and cancelled)
-        required_cols = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
+        required_cols = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
         available_required_cols = [col for col in required_cols if col in df.columns]
         
         if available_required_cols:
@@ -961,8 +928,8 @@ class TrainingPipeline:
             
             # Exclude both existing excluded columns and the new missing indicators
             columns_to_scale = [col for col in all_numeric_columns 
-                            if col not in ['differenceInMinutes', 'relative_differenceInMinutes', 
-                                            'trainStopping', 'commercialStop'] 
+                            if col not in ['differenceInMinutes', 'differenceInMinutes_offset', 
+                                            'trainStopping', 'commercialStop']
                             and not col.endswith('_missing')]
                         
             # Report which columns will be scaled and which ones are excluded
@@ -1071,7 +1038,7 @@ class TrainingPipeline:
             return None
             
         # Check if target_feature is valid
-        valid_targets = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
+        valid_targets = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
         if target_feature not in valid_targets:
             print(f"Error: target_feature must be one of {valid_targets}")
             return dataframe
@@ -1375,7 +1342,7 @@ class TrainingPipeline:
                 }
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'relative_differenceInMinutes', 'trainDelayed', 'cancelled']
+            target_options = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
             target_column = None
             
             for option in target_options:
@@ -1694,7 +1661,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -1729,7 +1696,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
+            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -1874,7 +1841,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -1908,7 +1875,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
+            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -2100,7 +2067,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -2134,7 +2101,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
+            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -2337,7 +2304,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -2371,7 +2338,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
+            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -2612,7 +2579,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column 
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -2648,7 +2615,7 @@ class TrainingPipeline:
             os.makedirs(xgboost_dir, exist_ok=True)
             
             # Determine if it's a regression or classification problem
-            is_regression = (target_column in ['differenceInMinutes', 'relative_differenceInMinutes'])
+            is_regression = (target_column in ['differenceInMinutes', 'differenceInMinutes_offset'])
             
             if is_regression:
                 # REGRESSION CASE
@@ -3030,7 +2997,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -3071,7 +3038,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
+            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -3674,7 +3641,7 @@ class TrainingPipeline:
                 test_df = pd.read_csv(test_path)
                 
                 # Identify target column 
-                target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+                target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
                 target_column = None
                 
                 for option in target_options:
@@ -3710,7 +3677,7 @@ class TrainingPipeline:
                 os.makedirs(xgboost_important_dir, exist_ok=True)
                 
                 # Determine if it's a regression or classification problem
-                is_regression = (target_column in ['differenceInMinutes', 'relative_differenceInMinutes'])
+                is_regression = (target_column in ['differenceInMinutes', 'differenceInMinutes_offset'])
                 
                 # STEP 1: TRAIN INITIAL XGBOOST MODEL TO IDENTIFY IMPORTANT FEATURES
                 print(f"\nTraining initial XGBoost model to identify important features...")
@@ -3961,7 +3928,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column
-            target_options = ['differenceInMinutes', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -4270,7 +4237,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'relative_differenceInMinutes']
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
             target_column = None
             
             for option in target_options:
@@ -4320,7 +4287,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'relative_differenceInMinutes']:
+            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
