@@ -22,8 +22,21 @@ DEFAULT_TARGET_FEATURE = 'differenceInMinutes_offset'
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 
+
+# Important weather conditions to check for missing value handling
+IMPORTANT_WEATHER_CONDITIONS = [
+    'Air temperature', 
+    'Relative humidity', 
+    'Dew-point temperature', 
+    'Precipitation amount', 
+    'Precipitation intensity', 
+    'Snow depth', 
+    'Horizontal visibility'
+]
+
+
 # Train filtering configuration
-FILTER_TRAINS_BY_STATIONS = True  # Set to True to filter trains by required stations
+FILTER_TRAINS_BY_STATIONS = False  # Set to True to filter trains by required stations
 REQUIRED_STATIONS = ['HKI', 'OL']  # Trains must pass through ALL of these stations
 
 # Model training parameters

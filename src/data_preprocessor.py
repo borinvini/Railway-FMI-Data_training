@@ -24,6 +24,7 @@ from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
     IMPORTANT_FEATURES_OUTPUT_FOLDER,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    IMPORTANT_WEATHER_CONDITIONS,
     NON_NUMERIC_FEATURES, 
     OUTPUT_FOLDER,
     PREPROCESSED_OUTPUT_FOLDER,
@@ -62,16 +63,8 @@ class TrainingPipeline:
         # Add this line to make the constant available as an instance attribute
         self.DATA_FILE_PREFIX_FOR_TRAINING = DATA_FILE_PREFIX_FOR_TRAINING
 
-        # Define important weather conditions to check
-        self.important_conditions = [
-            'Air temperature', 
-            'Relative humidity', 
-            'Dew-point temperature', 
-            'Precipitation amount', 
-            'Precipitation intensity', 
-            'Snow depth', 
-            'Horizontal visibility'
-        ]
+        # Use the imported constant instead of defining it here
+        self.important_conditions = IMPORTANT_WEATHER_CONDITIONS
 
     def run_pipeline_data_by_month(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
         """
