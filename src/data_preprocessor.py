@@ -112,6 +112,7 @@ class TrainingPipeline:
         # Initialize counters for summary
         counters = {
             "successful_preprocessing": 0,
+            "successful_snow_depth_merge": 0,
             "successful_cleaning": 0,
             "successful_deduplication": 0,
             "successful_scaling": 0,
@@ -176,8 +177,9 @@ class TrainingPipeline:
             # Generate a month identifier for filenames
             month_id = f"{year_range}_{month_num}"
             
-            # Define all possible pipeline stages
+            # Define all possible pipeline stages - UPDATED to include snow depth merge as first stage
             stages = [
+                "merge_snow_depth_columns",
                 "clean_missing_values",
                 "remove_duplicates",
                 "scale_numeric",
@@ -196,7 +198,7 @@ class TrainingPipeline:
             
             # Initialize pipeline state
             state = {
-                "current_stage": stages[0],
+                "current_stage": stages[0],  # Now starts with merge_snow_depth_columns
                 "df": combined_df,
                 "month_id": month_id,
                 "success": True
@@ -208,6 +210,22 @@ class TrainingPipeline:
             # Run the pipeline stages
             while state["current_stage"] and state["success"]:
                 match state["current_stage"]:
+                    case "merge_snow_depth_columns":  # NEW STAGE
+                        print(f"\nMerging snow depth columns for {month_id}...")
+                        merged_df = self.merge_snow_depth_columns(dataframe=state["df"])
+                        
+                        # Clear previous dataframe from memory
+                        del state["df"]
+                        
+                        if merged_df is None:
+                            print(f"Failed to merge snow depth columns for {month_id}")
+                            state["success"] = False
+                        else:
+                            print(f"Successfully merged snow depth columns for {month_id}")
+                            counters["successful_snow_depth_merge"] += 1
+                            state["df"] = merged_df
+                            state["current_stage"] = "clean_missing_values"
+                    
                     case "clean_missing_values":
                         print(f"\nHandling missing values for {month_id}...")
                         cleaned_df = self.handle_missing_values(dataframe=state["df"])
@@ -473,12 +491,13 @@ class TrainingPipeline:
             **counters
         }
         
-        # Print summary
+        # Print summary - UPDATED to include snow depth merge counter
         print("\n" + "="*50)
         print("Processing Summary:")
         print(f"Total months processed: {summary['total_months']}")
         print(f"Total files processed: {summary['total_files']}")
         print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
+        print(f"Successfully merged snow depth columns: {summary['successful_snow_depth_merge']}")  # NEW LINE
         print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
         print(f"Successfully deduplicated: {summary['successful_deduplication']}")
         print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
@@ -668,6 +687,110 @@ class TrainingPipeline:
             traceback.print_exc()  # Print full traceback for debugging
             return None
         
+    def merge_snow_depth_columns(self, dataframe=None):
+        """
+        Merge 'Snow depth' and 'Snow depth Other' columns, and drop 'Snow depth Other Distance'.
+        
+        If 'Snow depth' is missing (Null/None), use the value from 'Snow depth Other'.
+        If 'Snow depth' already has a value, do nothing.
+        Also drops 'Snow depth Other Distance' column if it exists.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with merged snow depth columns and unwanted columns removed.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Merging snow depth columns in dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        try:
+            # Check if snow depth columns exist
+            snow_depth_col = 'Snow depth'
+            snow_depth_other_col = 'Snow depth Other'
+            snow_depth_other_distance_col = 'Snow depth Other Distance'
+            
+            has_snow_depth = snow_depth_col in df.columns
+            has_snow_depth_other = snow_depth_other_col in df.columns
+            has_snow_depth_other_distance = snow_depth_other_distance_col in df.columns
+            
+            print(f"Snow depth columns found:")
+            print(f"- '{snow_depth_col}': {has_snow_depth}")
+            print(f"- '{snow_depth_other_col}': {has_snow_depth_other}")
+            print(f"- '{snow_depth_other_distance_col}': {has_snow_depth_other_distance}")
+            
+            # Handle merging logic first
+            if not has_snow_depth and not has_snow_depth_other:
+                print("Neither main snow depth column found. No merging needed.")
+            elif not has_snow_depth and has_snow_depth_other:
+                print(f"Only '{snow_depth_other_col}' found. Renaming to '{snow_depth_col}'.")
+                df = df.rename(columns={snow_depth_other_col: snow_depth_col})
+                has_snow_depth = True
+                has_snow_depth_other = False
+            elif has_snow_depth and not has_snow_depth_other:
+                print(f"Only '{snow_depth_col}' found. No merging needed.")
+            else:
+                # Both columns exist - proceed with merging logic
+                print(f"Both snow depth columns found. Proceeding with merge logic.")
+                
+                # Count initial missing values in each column
+                snow_depth_missing = df[snow_depth_col].isna().sum()
+                snow_depth_other_missing = df[snow_depth_other_col].isna().sum()
+                
+                print(f"Before merge:")
+                print(f"- '{snow_depth_col}' missing values: {snow_depth_missing}")
+                print(f"- '{snow_depth_other_col}' missing values: {snow_depth_other_missing}")
+                
+                # Create a mask for rows where Snow depth is missing but Snow depth Other is not
+                merge_mask = df[snow_depth_col].isna() & df[snow_depth_other_col].notna()
+                merge_count = merge_mask.sum()
+                
+                if merge_count > 0:
+                    print(f"Merging {merge_count} values from '{snow_depth_other_col}' to '{snow_depth_col}'")
+                    # Fill missing Snow depth values with Snow depth Other values
+                    df.loc[merge_mask, snow_depth_col] = df.loc[merge_mask, snow_depth_other_col]
+                else:
+                    print("No values to merge (no rows where Snow depth is missing but Snow depth Other has values)")
+                
+                # Count final missing values
+                final_snow_depth_missing = df[snow_depth_col].isna().sum()
+                
+                print(f"After merge:")
+                print(f"- '{snow_depth_col}' missing values: {final_snow_depth_missing}")
+                print(f"- Values successfully merged: {snow_depth_missing - final_snow_depth_missing}")
+            
+            # Drop unwanted columns
+            columns_to_drop = []
+            if has_snow_depth_other:
+                columns_to_drop.append(snow_depth_other_col)
+            if has_snow_depth_other_distance:
+                columns_to_drop.append(snow_depth_other_distance_col)
+            
+            if columns_to_drop:
+                df = df.drop(columns=columns_to_drop)
+                print(f"Dropped columns: {columns_to_drop}")
+            else:
+                print("No snow depth columns to drop")
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error merging snow depth columns: {e}")
+            return dataframe  # Return original dataframe on error
+
     def handle_missing_values(self, dataframe=None):
         """
         Handle missing values in preprocessed dataframes with enhanced imputation strategy.
@@ -4123,6 +4246,7 @@ class TrainingPipeline:
             }
 
     def train_xgboost_rs_with_important_features(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
+
         """
         Train an XGBoost model with RandomizedSearchCV using only the top features identified
         from a previous XGBoost RandomizedSearchCV run.
