@@ -691,6 +691,9 @@ class TrainingPipeline:
         pandas.DataFrame
             The dataframe with merged snow depth columns and unwanted columns removed.
         """
+        import logging
+        from datetime import datetime
+        
         # Check if dataframe is provided
         if dataframe is None:
             print("Error: Dataframe must be provided")
@@ -702,6 +705,24 @@ class TrainingPipeline:
         if df.empty:
             print("Warning: Empty dataframe")
             return df
+        
+        # Set up logging
+        log_file_path = os.path.join(self.project_root, "merge_snow_depth_columns.log")
+        
+        # Create a logger specifically for this operation
+        logger = logging.getLogger('merge_snow_depth')
+        logger.setLevel(logging.INFO)
+        
+        # Remove existing handlers to avoid duplicates
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+        
+        # Add file handler
+        file_handler = logging.FileHandler(log_file_path, mode='a')
+        file_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
         
         try:
             # Check if snow depth columns exist
@@ -718,27 +739,40 @@ class TrainingPipeline:
             print(f"- '{snow_depth_other_col}': {has_snow_depth_other}")
             print(f"- '{snow_depth_other_distance_col}': {has_snow_depth_other_distance}")
             
+            # Initialize logging variables
+            initial_snow_depth_missing = 0
+            initial_snow_depth_other_missing = 0
+            values_successfully_merged = 0
+            final_snow_depth_missing = 0
+            
             # Handle merging logic first
             if not has_snow_depth and not has_snow_depth_other:
                 print("Neither main snow depth column found. No merging needed.")
+                logger.info(f"No snow depth columns found - Snow depth missing: N/A, Snow depth Other missing: N/A, Values merged: 0, Final missing: N/A")
             elif not has_snow_depth and has_snow_depth_other:
                 print(f"Only '{snow_depth_other_col}' found. Renaming to '{snow_depth_col}'.")
+                initial_snow_depth_other_missing = df[snow_depth_other_col].isna().sum()
                 df = df.rename(columns={snow_depth_other_col: snow_depth_col})
+                final_snow_depth_missing = df[snow_depth_col].isna().sum()
                 has_snow_depth = True
                 has_snow_depth_other = False
+                logger.info(f"Renamed column - Snow depth missing: N/A, Snow depth Other missing: {initial_snow_depth_other_missing}, Values merged: 0, Final missing: {final_snow_depth_missing}")
             elif has_snow_depth and not has_snow_depth_other:
                 print(f"Only '{snow_depth_col}' found. No merging needed.")
+                initial_snow_depth_missing = df[snow_depth_col].isna().sum()
+                final_snow_depth_missing = initial_snow_depth_missing
+                logger.info(f"Only main column found - Snow depth missing: {initial_snow_depth_missing}, Snow depth Other missing: N/A, Values merged: 0, Final missing: {final_snow_depth_missing}")
             else:
                 # Both columns exist - proceed with merging logic
                 print(f"Both snow depth columns found. Proceeding with merge logic.")
                 
                 # Count initial missing values in each column
-                snow_depth_missing = df[snow_depth_col].isna().sum()
-                snow_depth_other_missing = df[snow_depth_other_col].isna().sum()
+                initial_snow_depth_missing = df[snow_depth_col].isna().sum()
+                initial_snow_depth_other_missing = df[snow_depth_other_col].isna().sum()
                 
                 print(f"Before merge:")
-                print(f"- '{snow_depth_col}' missing values: {snow_depth_missing}")
-                print(f"- '{snow_depth_other_col}' missing values: {snow_depth_other_missing}")
+                print(f"- '{snow_depth_col}' missing values: {initial_snow_depth_missing}")
+                print(f"- '{snow_depth_other_col}' missing values: {initial_snow_depth_other_missing}")
                 
                 # Create a mask for rows where Snow depth is missing but Snow depth Other is not
                 merge_mask = df[snow_depth_col].isna() & df[snow_depth_other_col].notna()
@@ -748,15 +782,20 @@ class TrainingPipeline:
                     print(f"Merging {merge_count} values from '{snow_depth_other_col}' to '{snow_depth_col}'")
                     # Fill missing Snow depth values with Snow depth Other values
                     df.loc[merge_mask, snow_depth_col] = df.loc[merge_mask, snow_depth_other_col]
+                    values_successfully_merged = merge_count
                 else:
                     print("No values to merge (no rows where Snow depth is missing but Snow depth Other has values)")
+                    values_successfully_merged = 0
                 
                 # Count final missing values
                 final_snow_depth_missing = df[snow_depth_col].isna().sum()
                 
                 print(f"After merge:")
                 print(f"- '{snow_depth_col}' missing values: {final_snow_depth_missing}")
-                print(f"- Values successfully merged: {snow_depth_missing - final_snow_depth_missing}")
+                print(f"- Values successfully merged: {initial_snow_depth_missing - final_snow_depth_missing}")
+                
+                # Log the merge results
+                logger.info(f"Merge completed - Snow depth missing: {initial_snow_depth_missing}, Snow depth Other missing: {initial_snow_depth_other_missing}, Values merged: {values_successfully_merged}, Final missing: {final_snow_depth_missing}")
             
             # Drop unwanted columns
             columns_to_drop = []
@@ -775,7 +814,14 @@ class TrainingPipeline:
             
         except Exception as e:
             print(f"Error merging snow depth columns: {e}")
+            logger.error(f"Error merging snow depth columns - Error: {str(e)}")
             return dataframe  # Return original dataframe on error
+        
+        finally:
+            # Clean up logger handlers
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
 
     def handle_missing_values(self, dataframe=None):
         """
