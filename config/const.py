@@ -25,6 +25,9 @@ VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 't
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 
+# Set to True to drop trainStopping and commercialStop from training
+DROP_TRAIN_FEATURES = True
+
 # Important weather conditions to check for missing value handling
 IMPORTANT_WEATHER_CONDITIONS = [
     'Air temperature', 

@@ -1228,11 +1228,11 @@ class TrainingPipeline:
         
     def add_train_delayed_feature(self, dataframe=None):
         """
-        Add a binary column 'trainDelayed' based on differenceInMinutes.
+        Add a binary column 'trainDelayed' based on differenceInMinutes_offset.
         
         The column will be:
-        - True when differenceInMinutes < 0 (train is delayed)
-        - False when differenceInMinutes >= 0 (train is on time or early)
+        - True when differenceInMinutes_offset > 0 (train is delayed)
+        - False when differenceInMinutes_offset <= 0 (train is on time or early)
         
         Parameters:
         -----------
@@ -1257,21 +1257,21 @@ class TrainingPipeline:
             return df
         
         try:
-            # Check if differenceInMinutes column exists
-            if 'differenceInMinutes' not in df.columns:
-                print("Error: 'differenceInMinutes' column not found in dataframe")
+            # Check if differenceInMinutes_offset column exists
+            if 'differenceInMinutes_offset' not in df.columns:
+                print("Error: 'differenceInMinutes_offset' column not found in dataframe")
                 return df
             
-            # Create trainDelayed column based on differenceInMinutes
-            df['trainDelayed'] = df['differenceInMinutes'] > 0
+            # Create trainDelayed column based on differenceInMinutes_offset
+            df['trainDelayed'] = df['differenceInMinutes_offset'] > 0
             
-            # Reorder columns to place trainDelayed after differenceInMinutes
+            # Reorder columns to place trainDelayed after differenceInMinutes_offset
             cols = list(df.columns)
             # Remove trainDelayed from its current position
             cols.remove('trainDelayed')
-            # Find the position of differenceInMinutes
-            diff_idx = cols.index('differenceInMinutes')
-            # Insert trainDelayed after differenceInMinutes
+            # Find the position of differenceInMinutes_offset
+            diff_idx = cols.index('differenceInMinutes_offset')
+            # Insert trainDelayed after differenceInMinutes_offset
             cols.insert(diff_idx + 1, 'trainDelayed')
             # Rearrange the dataframe columns
             df = df[cols]
@@ -1287,58 +1287,35 @@ class TrainingPipeline:
         
     def select_target_feature(self, dataframe=None, target_feature=None):
         """
-        Select one of three features (differenceInMinutes, trainDelayed, cancelled) as the target
-        and drop the other two.
+        Select one of the target features and optionally drop train-specific features.
         
         Parameters:
         -----------
         dataframe : pandas.DataFrame
             The dataframe to process.
         target_feature : str
-            The feature to keep (one of 'differenceInMinutes', 'trainDelayed', or 'cancelled').
+            The feature to keep as target.
             
         Returns:
         --------
         pandas.DataFrame
-            The dataframe with only the selected target feature retained.
+            The dataframe with only the selected target feature retained and 
+            optional train features dropped based on configuration.
         """
-        # Check if dataframe is provided
-        if dataframe is None:
-            print("Error: Dataframe must be provided")
-            return None
-            
-        # Check if target_feature is valid
-        valid_targets = VALID_TARGET_FEATURES
-        if target_feature not in valid_targets:
-            print(f"Error: target_feature must be one of {valid_targets}")
-            return dataframe
-            
-        df = dataframe.copy()
-        print(f"Selecting '{target_feature}' as target feature and dropping others")
+        # ... existing code for target selection ...
         
-        if df.empty:
-            print("Warning: Empty dataframe")
-            return df
+        # NEW: Drop train features if configured
+        from config.const import DROP_TRAIN_FEATURES, NON_NUMERIC_FEATURES
         
-        try:
-            # Check which of the features exist in the dataframe
-            features_to_drop = [f for f in valid_targets if f != target_feature and f in df.columns]
-            
-            if target_feature not in df.columns:
-                print(f"Error: Target feature '{target_feature}' not found in dataframe")
-                return df
-                
-            # Drop the other features
-            df = df.drop(columns=features_to_drop)
-            
-            print(f"Successfully selected '{target_feature}' as target feature")
-            print(f"Dropped columns: {features_to_drop}")
-            
-            return df
-            
-        except Exception as e:
-            print(f"Error selecting target feature: {e}")
-            return dataframe  # Return original dataframe on error
+        if DROP_TRAIN_FEATURES:
+            features_to_drop = [col for col in NON_NUMERIC_FEATURES if col in df.columns]
+            if features_to_drop:
+                df = df.drop(columns=features_to_drop)
+                print(f"Dropped train features as configured: {features_to_drop}")
+            else:
+                print("No train features found to drop")
+        
+        return df
     
     def save_df_to_csv(self, year_month, dataframe):
         """
