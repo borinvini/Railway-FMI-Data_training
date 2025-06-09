@@ -895,132 +895,179 @@ class TrainingPipeline:
             return None
                 
         df = dataframe.copy()  # Make a copy to avoid modifying the original
-        print(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
         
-        if df.empty:
-            print("Warning: Empty dataframe")
-            return df
-        
-        # Count rows before cleaning
-        original_row_count = len(df)
-        
-        # Fill missing values in trainStopping and commercialStop with 0 (since they're now numeric)
-        for col in NON_NUMERIC_FEATURES:
-            if col in df.columns:
-                nulls = df[col].isna().sum()
-                df[col] = df[col].fillna(0)  # Fill with 0 instead of False since they're now numeric
-                print(f"- Filled {nulls} missing values in '{col}' with 0")
-
-        # Step 2: Check required columns (differenceInMinutes and cancelled)
-        required_cols = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
-        available_required_cols = [col for col in required_cols if col in df.columns]
-        
-        if available_required_cols:
-            print(f"Checking for missing values in required columns: {available_required_cols}")
-            # Store the count before dropping rows
-            before_required_drop = len(df)
-            # Drop rows where any of the required columns are None/NaN
-            df = df.dropna(subset=available_required_cols)
-            # Calculate dropped rows
-            dropped_required = before_required_drop - len(df)
-            print(f"- Dropped {dropped_required} rows with missing values in required columns")
-        else:
-            print("Warning: Required columns (differenceInMinutes, cancelled) not found in dataframe")
-            dropped_required = 0
-        
-        # Step 3: Handle weather condition columns
-        # Filter the list to only include columns that actually exist in the dataframe
-        available_important_cols = [col for col in self.important_conditions if col in df.columns]
-        
-        if not available_important_cols:
-            print("Warning: None of the specified important weather conditions found in the dataframe")
-            return df
-        
-        print(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
-        
-        # Store count before dropping weather condition rows
-        before_weather_drop = len(df)
-        
-        # Drop rows where ALL of the important weather conditions are missing
-        # (Keep rows with at least one of the specified conditions)
-        df = df.dropna(subset=available_important_cols, how='all')
-        
-        # Count how many rows were dropped due to weather conditions
-        dropped_weather = before_weather_drop - len(df)
-        
-        # ===== ENHANCED MISSING VALUE HANDLING (WITHOUT INDICATORS) =====
-        
-        # Group weather variables by appropriate imputation method
-        zero_fill_cols = ['Precipitation amount', 'Precipitation intensity', 'Snow depth']
-        median_fill_cols = ['Air temperature', 'Relative humidity', 'Dew-point temperature', 'Horizontal visibility']
-        
-        # 1. Zero imputation for precipitation and snow metrics
-        for col in zero_fill_cols:
-            if col in df.columns:
-                nulls = df[col].isna().sum()
-                if nulls > 0:
-                    # Apply zero imputation
-                    df[col] = df[col].fillna(0)
-                    print(f"- Filled {nulls} missing values in '{col}' with 0")
-        
-        # 2. Median imputation for temperature and other continuous variables
-        for col in median_fill_cols:
-            if col in df.columns:
-                nulls = df[col].isna().sum()
-                if nulls > 0:
-                    # Apply median imputation
-                    median_value = df[col].median()
-                    df[col] = df[col].fillna(median_value)
-                    print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f}")
-        
-        # For any remaining important weather columns, use median imputation
-        remaining_cols = [col for col in available_important_cols 
-                        if col not in zero_fill_cols and col not in median_fill_cols]
-        
-        for col in remaining_cols:
-            if col in df.columns:
-                nulls = df[col].isna().sum()
-                if nulls > 0:
-                    # Apply median imputation as default for other weather columns
-                    median_value = df[col].median()
-                    df[col] = df[col].fillna(median_value)
-                    print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f}")
-        
-        # Count total rows dropped
-        total_dropped = original_row_count - len(df)
-        
-        # Report the results
-        print(f"Missing values handling complete:")
-        print(f"- Original row count: {original_row_count}")
-        print(f"- Rows dropped due to missing required columns: {dropped_required}")
-        print(f"- Rows dropped due to missing all weather conditions: {dropped_weather}")
-        print(f"- Total rows dropped: {total_dropped}")
-        print(f"- Remaining rows: {len(df)}")
-        
-        # Calculate percentage of data retained
-        if original_row_count > 0:
-            retention_percentage = (len(df) / original_row_count) * 100
-            print(f"- Data retention: {retention_percentage:.2f}%")
+        # Use the logging context manager
+        with self.get_logger("handle_missing_values.log", "missing_values_handler") as logger:
+            print(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
+            logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
             
-        # Additional statistics on the important columns
-        for col in available_important_cols:
-            non_null_count = df[col].count()
-            null_count = len(df) - non_null_count
-            null_percentage = (null_count / len(df) * 100) if len(df) > 0 else 0
-            print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
-        
-        # Additional statistics for trainStopping and commercialStop if they exist
-        boolean_cols = ['trainStopping', 'commercialStop']
-        available_boolean_cols = [col for col in boolean_cols if col in df.columns]
-        
-        if available_boolean_cols:
-            print("\nBoolean columns statistics:")
-            for col in available_boolean_cols:
-                true_count = df[col].sum()
-                true_percentage = (true_count / len(df) * 100) if len(df) > 0 else 0
-                print(f"  - {col}: {true_count} True values ({true_percentage:.2f}% True)")
-        
-        return df
+            if df.empty:
+                print("Warning: Empty dataframe")
+                logger.warning("Empty dataframe provided")
+                return df
+            
+            # Count rows before cleaning
+            original_row_count = len(df)
+            
+            # Fill missing values in trainStopping and commercialStop with 0 (since they're now numeric)
+            for col in NON_NUMERIC_FEATURES:
+                if col in df.columns:
+                    nulls = df[col].isna().sum()
+                    if nulls > 0:
+                        # Calculate percentage of missing values
+                        percentage = (nulls / len(df)) * 100
+                        df[col] = df[col].fillna(0)  # Fill with 0 instead of False since they're now numeric
+                        print(f"- Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+                    else:
+                        print(f"- Filled {nulls} missing values in '{col}' with 0")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with 0")
+
+            # Step 2: Check required columns (differenceInMinutes and cancelled)
+            required_cols = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
+            available_required_cols = [col for col in required_cols if col in df.columns]
+            
+            if available_required_cols:
+                print(f"Checking for missing values in required columns: {available_required_cols}")
+                logger.info(f"Checking for missing values in required columns: {available_required_cols}")
+                # Store the count before dropping rows
+                before_required_drop = len(df)
+                # Drop rows where any of the required columns are None/NaN
+                df = df.dropna(subset=available_required_cols)
+                # Calculate dropped rows
+                dropped_required = before_required_drop - len(df)
+                dropped_percentage = (dropped_required / before_required_drop) * 100 if before_required_drop > 0 else 0
+                print(f"- Dropped {dropped_required} rows with missing values in required columns ({dropped_percentage:.2f}%)")
+                logger.info(f"Dropped {dropped_required} rows with missing values in required columns ({dropped_percentage:.2f}%)")
+            else:
+                print("Warning: Required columns (differenceInMinutes, cancelled) not found in dataframe")
+                logger.warning("Required columns (differenceInMinutes, cancelled) not found in dataframe")
+                dropped_required = 0
+            
+            # Step 3: Handle weather condition columns
+            # Filter the list to only include columns that actually exist in the dataframe
+            available_important_cols = [col for col in self.important_conditions if col in df.columns]
+            
+            if not available_important_cols:
+                print("Warning: None of the specified important weather conditions found in the dataframe")
+                logger.warning("None of the specified important weather conditions found in the dataframe")
+                return df
+            
+            print(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
+            logger.info(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
+            
+            # Store count before dropping weather condition rows
+            before_weather_drop = len(df)
+            
+            # Drop rows where ALL of the important weather conditions are missing
+            # (Keep rows with at least one of the specified conditions)
+            df = df.dropna(subset=available_important_cols, how='all')
+            
+            # Count how many rows were dropped due to weather conditions
+            dropped_weather = before_weather_drop - len(df)
+            weather_dropped_percentage = (dropped_weather / before_weather_drop) * 100 if before_weather_drop > 0 else 0
+            
+            if dropped_weather > 0:
+                print(f"- Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
+                logger.info(f"Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
+            else:
+                logger.info(f"Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
+            
+            # ===== ENHANCED MISSING VALUE HANDLING (WITHOUT INDICATORS) =====
+            
+            # Group weather variables by appropriate imputation method
+            zero_fill_cols = ['Precipitation amount', 'Precipitation intensity', 'Snow depth']
+            median_fill_cols = ['Air temperature', 'Relative humidity', 'Dew-point temperature', 'Horizontal visibility']
+            
+            # 1. Zero imputation for precipitation and snow metrics
+            for col in zero_fill_cols:
+                if col in df.columns:
+                    nulls = df[col].isna().sum()
+                    if nulls > 0:
+                        # Calculate percentage of missing values
+                        percentage = (nulls / len(df)) * 100
+                        # Apply zero imputation
+                        df[col] = df[col].fillna(0)
+                        print(f"- Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+            
+            # 2. Median imputation for temperature and other continuous variables
+            for col in median_fill_cols:
+                if col in df.columns:
+                    nulls = df[col].isna().sum()
+                    if nulls > 0:
+                        # Calculate percentage of missing values
+                        percentage = (nulls / len(df)) * 100
+                        # Apply median imputation
+                        median_value = df[col].median()
+                        df[col] = df[col].fillna(median_value)
+                        print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+            
+            # For any remaining important weather columns, use median imputation
+            remaining_cols = [col for col in available_important_cols 
+                            if col not in zero_fill_cols and col not in median_fill_cols]
+            
+            for col in remaining_cols:
+                if col in df.columns:
+                    nulls = df[col].isna().sum()
+                    if nulls > 0:
+                        # Calculate percentage of missing values
+                        percentage = (nulls / len(df)) * 100
+                        # Apply median imputation as default for other weather columns
+                        median_value = df[col].median()
+                        df[col] = df[col].fillna(median_value)
+                        print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+            
+            # Count total rows dropped
+            total_dropped = original_row_count - len(df)
+            total_dropped_percentage = (total_dropped / original_row_count) * 100 if original_row_count > 0 else 0
+            
+            # Report the results
+            print(f"Missing values handling complete:")
+            print(f"- Original row count: {original_row_count}")
+            print(f"- Rows dropped due to missing required columns: {dropped_required}")
+            print(f"- Rows dropped due to missing all weather conditions: {dropped_weather}")
+            print(f"- Total rows dropped: {total_dropped} ({total_dropped_percentage:.2f}%)")
+            print(f"- Remaining rows: {len(df)}")
+            
+            # Log the summary
+            logger.info(f"Missing values handling complete:")
+            logger.info(f"Original row count: {original_row_count}")
+            logger.info(f"Rows dropped due to missing required columns: {dropped_required}")
+            logger.info(f"Rows dropped due to missing all weather conditions: {dropped_weather}")
+            logger.info(f"Total rows dropped: {total_dropped} ({total_dropped_percentage:.2f}%)")
+            logger.info(f"Remaining rows: {len(df)}")
+            
+            # Calculate percentage of data retained
+            if original_row_count > 0:
+                retention_percentage = (len(df) / original_row_count) * 100
+                print(f"- Data retention: {retention_percentage:.2f}%")
+                logger.info(f"Data retention: {retention_percentage:.2f}%")
+                
+            # Additional statistics on the important columns
+            for col in available_important_cols:
+                non_null_count = df[col].count()
+                null_count = len(df) - non_null_count
+                null_percentage = (null_count / len(df) * 100) if len(df) > 0 else 0
+                print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
+                logger.info(f"{col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
+            
+            # Additional statistics for trainStopping and commercialStop if they exist
+            boolean_cols = ['trainStopping', 'commercialStop']
+            available_boolean_cols = [col for col in boolean_cols if col in df.columns]
+            
+            if available_boolean_cols:
+                print("\nBoolean columns statistics:")
+                logger.info("Boolean columns statistics:")
+                for col in available_boolean_cols:
+                    true_count = df[col].sum()
+                    true_percentage = (true_count / len(df) * 100) if len(df) > 0 else 0
+                    print(f"  - {col}: {true_count} True values ({true_percentage:.2f}% True)")
+                    logger.info(f"{col}: {true_count} True values ({true_percentage:.2f}% True)")
+            
+            return df
     
     def remove_duplicates(self, dataframe=None):
         """
