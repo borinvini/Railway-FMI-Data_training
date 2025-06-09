@@ -34,6 +34,7 @@ from config.const import (
     IMPORTANCE_THRESHOLD,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     TOP_FEATURES_COUNT,
+    VALID_TARGET_FEATURES,
     XGBOOST_OUTPUT_FOLDER,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
@@ -1139,7 +1140,7 @@ class TrainingPipeline:
             return None
             
         # Check if target_feature is valid
-        valid_targets = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
+        valid_targets = VALID_TARGET_FEATURES
         if target_feature not in valid_targets:
             print(f"Error: target_feature must be one of {valid_targets}")
             return dataframe

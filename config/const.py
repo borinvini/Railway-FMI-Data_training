@@ -19,9 +19,11 @@ REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 DEFAULT_TARGET_FEATURE = 'differenceInMinutes_offset'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled'
 
+# Valid target features for selection
+VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
+
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
-
 
 # Important weather conditions to check for missing value handling
 IMPORTANT_WEATHER_CONDITIONS = [
