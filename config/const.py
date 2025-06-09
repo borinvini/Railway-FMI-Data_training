@@ -37,12 +37,33 @@ IMPORTANT_WEATHER_CONDITIONS = [
 
 # Train filtering configuration
 FILTER_TRAINS_BY_STATIONS = False  # Set to True to filter trains by required stations
-REQUIRED_STATIONS = ['HKI', 'OL']  # Trains must pass through ALL of these stations
+REQUIRED_STATIONS = ['HKI', 'OL', 'ROI']  # Trains must pass through ALL of these stations
 
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.05
 # Number of top features to select for XGBoost important features
 TOP_FEATURES_COUNT = 5
+
+# Pipeline stages configuration
+PIPELINE_STAGES = [
+    "merge_snow_depth_columns",
+    "clean_missing_values",
+    "remove_duplicates", 
+    "scale_numeric",
+    "add_train_delayed",
+    "select_target",
+    "save_csv",
+    "split_dataset",
+    "train_regularized_regression", 
+    "train_decision_tree",
+    "train_with_important_features",
+    "train_randomized_search_cv",
+    "train_randomized_search_with_important_features",
+    "train_xgboost",  
+    "train_xgboost_with_randomized_search_cv",
+    "train_xgboost_with_important_features",
+    "train_xgboost_rs_with_important_features"
+]
 
 
 # Parameter distributions for RandomizedSearchCV

@@ -27,6 +27,7 @@ from config.const import (
     IMPORTANT_WEATHER_CONDITIONS,
     NON_NUMERIC_FEATURES, 
     OUTPUT_FOLDER,
+    PIPELINE_STAGES,
     PREPROCESSED_OUTPUT_FOLDER,
     DECISION_TREE_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
@@ -176,29 +177,13 @@ class TrainingPipeline:
             
             # Generate a month identifier for filenames
             month_id = f"{year_range}_{month_num}"
-            
-            # Define all possible pipeline stages - UPDATED to include snow depth merge as first stage
-            stages = [
-                "merge_snow_depth_columns",
-                "clean_missing_values",
-                "remove_duplicates",
-                "scale_numeric",
-                "add_train_delayed",
-                "select_target",
-                "save_csv",
-                "split_dataset",
-                "train_regularized_regression", 
-                "train_decision_tree",
-                "train_with_important_features",
-                "train_randomized_search_cv",
-                "train_randomized_search_with_important_features",
-                "train_xgboost",  
-                "train_xgboost_with_randomized_search_cv" 
-            ]
+
+            # Replace the hardcoded stages list with the imported constant
+            stages = PIPELINE_STAGES.copy()  # Make a copy to avoid modifying the original
             
             # Initialize pipeline state
             state = {
-                "current_stage": stages[0],  # Now starts with merge_snow_depth_columns
+                "current_stage": stages[0],  
                 "df": combined_df,
                 "month_id": month_id,
                 "success": True
