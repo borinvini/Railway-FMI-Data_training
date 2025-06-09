@@ -64,7 +64,7 @@ class TrainingPipeline:
         self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
 
         # Create log directory
-        self.log_dir = os.path.join(self.project_root, "data", "log")
+        self.log_dir = os.path.join(self.project_root, "data", "output", "log")
         os.makedirs(self.log_dir, exist_ok=True)
 
         # Add this line to make the constant available as an instance attribute
