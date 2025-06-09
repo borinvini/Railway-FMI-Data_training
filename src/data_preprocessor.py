@@ -1102,26 +1102,41 @@ class TrainingPipeline:
             print("Warning: Empty dataframe")
             return df
         
-        # Count rows before deduplication
-        original_row_count = len(df)
-        
-        # Remove duplicate rows
-        df_deduplicated = df.drop_duplicates()
-        
-        # Count how many rows were removed
-        removed_duplicates = original_row_count - len(df_deduplicated)
-        
-        # Report the results
-        print(f"Duplicate removal complete:")
-        print(f"- Original row count: {original_row_count}")
-        print(f"- Duplicate rows removed: {removed_duplicates}")
-        print(f"- Remaining rows: {len(df_deduplicated)}")
-        
-        # Calculate percentage of data retained
-        if original_row_count > 0:
-            retention_percentage = (len(df_deduplicated) / original_row_count) * 100
+        # Use the logging context manager
+        with self.get_logger("remove_duplicates.log", "remove_duplicates") as logger:
+            logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
+            
+            # Count rows before deduplication
+            original_row_count = len(df)
+            
+            # Remove duplicate rows
+            df_deduplicated = df.drop_duplicates()
+            
+            # Count how many rows were removed
+            removed_duplicates = original_row_count - len(df_deduplicated)
+            
+            # Calculate percentage of data retained
+            if original_row_count > 0:
+                retention_percentage = (len(df_deduplicated) / original_row_count) * 100
+                duplicate_percentage = 100 - retention_percentage
+            else:
+                retention_percentage = 0
+                duplicate_percentage = 0
+            
+            # Report the results to console
+            print(f"Duplicate removal complete:")
+            print(f"- Original row count: {original_row_count}")
+            print(f"- Duplicate rows removed: {removed_duplicates}")
+            print(f"- Remaining rows: {len(df_deduplicated)}")
             print(f"- Data retention: {retention_percentage:.2f}%")
-            print(f"- Duplicate percentage: {100 - retention_percentage:.2f}%")
+            print(f"- Duplicate percentage: {duplicate_percentage:.2f}%")
+            
+            # Log the essential summary information
+            logger.info(f"Original row count: {original_row_count}")
+            logger.info(f"Duplicate rows removed: {removed_duplicates}")
+            logger.info(f"Remaining rows: {len(df_deduplicated)}")
+            logger.info(f"Data retention: {retention_percentage:.2f}%")
+            logger.info(f"Duplicate percentage: {duplicate_percentage:.2f}%")
         
         return df_deduplicated
     
