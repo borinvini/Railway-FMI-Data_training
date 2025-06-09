@@ -24,6 +24,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
+    DROP_TRAIN_FEATURES,
     IMPORTANT_FEATURES_OUTPUT_FOLDER,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
@@ -1302,11 +1303,41 @@ class TrainingPipeline:
             The dataframe with only the selected target feature retained and 
             optional train features dropped based on configuration.
         """
-        # ... existing code for target selection ...
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Selecting target feature '{target_feature}' from dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Validate target feature
+        if target_feature is None:
+            print("Error: target_feature must be specified")
+            return df
+        
+        if target_feature not in VALID_TARGET_FEATURES:
+            print(f"Error: Invalid target feature '{target_feature}'. Must be one of: {VALID_TARGET_FEATURES}")
+            return df
+        
+        if target_feature not in df.columns:
+            print(f"Error: Target feature '{target_feature}' not found in dataframe columns")
+            return df
+        
+        # Drop other target features, keeping only the selected one
+        other_targets = [col for col in VALID_TARGET_FEATURES if col != target_feature and col in df.columns]
+        
+        if other_targets:
+            print(f"Dropping other target features: {other_targets}")
+            df = df.drop(columns=other_targets)
+        
+        print(f"Kept target feature: '{target_feature}'")
         
         # NEW: Drop train features if configured
-        from config.const import DROP_TRAIN_FEATURES, NON_NUMERIC_FEATURES
-        
         if DROP_TRAIN_FEATURES:
             features_to_drop = [col for col in NON_NUMERIC_FEATURES if col in df.columns]
             if features_to_drop:
@@ -1315,6 +1346,7 @@ class TrainingPipeline:
             else:
                 print("No train features found to drop")
         
+        print(f"Final dataframe shape: {df.shape}")
         return df
     
     def save_df_to_csv(self, year_month, dataframe):
