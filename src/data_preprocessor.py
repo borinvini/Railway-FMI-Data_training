@@ -74,7 +74,7 @@ class TrainingPipeline:
         self.important_conditions = IMPORTANT_WEATHER_CONDITIONS
 
     @contextmanager
-    def get_logger(self, log_filename, logger_name=None):
+    def get_logger(self, log_filename, logger_name=None, month_id=None):
         """
         Context manager for creating and managing loggers with automatic cleanup.
         
@@ -84,18 +84,13 @@ class TrainingPipeline:
             Name of the log file (e.g., "merge_snow_depth.log")
         logger_name : str, optional
             Name of the logger. If None, uses log_filename without extension.
+        month_id : str, optional
+            Month identifier (e.g., "2023-2024_12") to log at the beginning of the file.
             
         Yields:
         -------
         logging.Logger
             Configured logger instance
-            
-        Example:
-        --------
-        with self.get_logger("merge_snow_depth.log") as logger:
-            logger.info("Processing started")
-            # ... do work ...
-            logger.info("Processing completed")
         """
         # Create log file path
         log_file_path = os.path.join(self.log_dir, log_filename)
@@ -119,6 +114,9 @@ class TrainingPipeline:
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
         
+        # Log the month_id at the beginning if provided
+        if month_id:
+            logger.info(f"=== Processing Month: {month_id} ===")
         
         try:
             yield logger
@@ -259,7 +257,7 @@ class TrainingPipeline:
                 match state["current_stage"]:
                     case "merge_snow_depth_columns":  # NEW STAGE
                         print(f"\nMerging snow depth columns for {month_id}...")
-                        merged_df = self.merge_snow_depth_columns(dataframe=state["df"])
+                        merged_df = self.merge_snow_depth_columns(dataframe=state["df"], month_id=month_id)
                         
                         # Clear previous dataframe from memory
                         del state["df"]
@@ -275,7 +273,7 @@ class TrainingPipeline:
                     
                     case "clean_missing_values":
                         print(f"\nHandling missing values for {month_id}...")
-                        cleaned_df = self.handle_missing_values(dataframe=state["df"])
+                        cleaned_df = self.handle_missing_values(dataframe=state["df"], month_id=month_id)
                         
                         # Clear previous dataframe from memory
                         del state["df"]
@@ -291,7 +289,7 @@ class TrainingPipeline:
                     
                     case "remove_duplicates":
                         print(f"Removing duplicates for {month_id}...")
-                        deduplicated_df = self.remove_duplicates(dataframe=state["df"])
+                        deduplicated_df = self.remove_duplicates(dataframe=state["df"], month_id=month_id)
                         
                         # Clear previous dataframe from memory
                         del state["df"]
@@ -307,7 +305,7 @@ class TrainingPipeline:
                     
                     case "scale_numeric":
                         print(f"Scaling numeric columns for {month_id}...")
-                        scaled_df = self.scale_numeric_columns(dataframe=state["df"])
+                        scaled_df = self.scale_numeric_columns(dataframe=state["df"], month_id=month_id)
                         
                         # Clear previous dataframe from memory
                         del state["df"]
@@ -734,7 +732,7 @@ class TrainingPipeline:
             traceback.print_exc()  # Print full traceback for debugging
             return None
         
-    def merge_snow_depth_columns(self, dataframe=None):
+    def merge_snow_depth_columns(self, dataframe=None, month_id=None):
         """
         Merge 'Snow depth' and 'Snow depth Other' columns, and drop 'Snow depth Other Distance'.
         
@@ -765,7 +763,7 @@ class TrainingPipeline:
             return df
         
         # Use the new logging method
-        with self.get_logger("merge_snow_depth_columns.log", "merge_snow_depth") as logger:
+        with self.get_logger("merge_snow_depth_columns.log", "merge_snow_depth", month_id) as logger:
             try:
                 # Check if snow depth columns exist
                 snow_depth_col = 'Snow depth'
@@ -867,7 +865,7 @@ class TrainingPipeline:
                 logger.error(f"Error merging snow depth columns - Error: {str(e)}")
                 return dataframe  # Return original dataframe on error
 
-    def handle_missing_values(self, dataframe=None):
+    def handle_missing_values(self, dataframe=None, month_id=None):
         """
         Handle missing values in preprocessed dataframes with enhanced imputation strategy.
         
@@ -897,7 +895,7 @@ class TrainingPipeline:
         df = dataframe.copy()  # Make a copy to avoid modifying the original
         
         # Use the logging context manager
-        with self.get_logger("handle_missing_values.log", "missing_values_handler") as logger:
+        with self.get_logger("handle_missing_values.log", "missing_values_handler", month_id) as logger:
             print(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
             logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
             
@@ -1069,7 +1067,7 @@ class TrainingPipeline:
             
             return df
     
-    def remove_duplicates(self, dataframe=None):
+    def remove_duplicates(self, dataframe=None, month_id=None):
         """
         Remove duplicate rows from the processed dataframe.
         
@@ -1103,7 +1101,7 @@ class TrainingPipeline:
             return df
         
         # Use the logging context manager
-        with self.get_logger("remove_duplicates.log", "remove_duplicates") as logger:
+        with self.get_logger("remove_duplicates.log", "remove_duplicates", month_id) as logger:
             logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
             
             # Count rows before deduplication
@@ -1140,7 +1138,7 @@ class TrainingPipeline:
         
         return df_deduplicated
     
-    def scale_numeric_columns(self, dataframe=None):
+    def scale_numeric_columns(self, dataframe=None, month_id=None):
         """
         Scale numeric columns in the dataframe using StandardScaler.
         
@@ -1173,7 +1171,7 @@ class TrainingPipeline:
             return df
         
         # Use the logging context manager
-        with self.get_logger("scale_numeric_columns.log", "scale_numeric") as logger:
+        with self.get_logger("scale_numeric_columns.log", "scale_numeric", month_id) as logger:
             logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
             
             try:
