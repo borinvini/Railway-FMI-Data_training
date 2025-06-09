@@ -1172,43 +1172,61 @@ class TrainingPipeline:
             print("Warning: Empty dataframe")
             return df
         
-        try:
-            # Identify all numeric columns
-            all_numeric_columns = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+        # Use the logging context manager
+        with self.get_logger("scale_numeric_columns.log", "scale_numeric") as logger:
+            logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
             
-            if len(all_numeric_columns) == 0:
-                print("Warning: No numeric columns found in the dataframe")
+            try:
+                # Identify all numeric columns
+                all_numeric_columns = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+                
+                if len(all_numeric_columns) == 0:
+                    print("Warning: No numeric columns found in the dataframe")
+                    logger.warning("No numeric columns found in the dataframe")
+                    return df
+                
+                # Exclude both existing excluded columns and the new missing indicators
+                columns_to_scale = [col for col in all_numeric_columns 
+                                if col not in ['differenceInMinutes', 'differenceInMinutes_offset', 
+                                                'trainStopping', 'commercialStop']
+                                and not col.endswith('_missing')]
+                            
+                # Report which columns will be scaled and which ones are excluded
+                excluded_columns = set(all_numeric_columns) - set(columns_to_scale)
+                
+                # Console output
+                print(f"Found {len(all_numeric_columns)} numeric columns.")
+                print(f"Excluding from scaling: {list(excluded_columns)}")
+                print(f"Columns to scale: {columns_to_scale}")
+                
+                # Log the same information
+                logger.info(f"Found {len(all_numeric_columns)} numeric columns.")
+                logger.info(f"Excluding from scaling: {list(excluded_columns)}")
+                logger.info(f"Columns to scale: {columns_to_scale}")
+                
+                if not columns_to_scale:
+                    print("No columns to scale after exclusions. Returning original dataframe.")
+                    logger.info("No columns to scale after exclusions. Returning original dataframe.")
+                    return df
+                
+                # Initialize the scaler
+                scaler = StandardScaler()
+                
+                # Scale only the selected numeric columns
+                df[columns_to_scale] = scaler.fit_transform(df[columns_to_scale])
+                
+                # Console and log success message
+                success_msg = f"Successfully scaled {len(columns_to_scale)} numeric columns"
+                print(success_msg)
+                logger.info(success_msg)
+                
                 return df
-            
-            # Exclude both existing excluded columns and the new missing indicators
-            columns_to_scale = [col for col in all_numeric_columns 
-                            if col not in ['differenceInMinutes', 'differenceInMinutes_offset', 
-                                            'trainStopping', 'commercialStop']
-                            and not col.endswith('_missing')]
-                        
-            # Report which columns will be scaled and which ones are excluded
-            excluded_columns = set(all_numeric_columns) - set(columns_to_scale)
-            print(f"Found {len(all_numeric_columns)} numeric columns.")
-            print(f"Excluding from scaling: {list(excluded_columns)}")
-            print(f"Columns to scale: {columns_to_scale}")
-            
-            if not columns_to_scale:
-                print("No columns to scale after exclusions. Returning original dataframe.")
-                return df
-            
-            # Initialize the scaler
-            scaler = StandardScaler()
-            
-            # Scale only the selected numeric columns
-            df[columns_to_scale] = scaler.fit_transform(df[columns_to_scale])
-            
-            print(f"Successfully scaled {len(columns_to_scale)} numeric columns")
-            
-            return df
-            
-        except Exception as e:
-            print(f"Error scaling numeric columns: {e}")
-            return dataframe  # Return original dataframe on error
+                
+            except Exception as e:
+                error_msg = f"Error scaling numeric columns: {e}"
+                print(error_msg)
+                logger.error(error_msg)
+                return dataframe  # Return original dataframe on error
         
     def add_train_delayed_feature(self, dataframe=None):
         """
