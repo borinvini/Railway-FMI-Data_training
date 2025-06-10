@@ -4,6 +4,8 @@ import os
 import pandas as pd
 import re
 import ast
+import shap
+import joblib
 import logging
 from sklearn.impute import SimpleImputer
 import xgboost as xgb
@@ -1732,174 +1734,10 @@ class TrainingPipeline:
                 "error": str(e)
             }
             
-    def train_decision_tree(self, year_month, max_depth=None, random_state=42):
-        """
-        Train a Decision Tree classifier on the preprocessed and split data.
-        
-        Parameters:
-        -----------
-        year_month : str
-            Year and month in format "YYYY_MM" for the filename.
-        max_depth : int, optional
-            Maximum depth of the decision tree. None means unlimited.
-        random_state : int, optional
-            Random seed for reproducibility. Defaults to 42.
-            
-        Returns:
-        --------
-        dict
-            A summary of the training results, including model performance metrics.
-        """
-        try:
-            # Construct file paths for the train and test sets
-            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_train.csv"
-            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_test.csv"
-            
-            train_path = os.path.join(self.preprocessed_dir, train_filename)
-            test_path = os.path.join(self.preprocessed_dir, test_filename)
-            
-            # Check if files exist
-            if not os.path.exists(train_path) or not os.path.exists(test_path):
-                error_msg = f"Files not found: {train_path} or {test_path}"
-                print(f"Error: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            # Load datasets
-            print(f"Loading training data from {train_path}")
-            train_df = pd.read_csv(train_path)
-            
-            print(f"Loading test data from {test_path}")
-            test_df = pd.read_csv(test_path)
-            
-            # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
-            target_column = None
-            
-            for option in target_options:
-                if option in train_df.columns:
-                    target_column = option
-                    break
-            
-            if not target_column:
-                print(f"Error: No target column found in dataset")
-                return {
-                    "success": False,
-                    "error": "No target column found in dataset"
-                }
-            
-            print(f"Identified target column: {target_column}")
-            
-            # Split features and target
-            X_train = train_df.drop(target_column, axis=1)
-            y_train = train_df[target_column]
-            
-            X_test = test_df.drop(target_column, axis=1)
-            y_test = test_df[target_column]
-            
-            # Check if we have classification or regression problem
-            is_classification = True
-            if target_column == 'differenceInMinutes':
-                is_classification = False
-                print(f"Target '{target_column}' indicates a regression problem")
-            else:
-                print(f"Target '{target_column}' indicates a classification problem")
-            
-            if is_classification:
-                # Train Decision Tree Classifier
-                dt = DecisionTreeClassifier(max_depth=max_depth, random_state=random_state)
-                print(f"Training Decision Tree classifier with max_depth={max_depth}")
-                dt.fit(X_train, y_train)
-                
-                # Predict
-                y_pred = dt.predict(X_test)
-                
-                # Evaluate model
-                accuracy = accuracy_score(y_test, y_pred)
-                report = classification_report(y_test, y_pred, output_dict=True)
-                conf_matrix = confusion_matrix(y_test, y_pred)
-                
-                print(f"\nDecision Tree Classifier Results:")
-                print(f"Accuracy: {accuracy:.4f}")
-                print("\nClassification Report:")
-                print(classification_report(y_test, y_pred))
-                
-                print("\nConfusion Matrix:")
-                print(conf_matrix)
-                
-                # Extract and save metrics
-                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, year_month)
-                
-                # Feature importance
-                feature_importance = pd.DataFrame({
-                    'Feature': X_train.columns,
-                    'Importance': dt.feature_importances_
-                }).sort_values(by='Importance', ascending=False)
-                
-                print("\nFeature Importance (top 10):")
-                print(feature_importance.head(10))
-                
-                # Save the model
-                try:
-                    import joblib
-                    
-                    # Ensure decision tree output directory exists
-                    os.makedirs(self.decision_tree_dir, exist_ok=True)
-                    
-                    model_filename = f"decision_tree_{year_month}.joblib"
-                    model_path = os.path.join(self.decision_tree_dir, model_filename)
-                    joblib.dump(dt, model_path)
-                    print(f"Model saved to {model_path}")
-                    
-                    # Save feature importance
-                    importance_filename = f"feature_importance_{year_month}.csv"
-                    importance_path = os.path.join(self.decision_tree_dir, importance_filename)
-                    feature_importance.to_csv(importance_path, index=False)
-                    print(f"Feature importance saved to {importance_path}")
-                    
-                    return {
-                        "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy,
-                        "report": report,
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
-                    }
-                    
-                except Exception as e:
-                    print(f"Warning: Could not save model: {str(e)}")
-                    return {
-                        "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy,
-                        "report": report,
-                        "metrics": metrics_result["metrics"],
-                        "metrics_path": metrics_result["metrics_path"],
-                        "model_saved": False
-                    }
-            else:
-                # For regression problems we would need a different approach
-                # For now, just note that we don't handle regression
-                print(f"Regression with Decision Trees not implemented for target {target_column}")
-                return {
-                    "success": False,
-                    "error": f"Regression with Decision Trees not implemented for target {target_column}"
-                }
-        
-        except Exception as e:
-            print(f"Error training decision tree for {year_month}: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-         
     def train_month_decision_tree(self, month_id, max_depth=None, random_state=42):
         """
         Train a Decision Tree classifier on the preprocessed and split month data.
+        Now includes SHAP analysis for delay prediction insights.
         
         Parameters:
         -----------
@@ -2006,19 +1844,237 @@ class TrainingPipeline:
                 # Extract and save metrics
                 metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, month_id)
                 
-                # Feature importance
+                # Standard Feature importance
                 feature_importance = pd.DataFrame({
                     'Feature': X_train.columns,
                     'Importance': dt.feature_importances_
                 }).sort_values(by='Importance', ascending=False)
                 
-                print("\nFeature Importance (top 10):")
+                print("\nStandard Feature Importance (top 10):")
                 print(feature_importance.head(10))
                 
-                # Save the model
-                try:
-                    import joblib
+                # ========== NEW: SHAP ANALYSIS FOR DELAY PREDICTION ==========
+                print("\n" + "="*60)
+                print("PERFORMING SHAP ANALYSIS FOR DELAY PREDICTION")
+                print("="*60)
                     
+                # Create SHAP explainer for the decision tree
+                print("Creating SHAP explainer...")
+                explainer = shap.TreeExplainer(dt)
+                
+                # Calculate SHAP values for test set (use a sample if too large)
+                max_samples = 1000  # Limit to avoid memory issues
+                if len(X_test) > max_samples:
+                    print(f"Using sample of {max_samples} test instances for SHAP analysis")
+                    X_test_sample = X_test.sample(n=max_samples, random_state=random_state)
+                    y_test_sample = y_test.loc[X_test_sample.index]
+                else:
+                    X_test_sample = X_test
+                    y_test_sample = y_test
+                
+                print("Calculating SHAP values...")
+                shap_values = explainer.shap_values(X_test_sample)
+                
+                # Debug: Check the format of SHAP values
+                print(f"SHAP values type: {type(shap_values)}")
+                if isinstance(shap_values, list):
+                    print(f"SHAP values list length: {len(shap_values)}")
+                    for i, sv in enumerate(shap_values):
+                        print(f"  Element {i} shape: {sv.shape if hasattr(sv, 'shape') else 'No shape'}")
+                elif hasattr(shap_values, 'shape'):
+                    print(f"SHAP values shape: {shap_values.shape}")
+                
+                # Check unique classes in target to confirm it's binary
+                unique_classes = np.unique(y_train)
+                print(f"Unique classes in target: {unique_classes}")
+                print(f"Number of classes: {len(unique_classes)}")
+                
+                # Handle different SHAP value formats
+                shap_values_true = None
+                
+                if isinstance(shap_values, list) and len(shap_values) == 2:
+                    # Standard binary classification format: list with 2 arrays
+                    print("Using standard binary classification format (list with 2 arrays)")
+                    shap_values_true = shap_values[1]  # Values for class 1 (True/Delayed)
+                    
+                elif isinstance(shap_values, list) and len(shap_values) == 1:
+                    # Single array format (some SHAP versions return this for binary classification)
+                    print("Using single array format for binary classification")
+                    shap_values_true = shap_values[0]  # The single array represents contributions to positive class
+                    
+                elif not isinstance(shap_values, list) and hasattr(shap_values, 'shape'):
+                    # Direct numpy array format
+                    if len(shap_values.shape) == 2:
+                        print("Using direct array format for binary classification")
+                        shap_values_true = shap_values  # Direct array of SHAP values
+                    elif len(shap_values.shape) == 3 and shap_values.shape[2] == 2:
+                        print("Using 3D array format, extracting class 1 (True/Delayed)")
+                        shap_values_true = shap_values[:, :, 1]  # Extract values for class 1
+                    else:
+                        print(f"Unexpected array shape: {shap_values.shape}")
+                        raise ValueError(f"Unexpected SHAP values array shape: {shap_values.shape}")
+                else:
+                    print(f"Unexpected SHAP values format:")
+                    print(f"  Type: {type(shap_values)}")
+                    print(f"  Is list: {isinstance(shap_values, list)}")
+                    if isinstance(shap_values, list):
+                        print(f"  List length: {len(shap_values)}")
+                    raise ValueError("Unable to parse SHAP values format")
+                
+                # Now process the SHAP values for the True class (delays)
+                if shap_values_true is not None:
+                    print(f"Processing SHAP values for True class, shape: {shap_values_true.shape}")
+                    
+                    # Calculate mean absolute SHAP values for each feature
+                    # This shows average contribution to delay prediction
+                    mean_shap_values = np.mean(np.abs(shap_values_true), axis=0)
+                    
+                    # Also calculate mean signed SHAP values to see direction of influence
+                    mean_shap_signed = np.mean(shap_values_true, axis=0)
+                    
+                    # Create SHAP importance DataFrame
+                    shap_importance = pd.DataFrame({
+                        'Feature': X_train.columns,
+                        'SHAP_Importance_Abs': mean_shap_values,
+                        'SHAP_Importance_Signed': mean_shap_signed,
+                        'Increases_Delay_Probability': mean_shap_signed > 0
+                    }).sort_values(by='SHAP_Importance_Abs', ascending=False)
+                    
+                    # Calculate baseline prediction (average probability of delay)
+                    baseline_prob = y_train.mean()
+                    print(f"\nBaseline delay probability: {baseline_prob:.1%}")
+                    
+                    # Calculate total SHAP contribution for the sample
+                    total_shap_contribution = np.sum(np.abs(mean_shap_signed))
+                    print(f"Total absolute SHAP contribution: {total_shap_contribution:.4f} ({total_shap_contribution*100:.2f} percentage points)")
+                    
+                    # Convert SHAP values to percentage points for easier interpretation
+                    shap_importance['SHAP_Percentage_Points'] = shap_importance['SHAP_Importance_Signed'] * 100
+                    shap_importance['SHAP_Abs_Percentage_Points'] = shap_importance['SHAP_Importance_Abs'] * 100
+                    
+                    # Show relative importance as percentages of total contribution
+                    shap_importance['Relative_Contribution_Pct'] = (
+                        shap_importance['SHAP_Importance_Abs'] / total_shap_contribution * 100
+                    )
+                    
+                    # Get top features for later use (define early to avoid scope issues)
+                    delay_increasing_features = shap_importance[
+                        shap_importance['Increases_Delay_Probability'] == True
+                    ].head(10)
+                    
+                    delay_decreasing_features = shap_importance[
+                        shap_importance['Increases_Delay_Probability'] == False
+                    ].head(5)
+                    
+                    top_increase = delay_increasing_features.iloc[0] if len(delay_increasing_features) > 0 else None
+                    top_decrease = delay_decreasing_features.iloc[0] if len(delay_decreasing_features) > 0 else None
+                    
+                    print("\nSHAP Feature Importance for DELAY PREDICTION (True class):")
+                    print("Features that INCREASE delay probability (positive SHAP values):")
+                    
+                    for _, row in delay_increasing_features.iterrows():
+                        print(f"  {row['Feature']:<25}: +{row['SHAP_Percentage_Points']:>6.2f} pp "
+                            f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
+                    
+                    print("\nFeatures that DECREASE delay probability (negative SHAP values):")
+                    
+                    for _, row in delay_decreasing_features.iterrows():
+                        print(f"  {row['Feature']:<25}: {row['SHAP_Percentage_Points']:>6.2f} pp "
+                            f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
+                    
+                    # Example interpretation
+                    print(f"\n" + "="*60)
+                    print("INTERPRETATION:")
+                    print("="*60)
+                    print(f"Baseline delay probability: {baseline_prob:.1%}")
+                    
+                    try:
+                        if top_increase is not None and len(top_increase) > 0:
+                            new_prob = baseline_prob + top_increase['SHAP_Importance_Signed']
+                            print(f"• {top_increase['Feature']} (bad conditions) → {new_prob:.1%} delay probability")
+                        
+                        if top_decrease is not None and len(top_decrease) > 0:
+                            new_prob = baseline_prob + top_decrease['SHAP_Importance_Signed']
+                            print(f"• {top_decrease['Feature']} (good conditions) → {new_prob:.1%} delay probability")
+                    except Exception as e:
+                        print(f"Warning: Could not generate interpretation examples: {e}")
+                        print("Check the SHAP results above for feature impacts.")
+                    
+                    print("="*60)
+                    
+                    # Save SHAP importance to CSV
+                    shap_filename = f"feature_importance_SHAP_True_{month_id}.csv"
+                    shap_path = os.path.join(self.decision_tree_dir, shap_filename)
+                    shap_importance.to_csv(shap_path, index=False)
+                    print(f"\nSHAP feature importance saved to {shap_path}")
+                    
+                    # Also save detailed analysis
+                    detailed_filename = f"SHAP_analysis_summary_{month_id}.txt"
+                    detailed_path = os.path.join(self.decision_tree_dir, detailed_filename)
+                    
+                    with open(detailed_path, 'w') as f:
+                        f.write(f"SHAP Analysis Summary for {month_id}\n")
+                        f.write("="*50 + "\n\n")
+                        f.write(f"Target: {target_column}\n")
+                        f.write(f"Analysis performed on {len(X_test_sample)} test samples\n")
+                        f.write(f"Baseline delay probability: {baseline_prob:.1%}\n")
+                        f.write(f"Total SHAP contribution: {total_shap_contribution:.4f} ({total_shap_contribution*100:.2f} percentage points)\n\n")
+                        
+                        f.write("TOP FEATURES THAT INCREASE DELAY PROBABILITY:\n")
+                        f.write("-"*50 + "\n")
+                        for _, row in delay_increasing_features.iterrows():
+                            f.write(f"{row['Feature']:<25}: +{row['SHAP_Percentage_Points']:>6.2f} pp "
+                                f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
+                        
+                        f.write("\nTOP FEATURES THAT DECREASE DELAY PROBABILITY:\n")
+                        f.write("-"*50 + "\n")
+                        for _, row in delay_decreasing_features.iterrows():
+                            f.write(f"{row['Feature']:<25}: {row['SHAP_Percentage_Points']:>6.2f} pp "
+                                f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
+                        
+                        f.write("\nINTERPRETATION:\n")
+                        f.write("-"*30 + "\n")
+                        f.write(f"pp = percentage points\n")
+                        f.write(f"Baseline delay rate: {baseline_prob:.1%}\n")
+                        
+                        try:
+                            if top_increase is not None and len(top_increase) > 0:
+                                new_prob = baseline_prob + top_increase['SHAP_Importance_Signed']
+                                f.write(f"Worst weather ({top_increase['Feature']}) → {new_prob:.1%} delay probability\n")
+                            
+                            if top_decrease is not None and len(top_decrease) > 0:
+                                new_prob = baseline_prob + top_decrease['SHAP_Importance_Signed']
+                                f.write(f"Best conditions ({top_decrease['Feature']}) → {new_prob:.1%} delay probability\n")
+                        except Exception as e:
+                            f.write(f"Note: Could not generate interpretation examples: {e}\n")
+                    
+                    print(f"Detailed SHAP analysis saved to {detailed_path}")
+                    
+                    # Compare with standard feature importance
+                    print("\n" + "-"*60)
+                    print("COMPARISON: Standard vs SHAP Feature Importance")
+                    print("-"*60)
+                    
+                    # Merge the two importance measures
+                    comparison = feature_importance.merge(
+                        shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                    'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                        on='Feature'
+                    )
+                    
+                    print("Top 10 features by Standard Importance vs SHAP Importance:")
+                    for _, row in comparison.head(10).iterrows():
+                        direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                        print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                            f"SHAP={row['SHAP_Abs_Percentage_Points']:>5.2f}pp {direction}, "
+                            f"({row['Relative_Contribution_Pct']:>4.1f}% of impact)")
+                else:
+                    raise ValueError("Failed to extract SHAP values for True class")
+                
+                print("="*60)
+                
+                # Save the model
+                try:  
                     # Ensure decision tree output directory exists
                     os.makedirs(self.decision_tree_dir, exist_ok=True)
                     
@@ -2027,13 +2083,13 @@ class TrainingPipeline:
                     joblib.dump(dt, model_path)
                     print(f"Model saved to {model_path}")
                     
-                    # Save feature importance
+                    # Save standard feature importance
                     importance_filename = f"feature_importance_{month_id}.csv"
                     importance_path = os.path.join(self.decision_tree_dir, importance_filename)
                     feature_importance.to_csv(importance_path, index=False)
-                    print(f"Feature importance saved to {importance_path}")
+                    print(f"Standard feature importance saved to {importance_path}")
                     
-                    return {
+                    result = {
                         "success": True,
                         "model_type": "classification",
                         "accuracy": accuracy,
@@ -2041,8 +2097,11 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
+                        "shap_importance_path": shap_path,
                         "metrics_path": metrics_result["metrics_path"]
                     }
+                    
+                    return result
                     
                 except Exception as e:
                     print(f"Warning: Could not save model: {str(e)}")
@@ -2070,7 +2129,7 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
-        
+
     def train_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, max_depth=None, random_state=42):
         """
         Train a Decision Tree classifier on only the important features.

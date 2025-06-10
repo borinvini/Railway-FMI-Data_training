@@ -16,7 +16,7 @@ XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes_offset'  
+DEFAULT_TARGET_FEATURE = 'trainDelayed'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled'
 
 # Valid target features for selection
