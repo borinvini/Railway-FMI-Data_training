@@ -1737,7 +1737,7 @@ class TrainingPipeline:
     def train_month_decision_tree(self, month_id, max_depth=None, random_state=42):
         """
         Train a Decision Tree classifier on the preprocessed and split month data.
-        Now includes SHAP analysis for delay prediction insights.
+        Now uses the separated SHAP analysis method for delay prediction insights.
         
         Parameters:
         -----------
@@ -1853,223 +1853,56 @@ class TrainingPipeline:
                 print("\nStandard Feature Importance (top 10):")
                 print(feature_importance.head(10))
                 
-                # ========== NEW: SHAP ANALYSIS FOR DELAY PREDICTION ==========
-                print("\n" + "="*60)
-                print("PERFORMING SHAP ANALYSIS FOR DELAY PREDICTION")
-                print("="*60)
-                    
-                # Create SHAP explainer for the decision tree
-                print("Creating SHAP explainer...")
-                explainer = shap.TreeExplainer(dt)
+                # ========== NEW: USE SEPARATED SHAP ANALYSIS METHOD ==========
+                print("\nPerforming SHAP analysis using separated method...")
                 
-                # Calculate SHAP values for test set (use a sample if too large)
-                max_samples = 1000  # Limit to avoid memory issues
-                if len(X_test) > max_samples:
-                    print(f"Using sample of {max_samples} test instances for SHAP analysis")
-                    X_test_sample = X_test.sample(n=max_samples, random_state=random_state)
-                    y_test_sample = y_test.loc[X_test_sample.index]
-                else:
-                    X_test_sample = X_test
-                    y_test_sample = y_test
+                shap_result = self.analyze_model_with_shap(
+                    model=dt,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id=month_id,
+                    output_dir=self.decision_tree_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="decision_tree",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
                 
-                print("Calculating SHAP values...")
-                shap_values = explainer.shap_values(X_test_sample)
-                
-                # Debug: Check the format of SHAP values
-                print(f"SHAP values type: {type(shap_values)}")
-                if isinstance(shap_values, list):
-                    print(f"SHAP values list length: {len(shap_values)}")
-                    for i, sv in enumerate(shap_values):
-                        print(f"  Element {i} shape: {sv.shape if hasattr(sv, 'shape') else 'No shape'}")
-                elif hasattr(shap_values, 'shape'):
-                    print(f"SHAP values shape: {shap_values.shape}")
-                
-                # Check unique classes in target to confirm it's binary
-                unique_classes = np.unique(y_train)
-                print(f"Unique classes in target: {unique_classes}")
-                print(f"Number of classes: {len(unique_classes)}")
-                
-                # Handle different SHAP value formats
-                shap_values_true = None
-                
-                if isinstance(shap_values, list) and len(shap_values) == 2:
-                    # Standard binary classification format: list with 2 arrays
-                    print("Using standard binary classification format (list with 2 arrays)")
-                    shap_values_true = shap_values[1]  # Values for class 1 (True/Delayed)
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully!")
                     
-                elif isinstance(shap_values, list) and len(shap_values) == 1:
-                    # Single array format (some SHAP versions return this for binary classification)
-                    print("Using single array format for binary classification")
-                    shap_values_true = shap_values[0]  # The single array represents contributions to positive class
-                    
-                elif not isinstance(shap_values, list) and hasattr(shap_values, 'shape'):
-                    # Direct numpy array format
-                    if len(shap_values.shape) == 2:
-                        print("Using direct array format for binary classification")
-                        shap_values_true = shap_values  # Direct array of SHAP values
-                    elif len(shap_values.shape) == 3 and shap_values.shape[2] == 2:
-                        print("Using 3D array format, extracting class 1 (True/Delayed)")
-                        shap_values_true = shap_values[:, :, 1]  # Extract values for class 1
-                    else:
-                        print(f"Unexpected array shape: {shap_values.shape}")
-                        raise ValueError(f"Unexpected SHAP values array shape: {shap_values.shape}")
-                else:
-                    print(f"Unexpected SHAP values format:")
-                    print(f"  Type: {type(shap_values)}")
-                    print(f"  Is list: {isinstance(shap_values, list)}")
-                    if isinstance(shap_values, list):
-                        print(f"  List length: {len(shap_values)}")
-                    raise ValueError("Unable to parse SHAP values format")
-                
-                # Now process the SHAP values for the True class (delays)
-                if shap_values_true is not None:
-                    print(f"Processing SHAP values for True class, shape: {shap_values_true.shape}")
-                    
-                    # Calculate mean absolute SHAP values for each feature
-                    # This shows average contribution to delay prediction
-                    mean_shap_values = np.mean(np.abs(shap_values_true), axis=0)
-                    
-                    # Also calculate mean signed SHAP values to see direction of influence
-                    mean_shap_signed = np.mean(shap_values_true, axis=0)
-                    
-                    # Create SHAP importance DataFrame
-                    shap_importance = pd.DataFrame({
-                        'Feature': X_train.columns,
-                        'SHAP_Importance_Abs': mean_shap_values,
-                        'SHAP_Importance_Signed': mean_shap_signed,
-                        'Increases_Delay_Probability': mean_shap_signed > 0
-                    }).sort_values(by='SHAP_Importance_Abs', ascending=False)
-                    
-                    # Calculate baseline prediction (average probability of delay)
-                    baseline_prob = y_train.mean()
-                    print(f"\nBaseline delay probability: {baseline_prob:.1%}")
-                    
-                    # Calculate total SHAP contribution for the sample
-                    total_shap_contribution = np.sum(np.abs(mean_shap_signed))
-                    print(f"Total absolute SHAP contribution: {total_shap_contribution:.4f} ({total_shap_contribution*100:.2f} percentage points)")
-                    
-                    # Convert SHAP values to percentage points for easier interpretation
-                    shap_importance['SHAP_Percentage_Points'] = shap_importance['SHAP_Importance_Signed'] * 100
-                    shap_importance['SHAP_Abs_Percentage_Points'] = shap_importance['SHAP_Importance_Abs'] * 100
-                    
-                    # Show relative importance as percentages of total contribution
-                    shap_importance['Relative_Contribution_Pct'] = (
-                        shap_importance['SHAP_Importance_Abs'] / total_shap_contribution * 100
-                    )
-                    
-                    # Get top features for later use (define early to avoid scope issues)
-                    delay_increasing_features = shap_importance[
-                        shap_importance['Increases_Delay_Probability'] == True
-                    ].head(10)
-                    
-                    delay_decreasing_features = shap_importance[
-                        shap_importance['Increases_Delay_Probability'] == False
-                    ].head(5)
-                    
-                    top_increase = delay_increasing_features.iloc[0] if len(delay_increasing_features) > 0 else None
-                    top_decrease = delay_decreasing_features.iloc[0] if len(delay_decreasing_features) > 0 else None
-                    
-                    print("\nSHAP Feature Importance for DELAY PREDICTION (True class):")
-                    print("Features that INCREASE delay probability (positive SHAP values):")
-                    
-                    for _, row in delay_increasing_features.iterrows():
-                        print(f"  {row['Feature']:<25}: +{row['SHAP_Percentage_Points']:>6.2f} pp "
-                            f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
-                    
-                    print("\nFeatures that DECREASE delay probability (negative SHAP values):")
-                    
-                    for _, row in delay_decreasing_features.iterrows():
-                        print(f"  {row['Feature']:<25}: {row['SHAP_Percentage_Points']:>6.2f} pp "
-                            f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
-                    
-                    # Example interpretation
-                    print(f"\n" + "="*60)
-                    print("INTERPRETATION:")
-                    print("="*60)
-                    print(f"Baseline delay probability: {baseline_prob:.1%}")
-                    
-                    try:
-                        if top_increase is not None and len(top_increase) > 0:
-                            new_prob = baseline_prob + top_increase['SHAP_Importance_Signed']
-                            print(f"• {top_increase['Feature']} (bad conditions) → {new_prob:.1%} delay probability")
-                        
-                        if top_decrease is not None and len(top_decrease) > 0:
-                            new_prob = baseline_prob + top_decrease['SHAP_Importance_Signed']
-                            print(f"• {top_decrease['Feature']} (good conditions) → {new_prob:.1%} delay probability")
-                    except Exception as e:
-                        print(f"Warning: Could not generate interpretation examples: {e}")
-                        print("Check the SHAP results above for feature impacts.")
-                    
-                    print("="*60)
-                    
-                    # Save SHAP importance to CSV
-                    shap_filename = f"feature_importance_SHAP_True_{month_id}.csv"
-                    shap_path = os.path.join(self.decision_tree_dir, shap_filename)
-                    shap_importance.to_csv(shap_path, index=False)
-                    print(f"\nSHAP feature importance saved to {shap_path}")
-                    
-                    # Also save detailed analysis
-                    detailed_filename = f"SHAP_analysis_summary_{month_id}.txt"
-                    detailed_path = os.path.join(self.decision_tree_dir, detailed_filename)
-                    
-                    with open(detailed_path, 'w') as f:
-                        f.write(f"SHAP Analysis Summary for {month_id}\n")
-                        f.write("="*50 + "\n\n")
-                        f.write(f"Target: {target_column}\n")
-                        f.write(f"Analysis performed on {len(X_test_sample)} test samples\n")
-                        f.write(f"Baseline delay probability: {baseline_prob:.1%}\n")
-                        f.write(f"Total SHAP contribution: {total_shap_contribution:.4f} ({total_shap_contribution*100:.2f} percentage points)\n\n")
-                        
-                        f.write("TOP FEATURES THAT INCREASE DELAY PROBABILITY:\n")
-                        f.write("-"*50 + "\n")
-                        for _, row in delay_increasing_features.iterrows():
-                            f.write(f"{row['Feature']:<25}: +{row['SHAP_Percentage_Points']:>6.2f} pp "
-                                f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
-                        
-                        f.write("\nTOP FEATURES THAT DECREASE DELAY PROBABILITY:\n")
-                        f.write("-"*50 + "\n")
-                        for _, row in delay_decreasing_features.iterrows():
-                            f.write(f"{row['Feature']:<25}: {row['SHAP_Percentage_Points']:>6.2f} pp "
-                                f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
-                        
-                        f.write("\nINTERPRETATION:\n")
-                        f.write("-"*30 + "\n")
-                        f.write(f"pp = percentage points\n")
-                        f.write(f"Baseline delay rate: {baseline_prob:.1%}\n")
+                    # Compare standard vs SHAP importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance")
+                        print("-"*60)
                         
                         try:
-                            if top_increase is not None and len(top_increase) > 0:
-                                new_prob = baseline_prob + top_increase['SHAP_Importance_Signed']
-                                f.write(f"Worst weather ({top_increase['Feature']}) → {new_prob:.1%} delay probability\n")
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
                             
-                            if top_decrease is not None and len(top_decrease) > 0:
-                                new_prob = baseline_prob + top_decrease['SHAP_Importance_Signed']
-                                f.write(f"Best conditions ({top_decrease['Feature']}) → {new_prob:.1%} delay probability\n")
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
                         except Exception as e:
-                            f.write(f"Note: Could not generate interpretation examples: {e}\n")
+                            print(f"Could not perform comparison: {e}")
                     
-                    print(f"Detailed SHAP analysis saved to {detailed_path}")
-                    
-                    # Compare with standard feature importance
-                    print("\n" + "-"*60)
-                    print("COMPARISON: Standard vs SHAP Feature Importance")
-                    print("-"*60)
-                    
-                    # Merge the two importance measures
-                    comparison = feature_importance.merge(
-                        shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
-                                    'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
-                        on='Feature'
-                    )
-                    
-                    print("Top 10 features by Standard Importance vs SHAP Importance:")
-                    for _, row in comparison.head(10).iterrows():
-                        direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
-                        print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
-                            f"SHAP={row['SHAP_Abs_Percentage_Points']:>5.2f}pp {direction}, "
-                            f"({row['Relative_Contribution_Pct']:>4.1f}% of impact)")
                 else:
-                    raise ValueError("Failed to extract SHAP values for True class")
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
                 
                 print("="*60)
                 
@@ -2097,8 +1930,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
-                        "shap_importance_path": shap_path,
-                        "metrics_path": metrics_result["metrics_path"]
+                        "metrics_path": metrics_result["metrics_path"],
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                     
                     return result
@@ -2112,7 +1945,8 @@ class TrainingPipeline:
                         "report": report,
                         "metrics": metrics_result["metrics"],
                         "metrics_path": metrics_result["metrics_path"],
-                        "model_saved": False
+                        "model_saved": False,
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
             else:
                 # For regression problems we would need a different approach
@@ -5057,6 +4891,381 @@ class TrainingPipeline:
             import traceback
             print(f"Error in XGBoost RandomizedSearchCV with Important Features for {month_id}: {str(e)}")
             print("\nDetailed traceback:")
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
+        
+
+    def analyze_model_with_shap(self, model, X_test, y_test, model_type, month_id, 
+                            output_dir, target_column, max_samples=1000, 
+                            random_state=42, model_name="model", baseline_data=None):
+        """
+        Perform SHAP analysis on a trained model for feature importance and interpretability.
+        
+        This method creates SHAP explanations for any compatible model type and provides
+        detailed feature importance analysis with business interpretations.
+        
+        Parameters:
+        -----------
+        model : sklearn model or compatible
+            The trained model to analyze (DecisionTree, XGBoost, etc.).
+        X_test : pandas.DataFrame
+            Test features for SHAP analysis.
+        y_test : pandas.Series
+            Test target values.
+        model_type : str
+            Type of problem: 'classification' or 'regression'.
+        month_id : str
+            Month identifier for file naming.
+        output_dir : str
+            Directory to save SHAP analysis results.
+        target_column : str
+            Name of the target column being predicted.
+        max_samples : int, optional
+            Maximum number of test samples to use for SHAP analysis. Defaults to 1000.
+        random_state : int, optional
+            Random seed for sampling. Defaults to 42.
+        model_name : str, optional
+            Name of the model for file naming. Defaults to "model".
+        baseline_data : pandas.DataFrame, optional
+            Training data for baseline calculations. If None, uses X_test for baseline.
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing SHAP analysis results and file paths.
+        """
+        try:
+            print("\n" + "="*60)
+            print("PERFORMING SHAP ANALYSIS FOR MODEL INTERPRETABILITY")
+            print("="*60)
+            
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Determine the appropriate SHAP explainer based on model type
+            print("Creating SHAP explainer...")
+            
+            # Handle different model types
+            explainer = None
+            if hasattr(model, 'tree_') or 'DecisionTree' in str(type(model)):
+                # Decision Tree models
+                explainer = shap.TreeExplainer(model)
+                explainer_type = "TreeExplainer"
+            elif hasattr(model, 'get_booster') or 'XGB' in str(type(model)) or 'xgboost' in str(type(model)).lower():
+                # XGBoost models
+                explainer = shap.TreeExplainer(model)
+                explainer_type = "TreeExplainer"
+            elif hasattr(model, 'estimators_') or 'RandomForest' in str(type(model)):
+                # Random Forest and ensemble models
+                explainer = shap.TreeExplainer(model)
+                explainer_type = "TreeExplainer"
+            else:
+                # Linear models or others - use KernelExplainer as fallback
+                if baseline_data is not None:
+                    # Use a sample of training data as background for KernelExplainer
+                    background_sample = baseline_data.sample(min(100, len(baseline_data)), random_state=random_state)
+                else:
+                    # Use a sample of test data as background
+                    background_sample = X_test.sample(min(100, len(X_test)), random_state=random_state)
+                
+                explainer = shap.KernelExplainer(model.predict, background_sample)
+                explainer_type = "KernelExplainer"
+            
+            print(f"Using {explainer_type} for SHAP analysis")
+            
+            # Sample test data if needed to avoid memory issues
+            if len(X_test) > max_samples:
+                print(f"Using sample of {max_samples} test instances for SHAP analysis")
+                X_test_sample = X_test.sample(n=max_samples, random_state=random_state)
+                y_test_sample = y_test.loc[X_test_sample.index]
+            else:
+                X_test_sample = X_test
+                y_test_sample = y_test
+            
+            print(f"Calculating SHAP values for {len(X_test_sample)} samples...")
+            
+            # Calculate SHAP values
+            shap_values = explainer.shap_values(X_test_sample)
+            
+            # Debug: Check the format of SHAP values
+            print(f"SHAP values type: {type(shap_values)}")
+            if isinstance(shap_values, list):
+                print(f"SHAP values list length: {len(shap_values)}")
+                for i, sv in enumerate(shap_values):
+                    print(f"  Element {i} shape: {sv.shape if hasattr(sv, 'shape') else 'No shape'}")
+            elif hasattr(shap_values, 'shape'):
+                print(f"SHAP values shape: {shap_values.shape}")
+            
+            # Initialize result dictionary
+            result = {
+                "success": True,
+                "explainer_type": explainer_type,
+                "model_name": model_name,
+                "samples_analyzed": len(X_test_sample)
+            }
+            
+            if model_type == 'classification':
+                # CLASSIFICATION ANALYSIS
+                unique_classes = np.unique(y_test)
+                print(f"Unique classes in target: {unique_classes}")
+                print(f"Number of classes: {len(unique_classes)}")
+                
+                # Handle different SHAP value formats for classification
+                shap_values_positive = None
+                
+                if isinstance(shap_values, list) and len(shap_values) == 2:
+                    # Standard binary classification format: list with 2 arrays
+                    print("Using standard binary classification format (list with 2 arrays)")
+                    shap_values_positive = shap_values[1]  # Values for positive class
+                    
+                elif isinstance(shap_values, list) and len(shap_values) == 1:
+                    # Single array format
+                    print("Using single array format for binary classification")
+                    shap_values_positive = shap_values[0]
+                    
+                elif not isinstance(shap_values, list) and hasattr(shap_values, 'shape'):
+                    # Direct numpy array format
+                    if len(shap_values.shape) == 2:
+                        print("Using direct array format for binary classification")
+                        shap_values_positive = shap_values
+                    elif len(shap_values.shape) == 3 and shap_values.shape[2] == 2:
+                        print("Using 3D array format, extracting positive class")
+                        shap_values_positive = shap_values[:, :, 1]
+                    else:
+                        print(f"Unexpected array shape: {shap_values.shape}")
+                        raise ValueError(f"Unexpected SHAP values array shape: {shap_values.shape}")
+                else:
+                    raise ValueError("Unable to parse SHAP values format")
+                
+                if shap_values_positive is not None:
+                    print(f"Processing SHAP values for positive class, shape: {shap_values_positive.shape}")
+                    
+                    # Calculate mean absolute and signed SHAP values
+                    mean_shap_abs = np.mean(np.abs(shap_values_positive), axis=0)
+                    mean_shap_signed = np.mean(shap_values_positive, axis=0)
+                    
+                    # Create SHAP importance DataFrame
+                    shap_importance = pd.DataFrame({
+                        'Feature': X_test.columns,
+                        'SHAP_Importance_Abs': mean_shap_abs,
+                        'SHAP_Importance_Signed': mean_shap_signed,
+                        'Increases_Positive_Probability': mean_shap_signed > 0
+                    }).sort_values(by='SHAP_Importance_Abs', ascending=False)
+                    
+                    # Calculate baseline prediction
+                    if baseline_data is not None and target_column in baseline_data.columns:
+                        baseline_prob = baseline_data[target_column].mean()
+                    else:
+                        baseline_prob = y_test.mean()
+                    
+                    print(f"\nBaseline positive class probability: {baseline_prob:.1%}")
+                    
+                    # Calculate total SHAP contribution
+                    total_shap_contribution = np.sum(np.abs(mean_shap_signed))
+                    print(f"Total absolute SHAP contribution: {total_shap_contribution:.4f} ({total_shap_contribution*100:.2f} percentage points)")
+                    
+                    # Convert SHAP values to percentage points
+                    shap_importance['SHAP_Percentage_Points'] = shap_importance['SHAP_Importance_Signed'] * 100
+                    shap_importance['SHAP_Abs_Percentage_Points'] = shap_importance['SHAP_Importance_Abs'] * 100
+                    
+                    # Calculate relative importance
+                    shap_importance['Relative_Contribution_Pct'] = (
+                        shap_importance['SHAP_Importance_Abs'] / total_shap_contribution * 100
+                    )
+                    
+                    # Get top features
+                    positive_features = shap_importance[
+                        shap_importance['Increases_Positive_Probability'] == True
+                    ].head(10)
+                    
+                    negative_features = shap_importance[
+                        shap_importance['Increases_Positive_Probability'] == False
+                    ].head(5)
+                    
+                    # Print results
+                    print("\nSHAP Feature Importance for POSITIVE CLASS:")
+                    print("Features that INCREASE positive class probability:")
+                    
+                    for _, row in positive_features.iterrows():
+                        print(f"  {row['Feature']:<25}: +{row['SHAP_Percentage_Points']:>6.2f} pp "
+                            f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
+                    
+                    print("\nFeatures that DECREASE positive class probability:")
+                    
+                    for _, row in negative_features.iterrows():
+                        print(f"  {row['Feature']:<25}: {row['SHAP_Percentage_Points']:>6.2f} pp "
+                            f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
+                    
+                    # Save SHAP importance
+                    shap_filename = f"SHAP_importance_{model_name}_{month_id}.csv"
+                    shap_path = os.path.join(output_dir, shap_filename)
+                    shap_importance.to_csv(shap_path, index=False)
+                    print(f"\nSHAP feature importance saved to {shap_path}")
+                    
+                    # Save detailed analysis
+                    summary_filename = f"SHAP_analysis_summary_{model_name}_{month_id}.txt"
+                    summary_path = os.path.join(output_dir, summary_filename)
+                    
+                    with open(summary_path, 'w') as f:
+                        f.write(f"SHAP Analysis Summary for {model_name} - {month_id}\n")
+                        f.write("="*50 + "\n\n")
+                        f.write(f"Model: {model_name}\n")
+                        f.write(f"Target: {target_column}\n")
+                        f.write(f"Model Type: {model_type}\n")
+                        f.write(f"Explainer: {explainer_type}\n")
+                        f.write(f"Samples analyzed: {len(X_test_sample)}\n")
+                        f.write(f"Baseline positive class probability: {baseline_prob:.1%}\n")
+                        f.write(f"Total SHAP contribution: {total_shap_contribution:.4f}\n\n")
+                        
+                        f.write("TOP FEATURES THAT INCREASE POSITIVE CLASS PROBABILITY:\n")
+                        f.write("-"*50 + "\n")
+                        for _, row in positive_features.iterrows():
+                            f.write(f"{row['Feature']:<25}: +{row['SHAP_Percentage_Points']:>6.2f} pp "
+                                    f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
+                        
+                        f.write("\nTOP FEATURES THAT DECREASE POSITIVE CLASS PROBABILITY:\n")
+                        f.write("-"*50 + "\n")
+                        for _, row in negative_features.iterrows():
+                            f.write(f"{row['Feature']:<25}: {row['SHAP_Percentage_Points']:>6.2f} pp "
+                                    f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
+                    
+                    print(f"Detailed SHAP analysis saved to {summary_path}")
+                    
+                    # Update result
+                    result.update({
+                        "shap_importance_path": shap_path,
+                        "summary_path": summary_path,
+                        "baseline_probability": baseline_prob,
+                        "total_shap_contribution": total_shap_contribution,
+                        "top_positive_features": positive_features.head(5)['Feature'].tolist(),
+                        "top_negative_features": negative_features.head(5)['Feature'].tolist()
+                    })
+            
+            else:
+                # REGRESSION ANALYSIS
+                print("Processing SHAP values for regression model")
+                
+                # For regression, SHAP values should be a single array
+                if isinstance(shap_values, list):
+                    if len(shap_values) == 1:
+                        shap_values_reg = shap_values[0]
+                    else:
+                        print(f"Warning: Unexpected list length for regression: {len(shap_values)}")
+                        shap_values_reg = shap_values[0]
+                else:
+                    shap_values_reg = shap_values
+                
+                print(f"Processing SHAP values for regression, shape: {shap_values_reg.shape}")
+                
+                # Calculate mean absolute and signed SHAP values
+                mean_shap_abs = np.mean(np.abs(shap_values_reg), axis=0)
+                mean_shap_signed = np.mean(shap_values_reg, axis=0)
+                
+                # Create SHAP importance DataFrame
+                shap_importance = pd.DataFrame({
+                    'Feature': X_test.columns,
+                    'SHAP_Importance_Abs': mean_shap_abs,
+                    'SHAP_Importance_Signed': mean_shap_signed,
+                    'Increases_Target': mean_shap_signed > 0
+                }).sort_values(by='SHAP_Importance_Abs', ascending=False)
+                
+                # Calculate baseline prediction
+                if baseline_data is not None and target_column in baseline_data.columns:
+                    baseline_value = baseline_data[target_column].mean()
+                else:
+                    baseline_value = y_test.mean()
+                
+                print(f"\nBaseline target value: {baseline_value:.2f}")
+                
+                # Calculate total SHAP contribution
+                total_shap_contribution = np.sum(np.abs(mean_shap_signed))
+                print(f"Total absolute SHAP contribution: {total_shap_contribution:.4f}")
+                
+                # Calculate relative importance
+                shap_importance['Relative_Contribution_Pct'] = (
+                    shap_importance['SHAP_Importance_Abs'] / total_shap_contribution * 100
+                )
+                
+                # Get top features
+                increasing_features = shap_importance[
+                    shap_importance['Increases_Target'] == True
+                ].head(10)
+                
+                decreasing_features = shap_importance[
+                    shap_importance['Increases_Target'] == False
+                ].head(5)
+                
+                # Print results
+                print("\nSHAP Feature Importance for REGRESSION:")
+                print("Features that INCREASE target value:")
+                
+                for _, row in increasing_features.iterrows():
+                    print(f"  {row['Feature']:<25}: +{row['SHAP_Importance_Signed']:>8.4f} "
+                        f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
+                
+                print("\nFeatures that DECREASE target value:")
+                
+                for _, row in decreasing_features.iterrows():
+                    print(f"  {row['Feature']:<25}: {row['SHAP_Importance_Signed']:>8.4f} "
+                        f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
+                
+                # Save SHAP importance
+                shap_filename = f"SHAP_importance_{model_name}_{month_id}.csv"
+                shap_path = os.path.join(output_dir, shap_filename)
+                shap_importance.to_csv(shap_path, index=False)
+                print(f"\nSHAP feature importance saved to {shap_path}")
+                
+                # Save detailed analysis
+                summary_filename = f"SHAP_analysis_summary_{model_name}_{month_id}.txt"
+                summary_path = os.path.join(output_dir, summary_filename)
+                
+                with open(summary_path, 'w') as f:
+                    f.write(f"SHAP Analysis Summary for {model_name} - {month_id}\n")
+                    f.write("="*50 + "\n\n")
+                    f.write(f"Model: {model_name}\n")
+                    f.write(f"Target: {target_column}\n")
+                    f.write(f"Model Type: {model_type}\n")
+                    f.write(f"Explainer: {explainer_type}\n")
+                    f.write(f"Samples analyzed: {len(X_test_sample)}\n")
+                    f.write(f"Baseline target value: {baseline_value:.2f}\n")
+                    f.write(f"Total SHAP contribution: {total_shap_contribution:.4f}\n\n")
+                    
+                    f.write("TOP FEATURES THAT INCREASE TARGET VALUE:\n")
+                    f.write("-"*50 + "\n")
+                    for _, row in increasing_features.iterrows():
+                        f.write(f"{row['Feature']:<25}: +{row['SHAP_Importance_Signed']:>8.4f} "
+                                f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
+                    
+                    f.write("\nTOP FEATURES THAT DECREASE TARGET VALUE:\n")
+                    f.write("-"*50 + "\n")
+                    for _, row in decreasing_features.iterrows():
+                        f.write(f"{row['Feature']:<25}: {row['SHAP_Importance_Signed']:>8.4f} "
+                                f"({row['Relative_Contribution_Pct']:>4.1f}% of total)\n")
+                
+                print(f"Detailed SHAP analysis saved to {summary_path}")
+                
+                # Update result
+                result.update({
+                    "shap_importance_path": shap_path,
+                    "summary_path": summary_path,
+                    "baseline_value": baseline_value,
+                    "total_shap_contribution": total_shap_contribution,
+                    "top_increasing_features": increasing_features.head(5)['Feature'].tolist(),
+                    "top_decreasing_features": decreasing_features.head(5)['Feature'].tolist()
+                })
+            
+            print("="*60)
+            print("SHAP ANALYSIS COMPLETED SUCCESSFULLY")
+            print("="*60)
+            
+            return result
+            
+        except Exception as e:
+            print(f"Error in SHAP analysis: {str(e)}")
+            import traceback
             traceback.print_exc()
             return {
                 "success": False,
