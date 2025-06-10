@@ -1967,6 +1967,7 @@ class TrainingPipeline:
     def train_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, max_depth=None, random_state=42):
         """
         Train a Decision Tree classifier on only the important features.
+        Now includes SHAP analysis for enhanced model interpretability.
         
         This method first trains a model on all features, identifies the most important features
         based on the threshold, and then trains a new model using only those features.
@@ -2112,6 +2113,59 @@ class TrainingPipeline:
                 print("\nFeature Importance for Selected Features:")
                 print(selected_feature_importance)
                 
+                # ========== NEW: ADD SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the important features model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=dt_selected,
+                    X_test=X_test[important_features],  # Use only important features
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id=month_id,
+                    output_dir=self.important_features_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="decision_tree_important_features",
+                    baseline_data=train_df  # Use full training data for baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for important features model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (Important Features Only)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = selected_feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Important features - Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
                 # Save the model and feature list
                 try:
                     import joblib
@@ -2148,7 +2202,8 @@ class TrainingPipeline:
                         "model_path": model_path,
                         "important_features": important_features,
                         "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
+                        "metrics_path": metrics_result["metrics_path"],
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                     
                 except Exception as e:
@@ -2161,7 +2216,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "metrics_path": metrics_result["metrics_path"],
                         "model_saved": False,
-                        "important_features": important_features
+                        "important_features": important_features,
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
             else:
                 # For regression problems we would need a different approach
@@ -2181,6 +2237,7 @@ class TrainingPipeline:
     def train_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
+        Now includes SHAP analysis for enhanced model interpretability.
         
         Parameters:
         -----------
@@ -2330,6 +2387,59 @@ class TrainingPipeline:
                 print("\nFeature Importance (top 10):")
                 print(feature_importance.head(10))
                 
+                # ========== NEW: ADD SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the RandomizedSearchCV tuned model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=best_dt,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id=month_id,
+                    output_dir=self.randomized_search_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="decision_tree_randomized_search",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for RandomizedSearchCV model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (RandomizedSearchCV Model)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
                 # Save the model and params
                 try:
                     import joblib
@@ -2377,7 +2487,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
+                        "metrics_path": metrics_result["metrics_path"],
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                     
                 except Exception as e:
@@ -2390,7 +2501,8 @@ class TrainingPipeline:
                         "best_params": best_params,
                         "metrics": metrics_result["metrics"],
                         "metrics_path": metrics_result["metrics_path"],
-                        "model_saved": False
+                        "model_saved": False,
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
             else:
                 # For regression problems we would need a different approach
@@ -4897,7 +5009,6 @@ class TrainingPipeline:
                 "error": str(e)
             }
         
-
     def analyze_model_with_shap(self, model, X_test, y_test, model_type, month_id, 
                             output_dir, target_column, max_samples=1000, 
                             random_state=42, model_name="model", baseline_data=None):
