@@ -2523,10 +2523,12 @@ class TrainingPipeline:
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV,
         but only using features that exceed the importance threshold.
+        Now includes SHAP analysis for enhanced model interpretability.
         
         This method combines feature selection and hyperparameter optimization:
         1. First trains a model to identify important features
         2. Then uses RandomizedSearchCV to find optimal hyperparameters on those features only
+        3. Performs SHAP analysis for model interpretability
         
         Parameters:
         -----------
@@ -2713,6 +2715,59 @@ class TrainingPipeline:
                 print("\nFeature Importance in Final Model:")
                 print(selected_feature_importance)
                 
+                # ========== NEW: ADD SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the RandomizedSearchCV + Important Features model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=best_dt,
+                    X_test=X_test[important_features],  # Use only important features
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id=month_id,
+                    output_dir=combined_output_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="decision_tree_rs_important_features",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for RandomizedSearchCV + Important Features model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (RS + Important Features)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = selected_feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Important features - Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
                 # Save the model and related information
                 try:
                     import joblib
@@ -2781,7 +2836,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
+                        "metrics_path": metrics_result["metrics_path"],
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                     
                 except Exception as e:
@@ -2795,7 +2851,8 @@ class TrainingPipeline:
                         "important_features": important_features,
                         "metrics": metrics_result["metrics"],
                         "metrics_path": metrics_result["metrics_path"],
-                        "model_saved": False
+                        "model_saved": False,
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
             else:
                 # For regression problems we would need a different approach
@@ -2816,6 +2873,7 @@ class TrainingPipeline:
         """
         Train an XGBoost model (classifier or regressor) on the preprocessed and split month data.
         For regression tasks, uses multiple approaches to ensure good R² performance.
+        Now includes SHAP analysis for enhanced model interpretability.
         
         Parameters:
         -----------
@@ -3081,6 +3139,58 @@ class TrainingPipeline:
                     'Feature': normalized_scores.keys(),
                     'Importance': normalized_scores.values()
                 }).sort_values(by='Importance', ascending=False)
+                
+                # ========== NEW: ADD SHAP ANALYSIS FOR REGRESSION ==========
+                print("\nPerforming SHAP analysis on the best XGBoost regression model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=xgb_model,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='regression',
+                    month_id=month_id,
+                    output_dir=xgboost_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name=f"xgboost_{best_name}",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for XGBoost regression model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (XGBoost Regression)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Importance_Abs'] if pd.notna(row['SHAP_Importance_Abs']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>8.4f} {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
                             
             else:
                 # CLASSIFICATION CASE
@@ -3167,6 +3277,59 @@ class TrainingPipeline:
                     'Feature': X_train.columns,
                     'Importance': normalized_importances
                 }).sort_values(by='Importance', ascending=False)
+                
+                # ========== NEW: ADD SHAP ANALYSIS FOR CLASSIFICATION ==========
+                print("\nPerforming SHAP analysis on the XGBoost classification model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=xgb_model,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id=month_id,
+                    output_dir=xgboost_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="xgboost_classifier",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for XGBoost classification model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (XGBoost Classification)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
             
             # Feature importance output for both regression and classification
             print("\nFeature Importance (top 10):")
@@ -3193,7 +3356,8 @@ class TrainingPipeline:
                     "metrics": metrics_result["metrics"],
                     "model_path": model_path,
                     "feature_importance_path": importance_path,
-                    "metrics_path": metrics_result["metrics_path"]
+                    "metrics_path": metrics_result["metrics_path"],
+                    "shap_analysis": shap_result  # Include SHAP results
                 })
                 
                 return result
@@ -3203,7 +3367,8 @@ class TrainingPipeline:
                 result.update({
                     "metrics": metrics_result["metrics"],
                     "metrics_path": metrics_result["metrics_path"],
-                    "model_saved": False
+                    "model_saved": False,
+                    "shap_analysis": shap_result  # Include SHAP results even if model save failed
                 })
                 return result
         
@@ -3736,137 +3901,6 @@ class TrainingPipeline:
                 "error": str(e)
             }
         
-    def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None):
-        """
-        Extract key metrics from model evaluation and save them to a CSV file.
-        
-        Parameters:
-        -----------
-        y_test : array-like
-            True labels from the test dataset.
-        y_pred : array-like
-            Predicted labels from the model.
-        report : dict
-            Classification report dictionary from sklearn.
-        month_id : str
-            Month identifier in format "YYYY-YYYY_MM" for the filename.
-        output_dir : str, optional
-            Directory to save the metrics file. Defaults to decision_tree_dir.
-            
-        Returns:
-        --------
-        dict
-            Dictionary containing the metrics and the path to the saved metrics file.
-        """
-        # Create metrics dictionary
-        metrics = {}
-        
-        # Use decision_tree_dir as default if output_dir is None
-        if output_dir is None:
-            output_dir = self.decision_tree_dir
-        
-        # Basic accuracy
-        from sklearn.metrics import accuracy_score
-        metrics['accuracy'] = accuracy_score(y_test, y_pred)
-        
-        # Extract F1 scores from the classification report
-        metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
-        metrics['macro_avg_f1'] = report['macro avg']['f1-score']
-        
-        # For classification, also extract F1 scores for each class
-        for class_label in report:
-            if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
-                metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
-                
-                # Also store precision and recall for completeness
-                metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
-                metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
-        
-        # Print metrics
-        print("\nModel Metrics:")
-        for name, value in metrics.items():
-            print(f"{name}: {value:.4f}")
-        
-        # Save metrics to a file
-        metrics_filename = f"model_metrics_{month_id}.csv"
-        metrics_path = os.path.join(output_dir, metrics_filename)
-        
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
-        
-        # Save to CSV
-        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
-        print(f"Model metrics saved to {metrics_path}")
-        
-        return {
-            "metrics": metrics,
-            "metrics_path": metrics_path
-        }
-    
-    def extract_and_save_regression_metrics(self, y_test, y_pred, month_id, output_dir=None):
-        """
-        Extract key metrics from regression model evaluation and save them to a CSV file.
-        
-        Parameters:
-        -----------
-        y_test : array-like
-            True target values from the test dataset.
-        y_pred : array-like
-            Predicted target values from the model.
-        month_id : str
-            Month identifier in format "YYYY-YYYY_MM" for the filename.
-        output_dir : str, optional
-            Directory to save the metrics file. Defaults to xgboost_dir.
-                
-        Returns:
-        --------
-        dict
-            Dictionary containing the metrics and the path to the saved metrics file.
-        """
-        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-        import pandas as pd
-        import os
-        
-        # Create metrics dictionary
-        metrics = {}
-        
-        # Use xgboost_dir as default if output_dir is None
-        if output_dir is None:
-            output_dir = self.xgboost_dir
-        
-        # Calculate regression metrics
-        mse = mean_squared_error(y_test, y_pred)
-        rmse = np.sqrt(mse)
-        mae = mean_absolute_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
-        
-        # Store metrics
-        metrics['mse'] = mse
-        metrics['rmse'] = rmse
-        metrics['mae'] = mae
-        metrics['r2'] = r2
-        
-        # Print metrics
-        print("\nRegression Metrics:")
-        for name, value in metrics.items():
-            print(f"{name}: {value:.4f}")
-        
-        # Save metrics to a file
-        metrics_filename = f"model_metrics_{month_id}.csv"
-        metrics_path = os.path.join(output_dir, metrics_filename)
-        
-        # Ensure directory exists
-        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
-        
-        # Save to CSV
-        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
-        print(f"Model metrics saved to {metrics_path}")
-        
-        return {
-            "metrics": metrics,
-            "metrics_path": metrics_path
-        }
-    
     def train_xgboost_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, params=None, random_state=42):
             """
             Train an XGBoost model (classifier or regressor) using only the most important features.
@@ -4166,253 +4200,6 @@ class TrainingPipeline:
                     "error": str(e)
                 }
   
-    def train_regularized_regression(self, month_id, alpha_lasso=0.1, alpha_ridge=1.0, random_state=42):
-        """
-        Train Lasso and Ridge regression models for feature importance analysis on numeric targets.
-        With missing value handling.
-        
-        Parameters:
-        -----------
-        month_id : str
-            Month identifier in format "YYYY-YYYY_MM" for the filename.
-        alpha_lasso : float, optional
-            Regularization strength for Lasso regression. Defaults to 0.1.
-        alpha_ridge : float, optional
-            Regularization strength for Ridge regression. Defaults to 1.0.
-        random_state : int, optional
-            Random seed for reproducibility. Defaults to 42.
-                
-        Returns:
-        --------
-        dict
-            A summary of the training results, including model performance metrics and coefficients.
-        """
-        try:
-            # Construct file paths for the train and test sets
-            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
-            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
-            
-            train_path = os.path.join(self.preprocessed_dir, train_filename)
-            test_path = os.path.join(self.preprocessed_dir, test_filename)
-            
-            # Check if files exist
-            if not os.path.exists(train_path) or not os.path.exists(test_path):
-                error_msg = f"Files not found: {train_path} or {test_path}"
-                print(f"Error: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            # Load datasets
-            print(f"Loading training data from {train_path}")
-            train_df = pd.read_csv(train_path)
-            
-            print(f"Loading test data from {test_path}")
-            test_df = pd.read_csv(test_path)
-            
-            # Identify target column
-            target_options = ['differenceInMinutes', 'differenceInMinutes_offset']
-            target_column = None
-            
-            for option in target_options:
-                if option in train_df.columns:
-                    target_column = option
-                    break
-            
-            if not target_column:
-                print("No numeric target column found. Skipping regularized regression.")
-                return {
-                    "success": False,
-                    "error": "No numeric target column found"
-                }
-            
-            print(f"Identified numeric target column: {target_column}")
-            
-            # Split features and target
-            X_train = train_df.drop(target_column, axis=1)
-            y_train = train_df[target_column]
-            
-            X_test = test_df.drop(target_column, axis=1)
-            y_test = test_df[target_column]
-            
-            # Drop non-numeric columns and the data_year column if they exist
-            non_numeric_cols = X_train.select_dtypes(exclude=['number']).columns.tolist()
-            if 'data_year' in X_train.columns:
-                non_numeric_cols.append('data_year')
-                
-            if non_numeric_cols:
-                print(f"Dropping non-numeric columns for linear regression: {non_numeric_cols}")
-                X_train = X_train.drop(columns=non_numeric_cols)
-                X_test = X_test.drop(columns=non_numeric_cols)
-            
-            # Check for missing values
-            train_missing = X_train.isna().sum().sum()
-            test_missing = X_test.isna().sum().sum()
-            
-            if train_missing > 0 or test_missing > 0:
-                print(f"Detected missing values: {train_missing} in training data, {test_missing} in test data")
-                print("Using median imputation to handle missing values")
-                
-                # Initialize imputer
-                imputer = SimpleImputer(strategy='median')
-                
-                # Fit and transform data
-                X_train_imputed = imputer.fit_transform(X_train)
-                X_test_imputed = imputer.transform(X_test)
-                
-                # Convert back to DataFrame to keep column names
-                X_train = pd.DataFrame(X_train_imputed, columns=X_train.columns)
-                X_test = pd.DataFrame(X_test_imputed, columns=X_test.columns)
-            
-            # Store feature names for later use
-            feature_names = X_train.columns.tolist()
-            
-            # Create output directory
-            reg_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
-            os.makedirs(reg_regression_dir, exist_ok=True)
-            
-            results = {
-                "success": True,
-                "target_column": target_column,
-                "models": {}
-            }
-            
-            # Train Lasso Regression
-            print(f"\nTraining Lasso Regression (alpha={alpha_lasso})...")
-            lasso_model = Lasso(alpha=alpha_lasso, random_state=random_state)
-            lasso_model.fit(X_train, y_train)
-            
-            # Make predictions
-            y_pred_lasso = lasso_model.predict(X_test)
-            
-            # Calculate metrics
-            lasso_mse = mean_squared_error(y_test, y_pred_lasso)
-            lasso_rmse = np.sqrt(lasso_mse)
-            lasso_mae = mean_absolute_error(y_test, y_pred_lasso)
-            lasso_r2 = r2_score(y_test, y_pred_lasso)
-            
-            print(f"Lasso Regression Results:")
-            print(f"RMSE: {lasso_rmse:.4f}")
-            print(f"MAE: {lasso_mae:.4f}")
-            print(f"R²: {lasso_r2:.4f}")
-            
-            # Get coefficients and their importance
-            lasso_coefs = pd.DataFrame({
-                'Feature': feature_names,
-                'Coefficient': lasso_model.coef_,
-                'Abs_Coefficient': np.abs(lasso_model.coef_)
-            }).sort_values(by='Abs_Coefficient', ascending=False)
-            
-            # Count non-zero coefficients
-            non_zero_coefs = np.sum(lasso_model.coef_ != 0)
-            print(f"Number of features selected by Lasso: {non_zero_coefs} out of {len(feature_names)}")
-            
-            # Save Lasso results
-            lasso_coefs_file = os.path.join(reg_regression_dir, f"lasso_coefficients_{month_id}.csv")
-            lasso_coefs.to_csv(lasso_coefs_file, index=False)
-            
-            lasso_metrics = {
-                'mse': lasso_mse,
-                'rmse': lasso_rmse,
-                'mae': lasso_mae,
-                'r2': lasso_r2,
-                'non_zero_features': non_zero_coefs
-            }
-            
-            lasso_metrics_file = os.path.join(reg_regression_dir, f"lasso_metrics_{month_id}.csv")
-            pd.DataFrame([lasso_metrics]).to_csv(lasso_metrics_file, index=False)
-            
-            # Add to results
-            results["models"]["lasso"] = {
-                "metrics": lasso_metrics,
-                "coefficients_path": lasso_coefs_file,
-                "metrics_path": lasso_metrics_file
-            }
-            
-            # Train Ridge Regression
-            print(f"\nTraining Ridge Regression (alpha={alpha_ridge})...")
-            ridge_model = Ridge(alpha=alpha_ridge, random_state=random_state)
-            ridge_model.fit(X_train, y_train)
-            
-            # Make predictions
-            y_pred_ridge = ridge_model.predict(X_test)
-            
-            # Calculate metrics
-            ridge_mse = mean_squared_error(y_test, y_pred_ridge)
-            ridge_rmse = np.sqrt(ridge_mse)
-            ridge_mae = mean_absolute_error(y_test, y_pred_ridge)
-            ridge_r2 = r2_score(y_test, y_pred_ridge)
-            
-            print(f"Ridge Regression Results:")
-            print(f"RMSE: {ridge_rmse:.4f}")
-            print(f"MAE: {ridge_mae:.4f}")
-            print(f"R²: {ridge_r2:.4f}")
-            
-            # Get coefficients and their importance
-            ridge_coefs = pd.DataFrame({
-                'Feature': feature_names,
-                'Coefficient': ridge_model.coef_,
-                'Abs_Coefficient': np.abs(ridge_model.coef_)
-            }).sort_values(by='Abs_Coefficient', ascending=False)
-            
-            # Save Ridge results
-            ridge_coefs_file = os.path.join(reg_regression_dir, f"ridge_coefficients_{month_id}.csv")
-            ridge_coefs.to_csv(ridge_coefs_file, index=False)
-            
-            ridge_metrics = {
-                'mse': ridge_mse,
-                'rmse': ridge_rmse,
-                'mae': ridge_mae,
-                'r2': ridge_r2,
-            }
-            
-            ridge_metrics_file = os.path.join(reg_regression_dir, f"ridge_metrics_{month_id}.csv")
-            pd.DataFrame([ridge_metrics]).to_csv(ridge_metrics_file, index=False)
-            
-            # Add to results
-            results["models"]["ridge"] = {
-                "metrics": ridge_metrics,
-                "coefficients_path": ridge_coefs_file,
-                "metrics_path": ridge_metrics_file
-            }
-            
-            # Save comparison of top features from both models
-            print("\nTop 10 Features by Importance:")
-            print("\nLasso Top Features:")
-            print(lasso_coefs[lasso_coefs['Coefficient'] != 0].head(10))
-            
-            print("\nRidge Top Features:")
-            print(ridge_coefs.head(10))
-            
-            # Save the models
-            try:
-                import joblib
-                lasso_model_file = os.path.join(reg_regression_dir, f"lasso_model_{month_id}.joblib")
-                ridge_model_file = os.path.join(reg_regression_dir, f"ridge_model_{month_id}.joblib")
-                
-                joblib.dump(lasso_model, lasso_model_file)
-                joblib.dump(ridge_model, ridge_model_file)
-                
-                # Add model paths to results
-                results["models"]["lasso"]["model_path"] = lasso_model_file
-                results["models"]["ridge"]["model_path"] = ridge_model_file
-                
-                print(f"Models saved to {reg_regression_dir}")
-            except Exception as e:
-                print(f"Warning: Could not save models: {str(e)}")
-            
-            return results
-            
-        except Exception as e:
-            print(f"Error training regularized regression for {month_id}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": str(e)
-            }
-
     def train_xgboost_rs_with_important_features(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
 
         """
@@ -5009,6 +4796,384 @@ class TrainingPipeline:
                 "error": str(e)
             }
         
+    def train_regularized_regression(self, month_id, alpha_lasso=0.1, alpha_ridge=1.0, random_state=42):
+        """
+        Train Lasso and Ridge regression models for feature importance analysis on numeric targets.
+        With missing value handling.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        alpha_lasso : float, optional
+            Regularization strength for Lasso regression. Defaults to 0.1.
+        alpha_ridge : float, optional
+            Regularization strength for Ridge regression. Defaults to 1.0.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics and coefficients.
+        """
+        try:
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column
+            target_options = ['differenceInMinutes', 'differenceInMinutes_offset']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print("No numeric target column found. Skipping regularized regression.")
+                return {
+                    "success": False,
+                    "error": "No numeric target column found"
+                }
+            
+            print(f"Identified numeric target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+            
+            # Drop non-numeric columns and the data_year column if they exist
+            non_numeric_cols = X_train.select_dtypes(exclude=['number']).columns.tolist()
+            if 'data_year' in X_train.columns:
+                non_numeric_cols.append('data_year')
+                
+            if non_numeric_cols:
+                print(f"Dropping non-numeric columns for linear regression: {non_numeric_cols}")
+                X_train = X_train.drop(columns=non_numeric_cols)
+                X_test = X_test.drop(columns=non_numeric_cols)
+            
+            # Check for missing values
+            train_missing = X_train.isna().sum().sum()
+            test_missing = X_test.isna().sum().sum()
+            
+            if train_missing > 0 or test_missing > 0:
+                print(f"Detected missing values: {train_missing} in training data, {test_missing} in test data")
+                print("Using median imputation to handle missing values")
+                
+                # Initialize imputer
+                imputer = SimpleImputer(strategy='median')
+                
+                # Fit and transform data
+                X_train_imputed = imputer.fit_transform(X_train)
+                X_test_imputed = imputer.transform(X_test)
+                
+                # Convert back to DataFrame to keep column names
+                X_train = pd.DataFrame(X_train_imputed, columns=X_train.columns)
+                X_test = pd.DataFrame(X_test_imputed, columns=X_test.columns)
+            
+            # Store feature names for later use
+            feature_names = X_train.columns.tolist()
+            
+            # Create output directory
+            reg_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
+            os.makedirs(reg_regression_dir, exist_ok=True)
+            
+            results = {
+                "success": True,
+                "target_column": target_column,
+                "models": {}
+            }
+            
+            # Train Lasso Regression
+            print(f"\nTraining Lasso Regression (alpha={alpha_lasso})...")
+            lasso_model = Lasso(alpha=alpha_lasso, random_state=random_state)
+            lasso_model.fit(X_train, y_train)
+            
+            # Make predictions
+            y_pred_lasso = lasso_model.predict(X_test)
+            
+            # Calculate metrics
+            lasso_mse = mean_squared_error(y_test, y_pred_lasso)
+            lasso_rmse = np.sqrt(lasso_mse)
+            lasso_mae = mean_absolute_error(y_test, y_pred_lasso)
+            lasso_r2 = r2_score(y_test, y_pred_lasso)
+            
+            print(f"Lasso Regression Results:")
+            print(f"RMSE: {lasso_rmse:.4f}")
+            print(f"MAE: {lasso_mae:.4f}")
+            print(f"R²: {lasso_r2:.4f}")
+            
+            # Get coefficients and their importance
+            lasso_coefs = pd.DataFrame({
+                'Feature': feature_names,
+                'Coefficient': lasso_model.coef_,
+                'Abs_Coefficient': np.abs(lasso_model.coef_)
+            }).sort_values(by='Abs_Coefficient', ascending=False)
+            
+            # Count non-zero coefficients
+            non_zero_coefs = np.sum(lasso_model.coef_ != 0)
+            print(f"Number of features selected by Lasso: {non_zero_coefs} out of {len(feature_names)}")
+            
+            # Save Lasso results
+            lasso_coefs_file = os.path.join(reg_regression_dir, f"lasso_coefficients_{month_id}.csv")
+            lasso_coefs.to_csv(lasso_coefs_file, index=False)
+            
+            lasso_metrics = {
+                'mse': lasso_mse,
+                'rmse': lasso_rmse,
+                'mae': lasso_mae,
+                'r2': lasso_r2,
+                'non_zero_features': non_zero_coefs
+            }
+            
+            lasso_metrics_file = os.path.join(reg_regression_dir, f"lasso_metrics_{month_id}.csv")
+            pd.DataFrame([lasso_metrics]).to_csv(lasso_metrics_file, index=False)
+            
+            # Add to results
+            results["models"]["lasso"] = {
+                "metrics": lasso_metrics,
+                "coefficients_path": lasso_coefs_file,
+                "metrics_path": lasso_metrics_file
+            }
+            
+            # Train Ridge Regression
+            print(f"\nTraining Ridge Regression (alpha={alpha_ridge})...")
+            ridge_model = Ridge(alpha=alpha_ridge, random_state=random_state)
+            ridge_model.fit(X_train, y_train)
+            
+            # Make predictions
+            y_pred_ridge = ridge_model.predict(X_test)
+            
+            # Calculate metrics
+            ridge_mse = mean_squared_error(y_test, y_pred_ridge)
+            ridge_rmse = np.sqrt(ridge_mse)
+            ridge_mae = mean_absolute_error(y_test, y_pred_ridge)
+            ridge_r2 = r2_score(y_test, y_pred_ridge)
+            
+            print(f"Ridge Regression Results:")
+            print(f"RMSE: {ridge_rmse:.4f}")
+            print(f"MAE: {ridge_mae:.4f}")
+            print(f"R²: {ridge_r2:.4f}")
+            
+            # Get coefficients and their importance
+            ridge_coefs = pd.DataFrame({
+                'Feature': feature_names,
+                'Coefficient': ridge_model.coef_,
+                'Abs_Coefficient': np.abs(ridge_model.coef_)
+            }).sort_values(by='Abs_Coefficient', ascending=False)
+            
+            # Save Ridge results
+            ridge_coefs_file = os.path.join(reg_regression_dir, f"ridge_coefficients_{month_id}.csv")
+            ridge_coefs.to_csv(ridge_coefs_file, index=False)
+            
+            ridge_metrics = {
+                'mse': ridge_mse,
+                'rmse': ridge_rmse,
+                'mae': ridge_mae,
+                'r2': ridge_r2,
+            }
+            
+            ridge_metrics_file = os.path.join(reg_regression_dir, f"ridge_metrics_{month_id}.csv")
+            pd.DataFrame([ridge_metrics]).to_csv(ridge_metrics_file, index=False)
+            
+            # Add to results
+            results["models"]["ridge"] = {
+                "metrics": ridge_metrics,
+                "coefficients_path": ridge_coefs_file,
+                "metrics_path": ridge_metrics_file
+            }
+            
+            # Save comparison of top features from both models
+            print("\nTop 10 Features by Importance:")
+            print("\nLasso Top Features:")
+            print(lasso_coefs[lasso_coefs['Coefficient'] != 0].head(10))
+            
+            print("\nRidge Top Features:")
+            print(ridge_coefs.head(10))
+            
+            # Save the models
+            try:
+                import joblib
+                lasso_model_file = os.path.join(reg_regression_dir, f"lasso_model_{month_id}.joblib")
+                ridge_model_file = os.path.join(reg_regression_dir, f"ridge_model_{month_id}.joblib")
+                
+                joblib.dump(lasso_model, lasso_model_file)
+                joblib.dump(ridge_model, ridge_model_file)
+                
+                # Add model paths to results
+                results["models"]["lasso"]["model_path"] = lasso_model_file
+                results["models"]["ridge"]["model_path"] = ridge_model_file
+                
+                print(f"Models saved to {reg_regression_dir}")
+            except Exception as e:
+                print(f"Warning: Could not save models: {str(e)}")
+            
+            return results
+            
+        except Exception as e:
+            print(f"Error training regularized regression for {month_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None):
+        """
+        Extract key metrics from model evaluation and save them to a CSV file.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True labels from the test dataset.
+        y_pred : array-like
+            Predicted labels from the model.
+        report : dict
+            Classification report dictionary from sklearn.
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        output_dir : str, optional
+            Directory to save the metrics file. Defaults to decision_tree_dir.
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing the metrics and the path to the saved metrics file.
+        """
+        # Create metrics dictionary
+        metrics = {}
+        
+        # Use decision_tree_dir as default if output_dir is None
+        if output_dir is None:
+            output_dir = self.decision_tree_dir
+        
+        # Basic accuracy
+        from sklearn.metrics import accuracy_score
+        metrics['accuracy'] = accuracy_score(y_test, y_pred)
+        
+        # Extract F1 scores from the classification report
+        metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
+        metrics['macro_avg_f1'] = report['macro avg']['f1-score']
+        
+        # For classification, also extract F1 scores for each class
+        for class_label in report:
+            if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
+                metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
+                
+                # Also store precision and recall for completeness
+                metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
+                metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
+        
+        # Print metrics
+        print("\nModel Metrics:")
+        for name, value in metrics.items():
+            print(f"{name}: {value:.4f}")
+        
+        # Save metrics to a file
+        metrics_filename = f"model_metrics_{month_id}.csv"
+        metrics_path = os.path.join(output_dir, metrics_filename)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        
+        # Save to CSV
+        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        print(f"Model metrics saved to {metrics_path}")
+        
+        return {
+            "metrics": metrics,
+            "metrics_path": metrics_path
+        }
+    
+    def extract_and_save_regression_metrics(self, y_test, y_pred, month_id, output_dir=None):
+        """
+        Extract key metrics from regression model evaluation and save them to a CSV file.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True target values from the test dataset.
+        y_pred : array-like
+            Predicted target values from the model.
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        output_dir : str, optional
+            Directory to save the metrics file. Defaults to xgboost_dir.
+                
+        Returns:
+        --------
+        dict
+            Dictionary containing the metrics and the path to the saved metrics file.
+        """
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        import pandas as pd
+        import os
+        
+        # Create metrics dictionary
+        metrics = {}
+        
+        # Use xgboost_dir as default if output_dir is None
+        if output_dir is None:
+            output_dir = self.xgboost_dir
+        
+        # Calculate regression metrics
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        # Store metrics
+        metrics['mse'] = mse
+        metrics['rmse'] = rmse
+        metrics['mae'] = mae
+        metrics['r2'] = r2
+        
+        # Print metrics
+        print("\nRegression Metrics:")
+        for name, value in metrics.items():
+            print(f"{name}: {value:.4f}")
+        
+        # Save metrics to a file
+        metrics_filename = f"model_metrics_{month_id}.csv"
+        metrics_path = os.path.join(output_dir, metrics_filename)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        
+        # Save to CSV
+        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        print(f"Model metrics saved to {metrics_path}")
+        
+        return {
+            "metrics": metrics,
+            "metrics_path": metrics_path
+        }
+    
     def analyze_model_with_shap(self, model, X_test, y_test, model_type, month_id, 
                             output_dir, target_column, max_samples=1000, 
                             random_state=42, model_name="model", baseline_data=None):
