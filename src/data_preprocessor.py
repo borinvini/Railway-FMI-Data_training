@@ -3385,6 +3385,7 @@ class TrainingPipeline:
         """
         Train an XGBoost model (classifier or regressor) with hyperparameter tuning using manual CV.
         Supports sample weights based on delay magnitude for classification tasks.
+        Now includes SHAP analysis for enhanced model interpretability.
         
         Parameters:
         -----------
@@ -3797,6 +3798,74 @@ class TrainingPipeline:
             print("\nFeature Importance (top 10):")
             print(feature_importance.head(10))
             
+            # ========== NEW: ADD SHAP ANALYSIS ==========
+            print("\nPerforming SHAP analysis on the XGBoost RandomizedSearchCV model...")
+            
+            shap_result = self.analyze_model_with_shap(
+                model=xgb_model,
+                X_test=X_test,
+                y_test=y_test,
+                model_type='classification' if is_classification else 'regression',
+                month_id=month_id,
+                output_dir=xgboost_rs_dir,
+                target_column=target_column,
+                max_samples=1000,
+                random_state=random_state,
+                model_name="xgboost_randomized_search",
+                baseline_data=train_df  # Use training data for better baseline calculation
+            )
+            
+            if shap_result.get("success", False):
+                print("SHAP analysis completed successfully for XGBoost RandomizedSearchCV model!")
+                
+                # Compare with standard importance if SHAP was successful
+                if "shap_importance_path" in shap_result:
+                    print("\n" + "-"*60)
+                    print("COMPARISON: Standard vs SHAP Feature Importance (XGBoost RandomizedSearchCV)")
+                    print("-"*60)
+                    
+                    try:
+                        # Load SHAP importance for comparison
+                        shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                        
+                        # Merge the two importance measures
+                        if is_classification:
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        else:
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Importance_Abs'] if pd.notna(row['SHAP_Importance_Abs']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>8.4f} {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                    except Exception as e:
+                        print(f"Could not perform comparison: {e}")
+                
+            else:
+                print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+            
+            print("="*60)
+            
             # Save the model and feature importance
             try:
                 import joblib
@@ -3846,7 +3915,8 @@ class TrainingPipeline:
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
                         "metrics_path": metrics_result["metrics_path"],
-                        "used_sample_weights": sample_weights is not None
+                        "used_sample_weights": sample_weights is not None,
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                 else:
                     return {
@@ -3860,7 +3930,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
+                        "metrics_path": metrics_result["metrics_path"],
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                     
             except Exception as e:
@@ -3875,7 +3946,8 @@ class TrainingPipeline:
                         "model_saved": False,
                         "best_params": best_params,
                         "best_method": best_method,
-                        "used_sample_weights": sample_weights is not None
+                        "used_sample_weights": sample_weights is not None,
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
                 else:
                     return {
@@ -3888,7 +3960,8 @@ class TrainingPipeline:
                         "model_saved": False,
                         "best_params": best_params,
                         "best_method": best_method,
-                        "custom_objective": best_method == "weighted"
+                        "custom_objective": best_method == "weighted",
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
                 
         except Exception as e:
@@ -3900,311 +3973,382 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
-        
+
     def train_xgboost_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, params=None, random_state=42):
-            """
-            Train an XGBoost model (classifier or regressor) using only the most important features.
+        """
+        Train an XGBoost model (classifier or regressor) using only the most important features.
+        Now includes SHAP analysis for enhanced model interpretability.
+        
+        This method first trains an XGBoost model on all features, identifies the top features
+        based on TOP_FEATURES_COUNT, and then trains a new model using only those features.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        importance_threshold : float, optional
+            No longer used - kept for backwards compatibility.
+        params : dict, optional
+            Parameters for XGBoost model. If None, default parameters are used.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default parameters if none provided
+            if params is None:
+                from config.const import XGBOOST_DEFAULT_PARAMS
+                params = params = XGBOOST_DEFAULT_PARAMS.copy()
+            else:
+                params = params.copy()
             
-            This method first trains an XGBoost model on all features, identifies the top features
-            based on TOP_FEATURES_COUNT, and then trains a new model using only those features.
+            # Import the TOP_FEATURES_COUNT constant
+            from config.const import TOP_FEATURES_COUNT
             
-            Parameters:
-            -----------
-            month_id : str
-                Month identifier in format "YYYY-YYYY_MM" for the filename.
-            importance_threshold : float, optional
-                No longer used - kept for backwards compatibility.
-            params : dict, optional
-                Parameters for XGBoost model. If None, default parameters are used.
-            random_state : int, optional
-                Random seed for reproducibility. Defaults to 42.
-                    
-            Returns:
-            --------
-            dict
-                A summary of the training results, including model performance metrics.
-            """
-            try:
-                # Use default parameters if none provided
-                if params is None:
-                    from config.const import XGBOOST_DEFAULT_PARAMS
-                    params = params = XGBOOST_DEFAULT_PARAMS.copy()
-                else:
-                    params = params.copy()
-                
-                # Import the TOP_FEATURES_COUNT constant
-                from config.const import TOP_FEATURES_COUNT
-                
-                # Add random state to params
-                params['random_state'] = random_state
-                
-                # Construct file paths for the train and test sets
-                train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
-                test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
-                
-                train_path = os.path.join(self.preprocessed_dir, train_filename)
-                test_path = os.path.join(self.preprocessed_dir, test_filename)
-                
-                # Check if files exist
-                if not os.path.exists(train_path) or not os.path.exists(test_path):
-                    error_msg = f"Files not found: {train_path} or {test_path}"
-                    print(f"Error: {error_msg}")
-                    return {"success": False, "error": error_msg}
-                
-                # Load datasets
-                print(f"Loading training data from {train_path}")
-                train_df = pd.read_csv(train_path)
-                
-                print(f"Loading test data from {test_path}")
-                test_df = pd.read_csv(test_path)
-                
-                # Identify target column 
-                target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
-                target_column = None
-                
-                for option in target_options:
-                    if option in train_df.columns:
-                        target_column = option
-                        break
-                
-                if not target_column:
-                    print(f"Error: No target column found in dataset")
-                    return {"success": False, "error": "No target column found in dataset"}
-                
-                print(f"Identified target column: {target_column}")
-                
-                # Split features and target
-                X_train = train_df.drop(target_column, axis=1)
-                y_train = train_df[target_column]
-                
-                X_test = test_df.drop(target_column, axis=1)
-                y_test = test_df[target_column]
+            # Add random state to params
+            params['random_state'] = random_state
+            
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {"success": False, "error": error_msg}
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column 
+            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {"success": False, "error": "No target column found in dataset"}
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
 
-                # Drop the data_year column if it exists
-                for col in ['data_year']:
-                    if col in X_train.columns:
-                        print(f"Dropping '{col}' column from training features")
-                        X_train = X_train.drop(col, axis=1)
-                        
-                    if col in X_test.columns:
-                        print(f"Dropping '{col}' column from test features")
-                        X_test = X_test.drop(col, axis=1)
-                
-                # Create output directory for important features XGBoost
-                xgboost_important_dir = os.path.join(self.project_root, "data/output/xgboost_important_features")
-                os.makedirs(xgboost_important_dir, exist_ok=True)
-                
-                # Determine if it's a regression or classification problem
-                is_regression = (target_column in ['differenceInMinutes', 'differenceInMinutes_offset'])
-                
-                # STEP 1: TRAIN INITIAL XGBOOST MODEL TO IDENTIFY IMPORTANT FEATURES
-                print(f"\nTraining initial XGBoost model to identify important features...")
-                
-                if is_regression:
-                    # Set regression parameters
-                    params['objective'] = 'reg:squarederror'
-                    initial_model = xgb.XGBRegressor(**params)
-                else:
-                    # Set classification parameters
-                    if target_column == 'trainDelayed':
-                        params['objective'] = 'binary:logistic'
-                    else:
-                        # For multi-class problems like 'cancelled' with >2 classes
-                        num_classes = len(y_train.unique())
-                        params['objective'] = 'multi:softprob'
-                        params['num_class'] = num_classes
+            # Drop the data_year column if it exists
+            for col in ['data_year']:
+                if col in X_train.columns:
+                    print(f"Dropping '{col}' column from training features")
+                    X_train = X_train.drop(col, axis=1)
                     
-                    initial_model = xgb.XGBClassifier(**params)
-                
-                # Train the initial model
-                initial_model.fit(X_train, y_train)
-                
-                # Get feature importances
-                feature_importance = pd.DataFrame({
-                    'Feature': X_train.columns,
-                    'Importance': initial_model.feature_importances_
-                }).sort_values(by='Importance', ascending=False)
-                
-                # Normalize the importance scores to sum to 1.0
-                total_importance = feature_importance['Importance'].sum()
-                feature_importance['Normalized_Importance'] = feature_importance['Importance'] / total_importance
-                
-                print("\nFeature Importance (top 10):")
-                print(feature_importance.head(10))
-                
-                # CHANGED: Select top N features instead of using importance threshold
-                important_features = feature_importance.head(TOP_FEATURES_COUNT)['Feature'].tolist()
-                
-                print(f"\nSelected top {TOP_FEATURES_COUNT} important features:")
-                print(important_features)
-                
-                # STEP 2: TRAIN NEW XGBOOST MODEL WITH ONLY IMPORTANT FEATURES
-                print(f"\nTraining new XGBoost model with only top {TOP_FEATURES_COUNT} features...")
-                
-                if is_regression:
-                    selected_model = xgb.XGBRegressor(**params)
-                else:
-                    selected_model = xgb.XGBClassifier(**params)
-                
-                # Train the model with only important features
-                selected_model.fit(X_train[important_features], y_train)
-                
-                # Make predictions
-                y_pred = selected_model.predict(X_test[important_features])
-                
-                # Evaluate the model
-                if is_regression:
-                    # Calculate regression metrics
-                    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-                    mse = mean_squared_error(y_test, y_pred)
-                    rmse = np.sqrt(mse)
-                    mae = mean_absolute_error(y_test, y_pred)
-                    r2 = r2_score(y_test, y_pred)
-                    
-                    print(f"\nXGBoost Regressor Results (Top {TOP_FEATURES_COUNT} Features Only):")
-                    print(f"RMSE: {rmse:.4f}")
-                    print(f"MAE: {mae:.4f}")
-                    print(f"R²: {r2:.4f}")
-                    
-                    # Extract and save metrics
-                    metrics_result = self.extract_and_save_regression_metrics(
-                        y_test, y_pred, f"{month_id}_important_features", 
-                        output_dir=xgboost_important_dir
-                    )
-                    
-                    result = {
-                        "success": True,
-                        "model_type": "regression",
-                        "rmse": rmse,
-                        "mae": mae,
-                        "r2": r2,
-                        "important_features": important_features,
-                        "top_features_count": TOP_FEATURES_COUNT
-                    }
-                    
-                else:
-                    # Calculate classification metrics
-                    from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-                    accuracy = accuracy_score(y_test, y_pred)
-                    report = classification_report(y_test, y_pred, output_dict=True)
-                    conf_matrix = confusion_matrix(y_test, y_pred)
-                    
-                    print(f"\nXGBoost Classifier Results (Top {TOP_FEATURES_COUNT} Features Only):")
-                    print(f"Accuracy: {accuracy:.4f}")
-                    print("\nClassification Report:")
-                    print(classification_report(y_test, y_pred))
-                    print("\nConfusion Matrix:")
-                    print(conf_matrix)
-                    
-                    # Extract and save metrics
-                    metrics_result = self.extract_and_save_metrics(
-                        y_test, y_pred, report, f"{month_id}_important_features", 
-                        output_dir=xgboost_important_dir
-                    )
-                    
-                    result = {
-                        "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy,
-                        "report": report,
-                        "important_features": important_features,
-                        "top_features_count": TOP_FEATURES_COUNT
-                    }
-                
-                # Feature importance for the new model
-                selected_feature_importance = pd.DataFrame({
-                    'Feature': important_features,
-                    'Importance': selected_model.feature_importances_
-                }).sort_values(by='Importance', ascending=False)
-                
-                print("\nFeature Importance for Selected Features:")
-                print(selected_feature_importance)
-                
-                # Save the model, feature list, and results
-                try:
-                    import joblib
-                    
-                    # Save the model
-                    model_filename = f"xgboost_{month_id}_important_features.joblib"
-                    model_path = os.path.join(xgboost_important_dir, model_filename)
-                    joblib.dump(selected_model, model_path)
-                    print(f"Model saved to {model_path}")
-                    
-                    # Save feature importance (both initial and selected)
-                    initial_importance_filename = f"feature_importance_initial_{month_id}.csv"
-                    initial_importance_path = os.path.join(xgboost_important_dir, initial_importance_filename)
-                    feature_importance.to_csv(initial_importance_path, index=False)
-                    
-                    selected_importance_filename = f"feature_importance_selected_{month_id}.csv"
-                    selected_importance_path = os.path.join(xgboost_important_dir, selected_importance_filename)
-                    selected_feature_importance.to_csv(selected_importance_path, index=False)
-                    
-                    # Save the list of important features
-                    features_filename = f"important_features_{month_id}.txt"
-                    features_path = os.path.join(xgboost_important_dir, features_filename)
-                    with open(features_path, 'w') as f:
-                        f.write(f"# Top {TOP_FEATURES_COUNT} important features\n")
-                        for feature in important_features:
-                            f.write(f"{feature}\n")
-                    
-                    print(f"Features and importance saved to {xgboost_important_dir}")
-                    
-                    # Add paths to result
-                    result.update({
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": selected_importance_path,
-                        "initial_importance_path": initial_importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
-                    })
-                    
-                    # Compare with full-features model if available
-                    full_model_metrics_file = os.path.join(self.xgboost_dir, f"model_metrics_{month_id}_best.csv")
-                    if os.path.exists(full_model_metrics_file):
-                        full_metrics = pd.read_csv(full_model_metrics_file)
-                        
-                        if is_regression:
-                            full_rmse = full_metrics['rmse'].values[0] if 'rmse' in full_metrics else None
-                            if full_rmse:
-                                print(f"\nComparison with full-features model:")
-                                print(f"Full model RMSE: {full_rmse:.4f}")
-                                print(f"Top {TOP_FEATURES_COUNT} features model RMSE: {rmse:.4f}")
-                                rmse_change = ((rmse - full_rmse) / full_rmse) * 100
-                                print(f"RMSE change: {rmse_change:.2f}%")
-                        else:
-                            full_accuracy = full_metrics['accuracy'].values[0] if 'accuracy' in full_metrics else None
-                            if full_accuracy:
-                                print(f"\nComparison with full-features model:")
-                                print(f"Full model accuracy: {full_accuracy:.4f}")
-                                print(f"Top {TOP_FEATURES_COUNT} features model accuracy: {accuracy:.4f}")
-                                acc_change = ((accuracy - full_accuracy) / full_accuracy) * 100
-                                print(f"Accuracy change: {acc_change:.2f}%")
-                    
-                    return result
-                        
-                except Exception as e:
-                    print(f"Warning: Could not save model: {str(e)}")
-                    result.update({
-                        "metrics": metrics_result["metrics"],
-                        "metrics_path": metrics_result["metrics_path"],
-                        "model_saved": False
-                    })
-                    return result
+                if col in X_test.columns:
+                    print(f"Dropping '{col}' column from test features")
+                    X_test = X_test.drop(col, axis=1)
             
-            except Exception as e:
-                print(f"Error training XGBoost with important features for {month_id}: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                return {
-                    "success": False,
-                    "error": str(e)
+            # Create output directory for important features XGBoost
+            xgboost_important_dir = os.path.join(self.project_root, "data/output/xgboost_important_features")
+            os.makedirs(xgboost_important_dir, exist_ok=True)
+            
+            # Determine if it's a regression or classification problem
+            is_regression = (target_column in ['differenceInMinutes', 'differenceInMinutes_offset'])
+            
+            # STEP 1: TRAIN INITIAL XGBOOST MODEL TO IDENTIFY IMPORTANT FEATURES
+            print(f"\nTraining initial XGBoost model to identify important features...")
+            
+            if is_regression:
+                # Set regression parameters
+                params['objective'] = 'reg:squarederror'
+                initial_model = xgb.XGBRegressor(**params)
+            else:
+                # Set classification parameters
+                if target_column == 'trainDelayed':
+                    params['objective'] = 'binary:logistic'
+                else:
+                    # For multi-class problems like 'cancelled' with >2 classes
+                    num_classes = len(y_train.unique())
+                    params['objective'] = 'multi:softprob'
+                    params['num_class'] = num_classes
+                
+                initial_model = xgb.XGBClassifier(**params)
+            
+            # Train the initial model
+            initial_model.fit(X_train, y_train)
+            
+            # Get feature importances
+            feature_importance = pd.DataFrame({
+                'Feature': X_train.columns,
+                'Importance': initial_model.feature_importances_
+            }).sort_values(by='Importance', ascending=False)
+            
+            # Normalize the importance scores to sum to 1.0
+            total_importance = feature_importance['Importance'].sum()
+            feature_importance['Normalized_Importance'] = feature_importance['Importance'] / total_importance
+            
+            print("\nFeature Importance (top 10):")
+            print(feature_importance.head(10))
+            
+            # CHANGED: Select top N features instead of using importance threshold
+            important_features = feature_importance.head(TOP_FEATURES_COUNT)['Feature'].tolist()
+            
+            print(f"\nSelected top {TOP_FEATURES_COUNT} important features:")
+            print(important_features)
+            
+            # STEP 2: TRAIN NEW XGBOOST MODEL WITH ONLY IMPORTANT FEATURES
+            print(f"\nTraining new XGBoost model with only top {TOP_FEATURES_COUNT} features...")
+            
+            if is_regression:
+                selected_model = xgb.XGBRegressor(**params)
+            else:
+                selected_model = xgb.XGBClassifier(**params)
+            
+            # Train the model with only important features
+            selected_model.fit(X_train[important_features], y_train)
+            
+            # Make predictions
+            y_pred = selected_model.predict(X_test[important_features])
+            
+            # Evaluate the model
+            if is_regression:
+                # Calculate regression metrics
+                from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+                mse = mean_squared_error(y_test, y_pred)
+                rmse = np.sqrt(mse)
+                mae = mean_absolute_error(y_test, y_pred)
+                r2 = r2_score(y_test, y_pred)
+                
+                print(f"\nXGBoost Regressor Results (Top {TOP_FEATURES_COUNT} Features Only):")
+                print(f"RMSE: {rmse:.4f}")
+                print(f"MAE: {mae:.4f}")
+                print(f"R²: {r2:.4f}")
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_regression_metrics(
+                    y_test, y_pred, f"{month_id}_important_features", 
+                    output_dir=xgboost_important_dir
+                )
+                
+                result = {
+                    "success": True,
+                    "model_type": "regression",
+                    "rmse": rmse,
+                    "mae": mae,
+                    "r2": r2,
+                    "important_features": important_features,
+                    "top_features_count": TOP_FEATURES_COUNT
                 }
-  
-    def train_xgboost_rs_with_important_features(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
+                
+            else:
+                # Calculate classification metrics
+                from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+                accuracy = accuracy_score(y_test, y_pred)
+                report = classification_report(y_test, y_pred, output_dict=True)
+                conf_matrix = confusion_matrix(y_test, y_pred)
+                
+                print(f"\nXGBoost Classifier Results (Top {TOP_FEATURES_COUNT} Features Only):")
+                print(f"Accuracy: {accuracy:.4f}")
+                print("\nClassification Report:")
+                print(classification_report(y_test, y_pred))
+                print("\nConfusion Matrix:")
+                print(conf_matrix)
+                
+                # Extract and save metrics
+                metrics_result = self.extract_and_save_metrics(
+                    y_test, y_pred, report, f"{month_id}_important_features", 
+                    output_dir=xgboost_important_dir
+                )
+                
+                result = {
+                    "success": True,
+                    "model_type": "classification",
+                    "accuracy": accuracy,
+                    "report": report,
+                    "important_features": important_features,
+                    "top_features_count": TOP_FEATURES_COUNT
+                }
+            
+            # Feature importance for the new model
+            selected_feature_importance = pd.DataFrame({
+                'Feature': important_features,
+                'Importance': selected_model.feature_importances_
+            }).sort_values(by='Importance', ascending=False)
+            
+            print("\nFeature Importance for Selected Features:")
+            print(selected_feature_importance)
+            
+            # ========== NEW: ADD SHAP ANALYSIS ==========
+            print("\nPerforming SHAP analysis on the XGBoost Important Features model...")
+            
+            shap_result = self.analyze_model_with_shap(
+                model=selected_model,
+                X_test=X_test[important_features],  # Use only important features
+                y_test=y_test,
+                model_type='regression' if is_regression else 'classification',
+                month_id=month_id,
+                output_dir=xgboost_important_dir,
+                target_column=target_column,
+                max_samples=1000,
+                random_state=random_state,
+                model_name="xgboost_important_features",
+                baseline_data=train_df  # Use training data for better baseline calculation
+            )
+            
+            if shap_result.get("success", False):
+                print("SHAP analysis completed successfully for XGBoost Important Features model!")
+                
+                # Compare with standard importance if SHAP was successful
+                if "shap_importance_path" in shap_result:
+                    print("\n" + "-"*60)
+                    print("COMPARISON: Standard vs SHAP Feature Importance (XGBoost Important Features)")
+                    print("-"*60)
+                    
+                    try:
+                        # Load SHAP importance for comparison
+                        shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                        
+                        # Merge the two importance measures
+                        if is_regression:
+                            comparison = selected_feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Important features - Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Importance_Abs'] if pd.notna(row['SHAP_Importance_Abs']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>8.4f} {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        else:
+                            comparison = selected_feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Important features - Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                    except Exception as e:
+                        print(f"Could not perform comparison: {e}")
+                
+            else:
+                print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+            
+            print("="*60)
+            
+            # Save the model, feature list, and results
+            try:
+                import joblib
+                
+                # Save the model
+                model_filename = f"xgboost_{month_id}_important_features.joblib"
+                model_path = os.path.join(xgboost_important_dir, model_filename)
+                joblib.dump(selected_model, model_path)
+                print(f"Model saved to {model_path}")
+                
+                # Save feature importance (both initial and selected)
+                initial_importance_filename = f"feature_importance_initial_{month_id}.csv"
+                initial_importance_path = os.path.join(xgboost_important_dir, initial_importance_filename)
+                feature_importance.to_csv(initial_importance_path, index=False)
+                
+                selected_importance_filename = f"feature_importance_selected_{month_id}.csv"
+                selected_importance_path = os.path.join(xgboost_important_dir, selected_importance_filename)
+                selected_feature_importance.to_csv(selected_importance_path, index=False)
+                
+                # Save the list of important features
+                features_filename = f"important_features_{month_id}.txt"
+                features_path = os.path.join(xgboost_important_dir, features_filename)
+                with open(features_path, 'w') as f:
+                    f.write(f"# Top {TOP_FEATURES_COUNT} important features\n")
+                    for feature in important_features:
+                        f.write(f"{feature}\n")
+                
+                print(f"Features and importance saved to {xgboost_important_dir}")
+                
+                # Add paths to result
+                result.update({
+                    "metrics": metrics_result["metrics"],
+                    "model_path": model_path,
+                    "feature_importance_path": selected_importance_path,
+                    "initial_importance_path": initial_importance_path,
+                    "metrics_path": metrics_result["metrics_path"],
+                    "shap_analysis": shap_result  # Include SHAP results
+                })
+                
+                # Compare with full-features model if available
+                full_model_metrics_file = os.path.join(self.xgboost_dir, f"model_metrics_{month_id}_best.csv")
+                if os.path.exists(full_model_metrics_file):
+                    full_metrics = pd.read_csv(full_model_metrics_file)
+                    
+                    if is_regression:
+                        full_rmse = full_metrics['rmse'].values[0] if 'rmse' in full_metrics else None
+                        if full_rmse:
+                            print(f"\nComparison with full-features model:")
+                            print(f"Full model RMSE: {full_rmse:.4f}")
+                            print(f"Top {TOP_FEATURES_COUNT} features model RMSE: {rmse:.4f}")
+                            rmse_change = ((rmse - full_rmse) / full_rmse) * 100
+                            print(f"RMSE change: {rmse_change:.2f}%")
+                    else:
+                        full_accuracy = full_metrics['accuracy'].values[0] if 'accuracy' in full_metrics else None
+                        if full_accuracy:
+                            print(f"\nComparison with full-features model:")
+                            print(f"Full model accuracy: {full_accuracy:.4f}")
+                            print(f"Top {TOP_FEATURES_COUNT} features model accuracy: {accuracy:.4f}")
+                            acc_change = ((accuracy - full_accuracy) / full_accuracy) * 100
+                            print(f"Accuracy change: {acc_change:.2f}%")
+                
+                return result
+                    
+            except Exception as e:
+                print(f"Warning: Could not save model: {str(e)}")
+                result.update({
+                    "metrics": metrics_result["metrics"],
+                    "metrics_path": metrics_result["metrics_path"],
+                    "model_saved": False,
+                    "shap_analysis": shap_result  # Include SHAP results even if model save failed
+                })
+                return result
+        
+        except Exception as e:
+            print(f"Error training XGBoost with important features for {month_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
+    def train_xgboost_rs_with_important_features(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train an XGBoost model with RandomizedSearchCV using only the top features identified
         from a previous XGBoost RandomizedSearchCV run.
+        Now includes SHAP analysis for enhanced model interpretability.
         
         Parameters:
         -----------
@@ -4218,7 +4362,7 @@ class TrainingPipeline:
             Number of cross-validation folds.
         random_state : int, optional
             Random seed for reproducibility. Defaults to 42.
-                    
+                
         Returns:
         --------
         dict
@@ -4673,6 +4817,74 @@ class TrainingPipeline:
             print("\nFeature Importance in Final Model:")
             print(selected_feature_importance)
             
+            # ========== NEW: ADD SHAP ANALYSIS ==========
+            print("\nPerforming SHAP analysis on the XGBoost RandomizedSearchCV + Important Features model...")
+            
+            shap_result = self.analyze_model_with_shap(
+                model=xgb_model,
+                X_test=X_test_important,  # Use only important features
+                y_test=y_test,
+                model_type='regression' if not is_classification else 'classification',
+                month_id=month_id,
+                output_dir=output_dir,
+                target_column=target_column,
+                max_samples=1000,
+                random_state=random_state,
+                model_name="xgboost_rs_important_features",
+                baseline_data=train_df  # Use training data for better baseline calculation
+            )
+            
+            if shap_result.get("success", False):
+                print("SHAP analysis completed successfully for XGBoost RS + Important Features model!")
+                
+                # Compare with standard importance if SHAP was successful
+                if "shap_importance_path" in shap_result:
+                    print("\n" + "-"*60)
+                    print("COMPARISON: Standard vs SHAP Feature Importance (XGBoost RS + Important Features)")
+                    print("-"*60)
+                    
+                    try:
+                        # Load SHAP importance for comparison
+                        shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                        
+                        # Merge the two importance measures
+                        if is_classification:
+                            comparison = selected_feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Important features - Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        else:
+                            comparison = selected_feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Important features - Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Importance_Abs'] if pd.notna(row['SHAP_Importance_Abs']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>8.4f} {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                    except Exception as e:
+                        print(f"Could not perform comparison: {e}")
+                
+            else:
+                print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+            
+            print("="*60)
+            
             # Save the model, feature importance, and parameters
             try:
                 import joblib
@@ -4737,7 +4949,8 @@ class TrainingPipeline:
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
                         "metrics_path": metrics_result["metrics_path"],
-                        "used_sample_weights": sample_weights is not None
+                        "used_sample_weights": sample_weights is not None,
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                 else:
                     result = {
@@ -4752,7 +4965,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"]
+                        "metrics_path": metrics_result["metrics_path"],
+                        "shap_analysis": shap_result  # Include SHAP results
                     }
                 
                 return result
@@ -4770,7 +4984,8 @@ class TrainingPipeline:
                         "important_features": important_features,
                         "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
                         "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
-                        "model_saved": False
+                        "model_saved": False,
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
                 else:
                     return {
@@ -4783,7 +4998,8 @@ class TrainingPipeline:
                         "important_features": important_features,
                         "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
                         "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
-                        "model_saved": False
+                        "model_saved": False,
+                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
                     }
         
         except Exception as e:
@@ -4795,7 +5011,7 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
-        
+
     def train_regularized_regression(self, month_id, alpha_lasso=0.1, alpha_ridge=1.0, random_state=42):
         """
         Train Lasso and Ridge regression models for feature importance analysis on numeric targets.
