@@ -5592,17 +5592,17 @@ class TrainingPipeline:
                             f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
                     
                     # Save SHAP importance
-                    shap_filename = f"SHAP_importance_{model_name}_{month_id}.csv"
+                    shap_filename = f"SHAP_feature_importance_{month_id}.csv"
                     shap_path = os.path.join(output_dir, shap_filename)
                     shap_importance.to_csv(shap_path, index=False)
                     print(f"\nSHAP feature importance saved to {shap_path}")
                     
                     # Save detailed analysis
-                    summary_filename = f"SHAP_analysis_summary_{model_name}_{month_id}.txt"
+                    summary_filename = f"SHAP_summary_{month_id}.txt"
                     summary_path = os.path.join(output_dir, summary_filename)
                     
                     with open(summary_path, 'w') as f:
-                        f.write(f"SHAP Analysis Summary for {model_name} - {month_id}\n")
+                        f.write(f"SHAP Analysis Summary - {month_id}\n")
                         f.write("="*50 + "\n\n")
                         f.write(f"Model: {model_name}\n")
                         f.write(f"Target: {target_column}\n")
@@ -5705,17 +5705,17 @@ class TrainingPipeline:
                         f"({row['Relative_Contribution_Pct']:>4.1f}% of total impact)")
                 
                 # Save SHAP importance
-                shap_filename = f"SHAP_importance_{model_name}_{month_id}.csv"
+                shap_filename = f"SHAP_feature_importance_{month_id}.csv"
                 shap_path = os.path.join(output_dir, shap_filename)
                 shap_importance.to_csv(shap_path, index=False)
                 print(f"\nSHAP feature importance saved to {shap_path}")
                 
                 # Save detailed analysis
-                summary_filename = f"SHAP_analysis_summary_{model_name}_{month_id}.txt"
+                summary_filename = f"SHAP_summary_{month_id}.txt"
                 summary_path = os.path.join(output_dir, summary_filename)
                 
                 with open(summary_path, 'w') as f:
-                    f.write(f"SHAP Analysis Summary for {model_name} - {month_id}\n")
+                    f.write(f"SHAP Analysis Summary - {month_id}\n")
                     f.write("="*50 + "\n\n")
                     f.write(f"Model: {model_name}\n")
                     f.write(f"Target: {target_column}\n")
