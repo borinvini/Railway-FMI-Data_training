@@ -1740,6 +1740,7 @@ class TrainingPipeline:
         """
         Train a Decision Tree classifier on the preprocessed and split month data.
         Now uses the separated SHAP analysis method for delay prediction insights.
+        Updated to include sample weights based on delay magnitude.
         
         Parameters:
         -----------
@@ -1822,10 +1823,37 @@ class TrainingPipeline:
                 print(f"Target '{target_column}' indicates a classification problem")
             
             if is_classification:
+                # NEW: Create sample weights for classification if delay info is available
+                sample_weights = None
+                if 'differenceInMinutes' in train_df.columns:
+                    print("Using weighted samples based on delay magnitude")
+                    # Create sample weights based on delay magnitude
+                    delay_col = 'differenceInMinutes'
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    delayed_idx = (delays > 0)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay, using more moderate weights
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use constant from config instead of hardcoded value
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
                 # Train Decision Tree Classifier
                 dt = DecisionTreeClassifier(max_depth=max_depth, random_state=random_state)
                 print(f"Training Decision Tree classifier with max_depth={max_depth}")
-                dt.fit(X_train, y_train)
+                
+                # Fit with sample weights if available
+                if sample_weights is not None:
+                    print("Training model with sample weights")
+                    dt.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    dt.fit(X_train, y_train)
                 
                 # Predict
                 y_pred = dt.predict(X_test)
@@ -1855,7 +1883,7 @@ class TrainingPipeline:
                 print("\nStandard Feature Importance (top 10):")
                 print(feature_importance.head(10))
                 
-                # ========== NEW: USE SEPARATED SHAP ANALYSIS METHOD ==========
+                # ========== SHAP ANALYSIS ==========
                 print("\nPerforming SHAP analysis using separated method...")
                 
                 shap_result = self.analyze_model_with_shap(
@@ -1924,6 +1952,21 @@ class TrainingPipeline:
                     feature_importance.to_csv(importance_path, index=False)
                     print(f"Standard feature importance saved to {importance_path}")
                     
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(self.decision_tree_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
                     result = {
                         "success": True,
                         "model_type": "classification",
@@ -1933,7 +1976,8 @@ class TrainingPipeline:
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
                         "metrics_path": metrics_result["metrics_path"],
-                        "shap_analysis": shap_result  # Include SHAP results
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
                     }
                     
                     return result
@@ -1948,7 +1992,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "metrics_path": metrics_result["metrics_path"],
                         "model_saved": False,
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
                     }
             else:
                 # For regression problems we would need a different approach
@@ -1970,6 +2015,7 @@ class TrainingPipeline:
         """
         Train a Decision Tree classifier on only the important features.
         Now includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights based on delay magnitude.
         
         This method first trains a model on all features, identifies the most important features
         based on the threshold, and then trains a new model using only those features.
@@ -2057,11 +2103,38 @@ class TrainingPipeline:
                 print(f"Target '{target_column}' indicates a classification problem")
             
             if is_classification:
+                # NEW: Create sample weights for classification if delay info is available
+                sample_weights = None
+                if 'differenceInMinutes' in train_df.columns:
+                    print("Using weighted samples based on delay magnitude")
+                    # Create sample weights based on delay magnitude
+                    delay_col = 'differenceInMinutes'
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    delayed_idx = (delays > 0)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
                 # First, train a model on all features to get feature importance
                 # Use class_weight="balanced" to handle imbalanced classes
                 print(f"Training initial Decision Tree classifier with all features...")
                 dt = DecisionTreeClassifier(class_weight="balanced", max_depth=max_depth, random_state=random_state)
-                dt.fit(X_train, y_train)
+                
+                # Fit with sample weights if available
+                if sample_weights is not None:
+                    print("Training initial model with sample weights")
+                    dt.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    dt.fit(X_train, y_train)
                 
                 # Calculate feature importance
                 feature_importance = pd.DataFrame({
@@ -2085,7 +2158,13 @@ class TrainingPipeline:
                 # Train a new model with only the important features
                 print(f"\nTraining new Decision Tree classifier with only important features...")
                 dt_selected = DecisionTreeClassifier(random_state=random_state)  # Note: not using class_weight here as in example
-                dt_selected.fit(X_train[important_features], y_train)
+                
+                # Fit with sample weights if available
+                if sample_weights is not None:
+                    print("Training selected model with sample weights")
+                    dt_selected.fit(X_train[important_features], y_train, sample_weight=sample_weights)
+                else:
+                    dt_selected.fit(X_train[important_features], y_train)
                 
                 # Predict
                 y_pred = dt_selected.predict(X_test[important_features])
@@ -2115,7 +2194,7 @@ class TrainingPipeline:
                 print("\nFeature Importance for Selected Features:")
                 print(selected_feature_importance)
                 
-                # ========== NEW: ADD SHAP ANALYSIS ==========
+                # ========== SHAP ANALYSIS ==========
                 print("\nPerforming SHAP analysis on the important features model...")
                 
                 shap_result = self.analyze_model_with_shap(
@@ -2195,6 +2274,21 @@ class TrainingPipeline:
                             f.write(f"{feature}\n")
                     print(f"Important features list saved to {features_path}")
                     
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(self.important_features_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
                     return {
                         "success": True,
                         "model_type": "classification",
@@ -2205,7 +2299,8 @@ class TrainingPipeline:
                         "important_features": important_features,
                         "feature_importance_path": importance_path,
                         "metrics_path": metrics_result["metrics_path"],
-                        "shap_analysis": shap_result  # Include SHAP results
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
                     }
                     
                 except Exception as e:
@@ -2219,7 +2314,8 @@ class TrainingPipeline:
                         "metrics_path": metrics_result["metrics_path"],
                         "model_saved": False,
                         "important_features": important_features,
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
                     }
             else:
                 # For regression problems we would need a different approach
@@ -2235,11 +2331,12 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
-        
+
     def train_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
         Now includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights based on delay magnitude.
         
         Parameters:
         -----------
@@ -2339,6 +2436,27 @@ class TrainingPipeline:
                 print(f"Target '{target_column}' indicates a classification problem")
             
             if is_classification:
+                # NEW: Create sample weights for classification if delay info is available
+                sample_weights = None
+                if 'differenceInMinutes' in train_df.columns:
+                    print("Using weighted samples based on delay magnitude for randomized search")
+                    # Create sample weights based on delay magnitude
+                    delay_col = 'differenceInMinutes'
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    delayed_idx = (delays > 0)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
                 from sklearn.model_selection import RandomizedSearchCV
                 
                 # Initialize base classifier
@@ -2352,14 +2470,26 @@ class TrainingPipeline:
                     scoring='accuracy', random_state=random_state, n_jobs=-1
                 )
                 
-                random_search.fit(X_train, y_train)
+                # Fit RandomizedSearchCV with sample weights if available
+                if sample_weights is not None:
+                    print("Training RandomizedSearchCV with sample weights")
+                    # Note: RandomizedSearchCV will automatically handle sample weights for cross-validation
+                    random_search.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    random_search.fit(X_train, y_train)
                 
                 best_params = random_search.best_params_
                 print(f"Best Hyperparameters: {best_params}")
                 
                 # Train model with best parameters
                 best_dt = DecisionTreeClassifier(**best_params, random_state=random_state)
-                best_dt.fit(X_train, y_train)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    best_dt.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    best_dt.fit(X_train, y_train)
                 
                 # Predict
                 y_pred = best_dt.predict(X_test)
@@ -2389,7 +2519,7 @@ class TrainingPipeline:
                 print("\nFeature Importance (top 10):")
                 print(feature_importance.head(10))
                 
-                # ========== NEW: ADD SHAP ANALYSIS ==========
+                # ========== SHAP ANALYSIS ==========
                 print("\nPerforming SHAP analysis on the RandomizedSearchCV tuned model...")
                 
                 shap_result = self.analyze_model_with_shap(
@@ -2469,6 +2599,21 @@ class TrainingPipeline:
                             f.write(f"{param}: {value}\n")
                     print(f"Best parameters saved to {params_path}")
                     
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(self.randomized_search_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
                     # Also compare to baseline model
                     print("\nComparison with baseline model:")
                     baseline_metrics_file = os.path.join(self.decision_tree_dir, f"model_metrics_{month_id}.csv")
@@ -2490,7 +2635,8 @@ class TrainingPipeline:
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
                         "metrics_path": metrics_result["metrics_path"],
-                        "shap_analysis": shap_result  # Include SHAP results
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
                     }
                     
                 except Exception as e:
@@ -2504,7 +2650,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "metrics_path": metrics_result["metrics_path"],
                         "model_saved": False,
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
                     }
             else:
                 # For regression problems we would need a different approach
@@ -2520,12 +2667,13 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
-        
+
     def train_randomized_search_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV,
         but only using features that exceed the importance threshold.
         Now includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights based on delay magnitude.
         
         This method combines feature selection and hyperparameter optimization:
         1. First trains a model to identify important features
@@ -2633,12 +2781,39 @@ class TrainingPipeline:
                 print(f"Target '{target_column}' indicates a classification problem")
             
             if is_classification:
+                # NEW: Create sample weights for classification if delay info is available
+                sample_weights = None
+                if 'differenceInMinutes' in train_df.columns:
+                    print("Using weighted samples based on delay magnitude for feature selection and randomized search")
+                    # Create sample weights based on delay magnitude
+                    delay_col = 'differenceInMinutes'
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    delayed_idx = (delays > 0)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
                 from sklearn.model_selection import RandomizedSearchCV
                 
                 # STEP 1: FIRST TRAIN A MODEL TO IDENTIFY IMPORTANT FEATURES
                 print(f"Training initial Decision Tree classifier to identify important features...")
                 dt_initial = DecisionTreeClassifier(random_state=random_state)
-                dt_initial.fit(X_train, y_train)
+                
+                # Fit with sample weights if available
+                if sample_weights is not None:
+                    print("Training initial feature importance model with sample weights")
+                    dt_initial.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    dt_initial.fit(X_train, y_train)
                 
                 # Calculate feature importance
                 feature_importance = pd.DataFrame({
@@ -2671,15 +2846,25 @@ class TrainingPipeline:
                     scoring='accuracy', random_state=random_state, n_jobs=-1
                 )
                 
-                # Fit only on the important features
-                random_search.fit(X_train[important_features], y_train)
+                # Fit only on the important features with sample weights if available
+                if sample_weights is not None:
+                    print("Training RandomizedSearchCV with sample weights on important features")
+                    random_search.fit(X_train[important_features], y_train, sample_weight=sample_weights)
+                else:
+                    random_search.fit(X_train[important_features], y_train)
                 
                 best_params = random_search.best_params_
                 print(f"Best Hyperparameters: {best_params}")
                 
                 # Train model with best parameters on important features
                 best_dt = DecisionTreeClassifier(**best_params, random_state=random_state)
-                best_dt.fit(X_train[important_features], y_train)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights on important features")
+                    best_dt.fit(X_train[important_features], y_train, sample_weight=sample_weights)
+                else:
+                    best_dt.fit(X_train[important_features], y_train)
                 
                 # Predict using only important features
                 y_pred = best_dt.predict(X_test[important_features])
@@ -2717,7 +2902,7 @@ class TrainingPipeline:
                 print("\nFeature Importance in Final Model:")
                 print(selected_feature_importance)
                 
-                # ========== NEW: ADD SHAP ANALYSIS ==========
+                # ========== SHAP ANALYSIS ==========
                 print("\nPerforming SHAP analysis on the RandomizedSearchCV + Important Features model...")
                 
                 shap_result = self.analyze_model_with_shap(
@@ -2798,6 +2983,25 @@ class TrainingPipeline:
                             f.write(f"{param}: {value}\n")
                     print(f"Parameters and features saved to {params_path}")
                     
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(combined_output_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                            f.write(f"\nApplied to:\n")
+                            f.write(f"- Initial feature importance model\n")
+                            f.write(f"- RandomizedSearchCV cross-validation\n")
+                            f.write(f"- Final model training\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
                     # Also compare to baseline models
                     print("\nComparison with other models:")
                     
@@ -2839,7 +3043,8 @@ class TrainingPipeline:
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
                         "metrics_path": metrics_result["metrics_path"],
-                        "shap_analysis": shap_result  # Include SHAP results
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
                     }
                     
                 except Exception as e:
@@ -2854,7 +3059,8 @@ class TrainingPipeline:
                         "metrics": metrics_result["metrics"],
                         "metrics_path": metrics_result["metrics_path"],
                         "model_saved": False,
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
                     }
             else:
                 # For regression problems we would need a different approach
