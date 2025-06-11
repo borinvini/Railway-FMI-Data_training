@@ -49,6 +49,10 @@ IMPORTANCE_THRESHOLD = 0.05
 # Number of top features to select for XGBoost important features
 TOP_FEATURES_COUNT = 5
 
+# Sample weighting parameters for delay-based weighting
+MAX_SAMPLE_WEIGHT_CLASSIFICATION = 5.0  # Maximum weight for classification models
+MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Maximum weight for regression models
+
 # Pipeline stages configuration
 PIPELINE_STAGES = [
     "merge_snow_depth_columns",

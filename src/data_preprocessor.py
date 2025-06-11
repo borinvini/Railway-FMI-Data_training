@@ -44,7 +44,9 @@ from config.const import (
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     FILTER_TRAINS_BY_STATIONS,
-    REQUIRED_STATIONS
+    REQUIRED_STATIONS,
+    MAX_SAMPLE_WEIGHT_CLASSIFICATION,
+    MAX_SAMPLE_WEIGHT_REGRESSION
 )
 
 
@@ -2993,8 +2995,8 @@ class TrainingPipeline:
                 # 2. Modified custom loss function with more stable gradients
                 def stable_weighted_mse(y_pred, dtrain):
                     y_true = dtrain.get_label()
-                    # More moderate weighting approach with capped weights
-                    weights = np.minimum(3.0, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
+                    # UPDATED: Use constant from config instead of hardcoded value
+                    weights = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
                     # More stable gradient calculation
                     grad = weights * (y_pred - y_true)
                     hess = weights
@@ -3228,8 +3230,8 @@ class TrainingPipeline:
                     if np.any(delayed_idx):
                         # Normalize delay values by mean positive delay, using more moderate weights
                         mean_delay = delays[delayed_idx].mean()
-                        # Cap weights at 5 instead of 10 for more stability
-                        sample_weights[delayed_idx] = np.minimum(5, 1 + delays[delayed_idx]/mean_delay)
+                        # UPDATED: Use constant from config instead of hardcoded value
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
                     
                     # Train the model with sample weights
                     xgb_model = xgb.XGBClassifier(**params)
@@ -3506,24 +3508,20 @@ class TrainingPipeline:
                 delays = train_df[delay_col].values
                 
                 # Apply weights - higher delays get higher weights
-                # For delayed trains, weight proportional to delay amount
                 delayed_idx = (delays > 0)
                 if np.any(delayed_idx):
                     # Normalize delay values by mean positive delay, using more moderate weights
                     mean_delay = delays[delayed_idx].mean()
-                    # Cap weights at 5 instead of 10 for more stability
-                    sample_weights[delayed_idx] = np.minimum(5, 1 + delays[delayed_idx]/mean_delay)
+                    # UPDATED: Use constant from config instead of hardcoded value
+                    sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
                 
                 print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
-                
-            # --------- MANUAL HYPERPARAMETER TUNING APPROACH ---------            
-            print(f"Starting manual hyperparameter tuning with {n_iter} iterations and {cv}-fold cross-validation...")
-
+            
             # Define custom objective function for regression if needed
             def stable_weighted_mse(y_pred, dtrain):
                 y_true = dtrain.get_label()
-                # More moderate weighting approach with capped weights
-                weights = np.minimum(3.0, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
+                # UPDATED: Use constant from config instead of hardcoded value
+                weights = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
                 # More stable gradient calculation
                 grad = weights * (y_pred - y_true)
                 hess = weights
@@ -3978,6 +3976,7 @@ class TrainingPipeline:
         """
         Train an XGBoost model (classifier or regressor) using only the most important features.
         Now includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights for classification tasks.
         
         This method first trains an XGBoost model on all features, identifies the top features
         based on TOP_FEATURES_COUNT, and then trains a new model using only those features.
@@ -4071,6 +4070,27 @@ class TrainingPipeline:
             # Determine if it's a regression or classification problem
             is_regression = (target_column in ['differenceInMinutes', 'differenceInMinutes_offset'])
             
+            # NEW: Create sample weights for classification if delay info is available
+            sample_weights = None
+            if not is_regression and 'differenceInMinutes' in train_df.columns:
+                print("Using weighted samples based on delay magnitude")
+                # Create sample weights based on delay magnitude
+                delay_col = 'differenceInMinutes'
+                sample_weights = np.ones(len(y_train))
+                
+                # Get delay values for each training sample
+                delays = train_df[delay_col].values
+                
+                # Apply weights - higher delays get higher weights
+                delayed_idx = (delays > 0)
+                if np.any(delayed_idx):
+                    # Normalize delay values by mean positive delay
+                    mean_delay = delays[delayed_idx].mean()
+                    # Use configured maximum weight
+                    sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                
+                print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+            
             # STEP 1: TRAIN INITIAL XGBOOST MODEL TO IDENTIFY IMPORTANT FEATURES
             print(f"\nTraining initial XGBoost model to identify important features...")
             
@@ -4090,8 +4110,12 @@ class TrainingPipeline:
                 
                 initial_model = xgb.XGBClassifier(**params)
             
-            # Train the initial model
-            initial_model.fit(X_train, y_train)
+            # Train the initial model - WITH SAMPLE WEIGHTS if available
+            if sample_weights is not None:
+                print("Training initial model with sample weights")
+                initial_model.fit(X_train, y_train, sample_weight=sample_weights)
+            else:
+                initial_model.fit(X_train, y_train)
             
             # Get feature importances
             feature_importance = pd.DataFrame({
@@ -4120,8 +4144,12 @@ class TrainingPipeline:
             else:
                 selected_model = xgb.XGBClassifier(**params)
             
-            # Train the model with only important features
-            selected_model.fit(X_train[important_features], y_train)
+            # Train the model with only important features - WITH SAMPLE WEIGHTS if available
+            if sample_weights is not None:
+                print("Training selected model with sample weights")
+                selected_model.fit(X_train[important_features], y_train, sample_weight=sample_weights)
+            else:
+                selected_model.fit(X_train[important_features], y_train)
             
             # Make predictions
             y_pred = selected_model.predict(X_test[important_features])
@@ -4153,7 +4181,8 @@ class TrainingPipeline:
                     "mae": mae,
                     "r2": r2,
                     "important_features": important_features,
-                    "top_features_count": TOP_FEATURES_COUNT
+                    "top_features_count": TOP_FEATURES_COUNT,
+                    "used_sample_weights": False  # No sample weights for regression in this method
                 }
                 
             else:
@@ -4182,7 +4211,8 @@ class TrainingPipeline:
                     "accuracy": accuracy,
                     "report": report,
                     "important_features": important_features,
-                    "top_features_count": TOP_FEATURES_COUNT
+                    "top_features_count": TOP_FEATURES_COUNT,
+                    "used_sample_weights": sample_weights is not None
                 }
             
             # Feature importance for the new model
@@ -4194,7 +4224,7 @@ class TrainingPipeline:
             print("\nFeature Importance for Selected Features:")
             print(selected_feature_importance)
             
-            # ========== NEW: ADD SHAP ANALYSIS ==========
+            # ========== SHAP ANALYSIS (unchanged) ==========
             print("\nPerforming SHAP analysis on the XGBoost Important Features model...")
             
             shap_result = self.analyze_model_with_shap(
@@ -4289,17 +4319,22 @@ class TrainingPipeline:
                     for feature in important_features:
                         f.write(f"{feature}\n")
                 
-                print(f"Features and importance saved to {xgboost_important_dir}")
+                # NEW: Save sample weights information if used
+                if sample_weights is not None:
+                    weights_filename = f"sample_weights_info_{month_id}.txt"
+                    weights_path = os.path.join(xgboost_important_dir, weights_filename)
+                    with open(weights_path, 'w') as f:
+                        f.write(f"Sample Weights Information - {month_id}\n")
+                        f.write("="*40 + "\n")
+                        f.write(f"Used sample weights: Yes\n")
+                        f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                        f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                        f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                        f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                        f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                    print(f"Sample weights info saved to {weights_path}")
                 
-                # Add paths to result
-                result.update({
-                    "metrics": metrics_result["metrics"],
-                    "model_path": model_path,
-                    "feature_importance_path": selected_importance_path,
-                    "initial_importance_path": initial_importance_path,
-                    "metrics_path": metrics_result["metrics_path"],
-                    "shap_analysis": shap_result  # Include SHAP results
-                })
+                print(f"Features and importance saved to {xgboost_important_dir}")
                 
                 # Compare with full-features model if available
                 full_model_metrics_file = os.path.join(self.xgboost_dir, f"model_metrics_{month_id}_best.csv")
@@ -4322,6 +4357,16 @@ class TrainingPipeline:
                             print(f"Top {TOP_FEATURES_COUNT} features model accuracy: {accuracy:.4f}")
                             acc_change = ((accuracy - full_accuracy) / full_accuracy) * 100
                             print(f"Accuracy change: {acc_change:.2f}%")
+                
+                # Add paths to result
+                result.update({
+                    "metrics": metrics_result["metrics"],
+                    "model_path": model_path,
+                    "feature_importance_path": selected_importance_path,
+                    "initial_importance_path": initial_importance_path,
+                    "metrics_path": metrics_result["metrics_path"],
+                    "shap_analysis": shap_result  # Include SHAP results
+                })
                 
                 return result
                     
@@ -4525,11 +4570,11 @@ class TrainingPipeline:
                 if np.any(delayed_idx):
                     # Normalize delay values by mean positive delay, using more moderate weights
                     mean_delay = delays[delayed_idx].mean()
-                    # Cap weights at 5 instead of 10 for more stability
-                    sample_weights[delayed_idx] = np.minimum(5, 1 + delays[delayed_idx]/mean_delay)
+                    # UPDATED: Use constant from config instead of hardcoded value
+                    sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
                 
                 print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
-            
+                        
             # Subset data to include only important features
             X_train_important = X_train[important_features]
             X_test_important = X_test[important_features]
@@ -4542,8 +4587,8 @@ class TrainingPipeline:
             # Define custom objective function for regression if needed
             def stable_weighted_mse(y_pred, dtrain):
                 y_true = dtrain.get_label()
-                # More moderate weighting approach with capped weights
-                weights = np.minimum(3.0, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
+                # UPDATED: Use constant from config instead of hardcoded value
+                weights = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
                 # More stable gradient calculation
                 grad = weights * (y_pred - y_true)
                 hess = weights
