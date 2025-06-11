@@ -427,10 +427,10 @@ class TrainingPipeline:
                         # Move to the next stage regardless of success
                         state["current_stage"] = "train_with_important_features"
 
-                    case "train_month_decision_tree_important_features":
+                    case "train_with_important_features":
                         print(f"Training decision tree with important features for {month_id}...")
-                        important_result = self.train_month_decision_tree_important_features(month_id, importance_threshold=IMPORTANCE_THRESHOLD)
-                    
+                        important_result = self.train_with_important_features(month_id, importance_threshold=IMPORTANCE_THRESHOLD)
+                        
                         if not important_result.get("success", False):
                             print(f"Failed to train decision tree with important features for {month_id}: {important_result.get('error', 'Unknown error')}")
                             counters["failed_important_features"] = counters.get("failed_important_features", 0) + 1
@@ -441,10 +441,10 @@ class TrainingPipeline:
                         # This is no longer the last stage, so point to the next stage
                         state["current_stage"] = "train_randomized_search_cv"
 
-                    case "train_month_decision_tree_randomized_search_cv":
+                    case "train_randomized_search_cv":
                         print(f"Training decision tree with RandomizedSearchCV for {month_id}...")
-                        random_search_result = self.train_month_decision_tree_randomized_search_cv(month_id)
-
+                        random_search_result = self.train_randomized_search_cv(month_id)
+                        
                         if not random_search_result.get("success", False):
                             print(f"Failed to train decision tree with RandomizedSearchCV for {month_id}: {random_search_result.get('error', 'Unknown error')}")
                             counters["failed_randomized_search"] = counters.get("failed_randomized_search", 0) + 1
@@ -455,10 +455,10 @@ class TrainingPipeline:
                         # Point to the new final stage
                         state["current_stage"] = "train_randomized_search_with_important_features"
 
-                    case "train_month_decision_tree_randomized_search_with_important_features":
+                    case "train_randomized_search_with_important_features":
                         print(f"Training decision tree with RandomizedSearchCV on important features for {month_id}...")
-                        combined_result = self.train_month_decision_tree_randomized_search_with_important_features(month_id)
-                    
+                        combined_result = self.train_randomized_search_with_important_features(month_id)
+                        
                         if not combined_result.get("success", False):
                             print(f"Failed to train with combined approach for {month_id}: {combined_result.get('error', 'Unknown error')}")
                             counters["failed_combined_approach"] = counters.get("failed_combined_approach", 0) + 1
@@ -2011,7 +2011,7 @@ class TrainingPipeline:
                 "error": str(e)
             }
 
-    def train_month_decision_tree_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, max_depth=None, random_state=42):
+    def train_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, max_depth=None, random_state=42):
         """
         Train a Decision Tree classifier on only the important features.
         Now includes SHAP analysis for enhanced model interpretability.
@@ -2332,7 +2332,7 @@ class TrainingPipeline:
                 "error": str(e)
             }
 
-    def train_month_decision_tree_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
+    def train_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
         Now includes SHAP analysis for enhanced model interpretability.
@@ -2668,7 +2668,7 @@ class TrainingPipeline:
                 "error": str(e)
             }
 
-    def train_month_decision_tree_randomized_search_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, param_distributions=None, n_iter=None, cv=None, random_state=42):
+    def train_randomized_search_with_important_features(self, month_id, importance_threshold=IMPORTANCE_THRESHOLD, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV,
         but only using features that exceed the importance threshold.
