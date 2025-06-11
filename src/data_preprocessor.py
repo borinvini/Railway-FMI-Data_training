@@ -7,6 +7,7 @@ import ast
 import shap
 import joblib
 import logging
+import datetime as dt
 from sklearn.impute import SimpleImputer
 import xgboost as xgb
 import numpy as np
@@ -147,6 +148,8 @@ class TrainingPipeline:
             The feature to keep (one of 'differenceInMinutes', 'trainDelayed', or 'cancelled').
             Defaults to DEFAULT_TARGET_FEATURE from the constants.
         """
+        training_start_time = dt.datetime.now() # Start time of the training
+        print(f"Training started at {training_start_time}")
         if not csv_files:
             print("\nNo CSV files to process.")
             return {
@@ -577,8 +580,11 @@ class TrainingPipeline:
         print(f"Failed to train XGBoost models with RandomizedSearchCV on top features: {summary.get('failed_xgboost_rs_important', 0)}")
 
         print("="*50)
-        
+        training_end_time = dt.datetime.now() # end time of the training
+        print(f"Total training time: {training_end_time -  training_start_time}")
+
         return summary
+
         
     def preprocess_csv_file(self, input_file_path):
         """
