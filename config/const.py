@@ -30,13 +30,14 @@ DROP_TRAIN_FEATURES = True
 
 # Important weather conditions to check for missing value handling
 IMPORTANT_WEATHER_CONDITIONS = [
-    'Air temperature', 
     'Relative humidity', 
     'Dew-point temperature', 
     'Precipitation amount', 
     'Precipitation intensity', 
     'Snow depth', 
-    'Horizontal visibility'
+    'Horizontal visibility',
+    'Wind speed',
+    'Gust speed'
 ]
 
 

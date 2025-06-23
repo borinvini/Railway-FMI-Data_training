@@ -873,6 +873,7 @@ class TrainingPipeline:
     def handle_missing_values(self, dataframe=None, month_id=None):
         """
         Handle missing values in preprocessed dataframes with enhanced imputation strategy.
+        Now includes initial data completeness analysis.
         
         Processes the provided dataframe and handles missing values:
         - Drop rows where all weather condition columns have missing values
@@ -908,6 +909,53 @@ class TrainingPipeline:
                 print("Warning: Empty dataframe")
                 logger.warning("Empty dataframe provided")
                 return df
+            
+            # NEW: DATA COMPLETENESS ANALYSIS
+            print(f"\n--- DATA COMPLETENESS ANALYSIS ---")
+            logger.info("=== Data Completeness Analysis ===")
+            
+            # Check completeness for important weather conditions
+            available_important_cols = [col for col in self.important_conditions if col in df.columns]
+            if available_important_cols:
+                # Count rows where ALL important weather conditions are filled
+                important_weather_complete = df[available_important_cols].notna().all(axis=1).sum()
+                important_weather_complete_pct = (important_weather_complete / len(df)) * 100
+                
+                print(f"Rows with ALL important weather conditions filled: {important_weather_complete} / {len(df)} ({important_weather_complete_pct:.2f}%)")
+                logger.info(f"Rows with ALL important weather conditions filled: {important_weather_complete} / {len(df)} ({important_weather_complete_pct:.2f}%)")
+            else:
+                print("No important weather conditions found in the dataframe")
+                logger.info("No important weather conditions found in the dataframe")
+            
+            # Check overall completeness (no missing data anywhere)
+            completely_filled_rows = df.notna().all(axis=1).sum()
+            completely_filled_pct = (completely_filled_rows / len(df)) * 100
+            
+            print(f"Completely filled rows (no missing data): {completely_filled_rows} / {len(df)} ({completely_filled_pct:.2f}%)")
+            logger.info(f"Completely filled rows (no missing data): {completely_filled_rows} / {len(df)} ({completely_filled_pct:.2f}%)")
+            
+            # Additional statistics: show missing data per column for important weather conditions
+            if available_important_cols:
+                print(f"\nMissing data breakdown for important weather conditions:")
+                logger.info("Missing data breakdown for important weather conditions:")
+                for col in available_important_cols:
+                    missing_count = df[col].isna().sum()
+                    missing_pct = (missing_count / len(df)) * 100
+                    print(f"  - {col}: {missing_count} missing ({missing_pct:.2f}%)")
+                    logger.info(f"  - {col}: {missing_count} missing ({missing_pct:.2f}%)")
+            
+            # Show total missing values across all columns
+            total_missing = df.isna().sum().sum()
+            total_cells = len(df) * len(df.columns)
+            total_missing_pct = (total_missing / total_cells) * 100
+            
+            print(f"\nOverall missing data statistics:")
+            print(f"Total missing values: {total_missing} / {total_cells} cells ({total_missing_pct:.2f}%)")
+            logger.info(f"Total missing values: {total_missing} / {total_cells} cells ({total_missing_pct:.2f}%)")
+            
+            print("--- END COMPLETENESS ANALYSIS ---\n")
+            logger.info("=== End Completeness Analysis ===")
+            # END NEW COMPLETENESS ANALYSIS
             
             # Count rows before cleaning
             original_row_count = len(df)
