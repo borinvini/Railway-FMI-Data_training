@@ -17,13 +17,17 @@ DEFAULT_TARGET_FEATURE = 'trainDelayed'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
+# Target column to use for calculating trainDelayed feature
+TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_eachStation_offset'
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
+
 # Valid target features for selection
 VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 
                          'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled']
 
-# Target column to use for calculating trainDelayed feature
-TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_eachStation_offset'
-# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
+CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled']
+REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
+
 
 # Valid prediction features (non-target features used for training)
 VALID_PREDICTION_FEATURES = ["weather_conditions", "trainStopping", "commercialStop"]
@@ -43,7 +47,7 @@ delay = True
 # Value to be considered as a delay (in minutes)
 # Long-distance trains: 5 min
 # Short trains: 2-3 min
-TRAIN_DELAY_MINUTES = 0
+TRAIN_DELAY_MINUTES = 5
 
 # Important weather conditions to check for missing value handling
 IMPORTANT_WEATHER_CONDITIONS = [

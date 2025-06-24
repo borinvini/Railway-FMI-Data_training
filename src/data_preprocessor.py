@@ -36,6 +36,7 @@ from config.const import (
     PREPROCESSED_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     IMPORTANCE_THRESHOLD,
+    REGRESSION_PROBLEM,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     TOP_FEATURES_COUNT,
     TRAIN_DELAY_MINUTES,
@@ -1403,6 +1404,122 @@ class TrainingPipeline:
             print(f"Error saving dataframe for {month_id}: {e}")
             return False
     
+    def apply_smote_tomek_resampling(self, X_train, y_train, target_column, imbalance_threshold, random_state=42):
+        """
+        Apply SMOTE-Tomek resampling to training data if class imbalance exceeds threshold.
+        
+        This method checks for class imbalance in categorical target variables and applies
+        SMOTE-Tomek resampling if the minority class percentage falls below the specified threshold.
+        
+        Parameters:
+        -----------
+        X_train : pandas.DataFrame
+            Training features.
+        y_train : pandas.Series
+            Training target values.
+        target_column : str
+            Name of the target column.
+        imbalance_threshold : float
+            Threshold for minority class percentage. If minority class is below this percentage,
+            SMOTE-Tomek will be applied.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        tuple
+            (X_train_resampled, y_train_resampled, smote_applied, resampling_info)
+            - X_train_resampled: Potentially resampled training features
+            - y_train_resampled: Potentially resampled training target
+            - smote_applied: Boolean indicating if SMOTE-Tomek was applied
+            - resampling_info: Dictionary with resampling statistics
+        """
+        # Store original training set size for comparison
+        original_train_size = len(y_train)
+        smote_applied = False
+        resampling_info = {
+            "original_size": original_train_size,
+            "final_size": original_train_size,
+            "samples_added": 0,
+            "original_distribution": {},
+            "final_distribution": {},
+            "minority_class_pct": 0.0,
+            "threshold_used": imbalance_threshold
+        }
+        
+        # Only apply SMOTE-Tomek for categorical targets
+        if target_column not in CATEGORIAL_TARGET_FEATURES:
+            print(f"Target '{target_column}' is not categorical. Skipping SMOTE-Tomek resampling.")
+            return X_train, y_train, smote_applied, resampling_info
+        
+        # Check class distribution in training set
+        class_counts = y_train.value_counts()
+        total_samples = len(y_train)
+        class_percentages = (class_counts / total_samples * 100).sort_values(ascending=True)
+        
+        minority_class_pct = class_percentages.iloc[0]  # Smallest class percentage
+        minority_class_label = class_percentages.index[0]
+        
+        # Store original distribution
+        resampling_info["original_distribution"] = class_percentages.to_dict()
+        resampling_info["minority_class_pct"] = minority_class_pct
+        
+        print(f"\nClass distribution in training set:")
+        for class_label, percentage in class_percentages.items():
+            print(f"  {class_label}: {percentage:.2f}%")
+        
+        # Apply SMOTE-Tomek if minority class is below threshold
+        if minority_class_pct < imbalance_threshold:
+            print(f"\nDetected significant class imbalance (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+            print(f"Applying SMOTE-Tomek to balance the training set (threshold: {imbalance_threshold}%)...")
+            
+            try:
+                # Initialize SMOTE-Tomek
+                smote_tomek = SMOTETomek(random_state=random_state)
+                
+                # Apply resampling to training data only (never touch test data)
+                X_train_resampled, y_train_resampled = smote_tomek.fit_resample(X_train, y_train)
+                
+                # Convert back to pandas DataFrame/Series to maintain structure and column names
+                X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
+                y_train = pd.Series(y_train_resampled, name=y_train.name)
+                
+                # Calculate new distribution
+                new_class_counts = y_train.value_counts()
+                new_total_samples = len(y_train)
+                new_class_percentages = (new_class_counts / new_total_samples * 100).sort_values(ascending=True)
+                
+                # Update resampling info
+                resampling_info["final_size"] = new_total_samples
+                resampling_info["samples_added"] = new_total_samples - original_train_size
+                resampling_info["final_distribution"] = new_class_percentages.to_dict()
+                
+                print(f"After SMOTE-Tomek resampling:")
+                print(f"  Training set size: {new_total_samples} (was {original_train_size}, change: +{new_total_samples - original_train_size})")
+                for class_label, percentage in new_class_percentages.items():
+                    count = new_class_counts[class_label]
+                    original_count = class_counts.get(class_label, 0)
+                    print(f"  {class_label}: {count} samples ({percentage:.2f}%, was {original_count})")
+                
+                smote_applied = True
+                
+            except Exception as e:
+                print(f"Error applying SMOTE-Tomek: {str(e)}")
+                print("Continuing with original imbalanced dataset...")
+                smote_applied = False
+                # Keep original data
+                X_train = X_train
+                y_train = y_train
+        else:
+            print(f"\nClass distribution acceptable (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+            print(f"Skipping SMOTE-Tomek resampling (threshold: {imbalance_threshold}%)")
+        
+        # Set final distribution in resampling info
+        if not smote_applied:
+            resampling_info["final_distribution"] = resampling_info["original_distribution"]
+        
+        return X_train, y_train, smote_applied, resampling_info
+
     def split_month_dataset(self, month_id, test_size=0.3, random_state=42, imbalance_threshold=20.0):
         """
         Split a processed month's dataset into training and testing sets and save them separately.
@@ -1500,60 +1617,11 @@ class TrainingPipeline:
             
             # Store original training set size for comparison
             original_train_size = len(y_train)
-            smote_applied = False
             
-            # ========== NEW: SMOTE-TOMEK FOR CLASS IMBALANCE ==========
-            if target_column in CATEGORIAL_TARGET_FEATURES:
-                # Check class distribution in training set
-                class_counts = y_train.value_counts()
-                total_samples = len(y_train)
-                class_percentages = (class_counts / total_samples * 100).sort_values(ascending=True)
-                
-                minority_class_pct = class_percentages.iloc[0]  # Smallest class percentage
-                minority_class_label = class_percentages.index[0]
-                
-                print(f"\nClass distribution in training set:")
-                for class_label, percentage in class_percentages.items():
-                    print(f"  {class_label}: {percentage:.2f}%")
-                
-                # Apply SMOTE-Tomek if minority class is below threshold
-                if minority_class_pct < imbalance_threshold:
-                    print(f"\nDetected significant class imbalance (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
-                    print(f"Applying SMOTE-Tomek to balance the training set (threshold: {imbalance_threshold}%)...")
-                    
-                    try:
-                        # Initialize SMOTE-Tomek
-                        smote_tomek = SMOTETomek(random_state=random_state)
-                        
-                        # Apply resampling to training data only (never touch test data)
-                        X_train_resampled, y_train_resampled = smote_tomek.fit_resample(X_train, y_train)
-                        
-                        # Convert back to pandas DataFrame/Series to maintain structure and column names
-                        X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
-                        y_train = pd.Series(y_train_resampled, name=y_train.name)
-                        
-                        # Calculate new distribution
-                        new_class_counts = y_train.value_counts()
-                        new_total_samples = len(y_train)
-                        new_class_percentages = (new_class_counts / new_total_samples * 100).sort_values(ascending=True)
-                        
-                        print(f"After SMOTE-Tomek resampling:")
-                        print(f"  Training set size: {new_total_samples} (was {original_train_size}, change: +{new_total_samples - original_train_size})")
-                        for class_label, percentage in new_class_percentages.items():
-                            count = new_class_counts[class_label]
-                            original_count = class_counts.get(class_label, 0)
-                            print(f"  {class_label}: {count} samples ({percentage:.2f}%, was {original_count})")
-                        
-                        smote_applied = True
-                        
-                    except Exception as e:
-                        print(f"Error applying SMOTE-Tomek: {str(e)}")
-                        print("Continuing with original imbalanced dataset...")
-                        smote_applied = False
-                else:
-                    print(f"\nClass distribution acceptable (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
-                    print(f"Skipping SMOTE-Tomek resampling (threshold: {imbalance_threshold}%)")
-            # ========== END SMOTE-TOMEK SECTION ==========
+            # ========== APPLY SMOTE-TOMEK RESAMPLING ==========
+            X_train, y_train, smote_applied, resampling_info = self.apply_smote_tomek_resampling(
+                X_train, y_train, target_column, imbalance_threshold, random_state
+            )
             
             # Recombine features and target for saving
             train_df = pd.concat([X_train, y_train], axis=1)
@@ -1627,11 +1695,10 @@ class TrainingPipeline:
                     if smote_applied:
                         logger.info("=== SMOTE-Tomek Resampling Applied ===")
                         logger.info(f"Reason: Minority class below {imbalance_threshold}% threshold")
-                        logger.info(f"Training samples added: {len(train_df) - original_train_size}")
-                        for label in train_dist.index:
-                            original_count = df[df[target_column] == label].shape[0] * (1 - test_size)  # Approximate
-                            final_count = (train_dist[label] / 100) * len(train_df)
-                            logger.info(f"  {label}: ~{original_count:.0f} -> {final_count:.0f} samples")
+                        logger.info(f"Training samples added: {resampling_info['samples_added']}")
+                        for label, percentage in resampling_info["final_distribution"].items():
+                            final_count = (percentage / 100) * len(train_df)
+                            logger.info(f"  {label}: {final_count:.0f} samples ({percentage:.2f}%)")
                     
                 else:
                     # For continuous targets like differenceInMinutes, show basic stats
@@ -1684,7 +1751,8 @@ class TrainingPipeline:
                 "target_column": target_column,
                 "stratified": use_stratify,
                 "smote_applied": smote_applied,
-                "imbalance_threshold": imbalance_threshold
+                "imbalance_threshold": imbalance_threshold,
+                "resampling_info": resampling_info
             }
             
         except Exception as e:
@@ -1693,7 +1761,7 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
-            
+
     def train_decision_tree_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
@@ -1757,7 +1825,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
+            target_options = VALID_TARGET_FEATURES
             target_column = None
             
             for option in target_options:
@@ -2136,7 +2204,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
+            if target_column in REGRESSION_PROBLEM:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -2505,7 +2573,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
+            target_options = VALID_TARGET_FEATURES
             target_column = None
             
             for option in target_options:
@@ -2546,7 +2614,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
+            if target_column in REGRESSION_PROBLEM:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -3137,7 +3205,7 @@ class TrainingPipeline:
             test_df = pd.read_csv(test_path)
             
             # Identify target column
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset']
+            target_options = VALID_TARGET_FEATURES
             target_column = None
             
             for option in target_options:
@@ -3187,7 +3255,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
+            if target_column in REGRESSION_PROBLEM:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
