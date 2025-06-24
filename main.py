@@ -69,7 +69,7 @@ def main():
                 month_id = file.replace(f"{pipeline.DATA_FILE_PREFIX_FOR_TRAINING}", "").replace(".csv", "")
                 
                 print(f"\nTraining decision tree with important features for {month_id}...")
-                result = pipeline.train_with_important_features(
+                result = pipeline.train_decision_tree_with_important_features(
                     month_id, 
                     importance_threshold=args.feature_importance_threshold
                 )

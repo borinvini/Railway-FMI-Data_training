@@ -6,21 +6,21 @@ INPUT_FOLDER = "data/input"
 OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/preprocessed"
 DECISION_TREE_OUTPUT_FOLDER = "data/output/decision_tree"
-RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/randomized_search_cv"
+RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 DATA_FILE_PREFIX = "matched_data_"
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
-IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/important_features_randomized_search"
-IMPORTANT_FEATURES_OUTPUT_FOLDER = "data/output/important_features_decision_tree"
+IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
+IMPORTANT_FEATURES_OUTPUT_FOLDER = "data/output/decision_tree_important_features"
 XGBOOST_OUTPUT_FOLDER = "data/output/xgboost"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
 # Target feature to use for prediction
 DEFAULT_TARGET_FEATURE = 'trainDelayed'  
-# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled'
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
 # Valid target features for selection
-VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
+VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled']
 
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
@@ -66,9 +66,9 @@ PIPELINE_STAGES = [
     "split_dataset",
     "train_regularized_regression", 
     "train_decision_tree",
-    "train_with_important_features",
-    "train_randomized_search_cv",
-    "train_randomized_search_with_important_features",
+    "train_decision_tree_with_important_features", 
+    "train_decision_tree_with_randomized_search_cv", 
+    "train_decision_tree_rs_with_important_features", 
     "train_xgboost",  
     "train_xgboost_with_randomized_search_cv",
     "train_xgboost_with_important_features",
