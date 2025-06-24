@@ -51,36 +51,6 @@ def main():
         target_feature=args.target
     )
     
-    # If we're not skipping important features training and no month has been processed yet,
-    # we can train models with only important features for each month separately
-    if not args.skip_important_features and results.get("successful_important_features", 0) == 0:
-        print("\n" + "="*50)
-        print("Starting training with important features for each month")
-        print("="*50)
-        
-        # Get list of preprocessed files
-        preprocessed_dir = os.path.join("data", "output", "preprocessed")
-        if os.path.exists(preprocessed_dir):
-            processed_files = [f for f in os.listdir(preprocessed_dir) 
-                              if f.endswith(".csv") and not (f.endswith("_train.csv") or f.endswith("_test.csv"))]
-            
-            for file in processed_files:
-                # Extract month_id from filename
-                month_id = file.replace(f"{pipeline.DATA_FILE_PREFIX_FOR_TRAINING}", "").replace(".csv", "")
-                
-                print(f"\nTraining decision tree with important features for {month_id}...")
-                result = pipeline.train_decision_tree_with_important_features(
-                    month_id, 
-                    importance_threshold=args.feature_importance_threshold
-                )
-                   
-                if result.get("success", False):
-                    print(f"Successfully trained decision tree with important feature-s for {month_id}")
-                    print(f"Selected {len(result.get('important_features', []))} important features")
-                    print(f"Test accuracy: {result.get('accuracy', 0):.4f}")
-                else:
-                    print(f"Failed to train decision tree with important features for {month_id}")
-    
     print("\nPipeline execution completed.")
 
 

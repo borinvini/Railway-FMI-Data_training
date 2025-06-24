@@ -5,13 +5,10 @@ FOLDER_NAME = "data"
 INPUT_FOLDER = "data/input"
 OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/preprocessed"
-DECISION_TREE_OUTPUT_FOLDER = "data/output/decision_tree"
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 DATA_FILE_PREFIX = "matched_data_"
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
-IMPORTANT_FEATURES_OUTPUT_FOLDER = "data/output/decision_tree_important_features"
-XGBOOST_OUTPUT_FOLDER = "data/output/xgboost"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
@@ -46,7 +43,7 @@ delay = True
 # Value to be considered as a delay (in minutes)
 # Long-distance trains: 5 min
 # Short trains: 2-3 min
-TRAIN_DELAY_MINUTES = 5
+TRAIN_DELAY_MINUTES = 0
 
 # Important weather conditions to check for missing value handling
 IMPORTANT_WEATHER_CONDITIONS = [
@@ -66,7 +63,7 @@ FILTER_TRAINS_BY_STATIONS = False  # Set to True to filter trains by required st
 REQUIRED_STATIONS = ['HKI', 'OL', 'ROI']  # Trains must pass through ALL of these stations
 
 # SMOTE-Tomek configuration
-IMBALANCE_THRESHOLD = 20.0  # Apply SMOTE-Tomek if minority class < this %
+IMBALANCE_THRESHOLD = 30.0  # Apply SMOTE-Tomek if minority class < this %
 SMOTE_RANDOM_STATE = 42     # For reproducible resampling
 
 # Model training parameters
@@ -89,13 +86,9 @@ PIPELINE_STAGES = [
     "save_csv",
     "split_dataset",
     "train_regularized_regression", 
-    "train_decision_tree",
-    "train_decision_tree_with_important_features", 
     "train_decision_tree_with_randomized_search_cv", 
     "train_decision_tree_rs_with_important_features", 
-    "train_xgboost",  
     "train_xgboost_with_randomized_search_cv",
-    "train_xgboost_with_important_features",
     "train_xgboost_rs_with_important_features"
 ]
 
