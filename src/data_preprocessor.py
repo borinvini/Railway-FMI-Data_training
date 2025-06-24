@@ -40,6 +40,7 @@ from config.const import (
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     TOP_FEATURES_COUNT,
     TRAIN_DELAYED_TARGET_COLUMN,
+    VALID_PREDICTION_FEATURES,
     VALID_TARGET_FEATURES,
     XGBOOST_OUTPUT_FOLDER,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -688,7 +689,7 @@ class TrainingPipeline:
                 print("Renamed 'weather_observations' to 'weather_conditions'")
             
             # Keep only the essential columns, including our new calculated column
-            expected_cols = ["differenceInMinutes", "differenceInMinutes_offset", "differenceInMinutes_eachStation_offset", "cancelled", "weather_conditions", "trainStopping", "commercialStop"]
+            expected_cols = VALID_TARGET_FEATURES + VALID_PREDICTION_FEATURES
             available_cols = [col for col in expected_cols if col in cross_df.columns]
             
             if len(available_cols) > 0:

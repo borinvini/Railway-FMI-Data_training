@@ -26,6 +26,9 @@ VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 'd
 TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_eachStation_offset'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
 
+# Valid prediction features (non-target features used for training)
+VALID_PREDICTION_FEATURES = ["weather_conditions", "trainStopping", "commercialStop"]
+
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 
