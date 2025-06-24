@@ -39,6 +39,7 @@ from config.const import (
     IMPORTANCE_THRESHOLD,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     TOP_FEATURES_COUNT,
+    TRAIN_DELAYED_TARGET_COLUMN,
     VALID_TARGET_FEATURES,
     XGBOOST_OUTPUT_FOLDER,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -687,7 +688,7 @@ class TrainingPipeline:
                 print("Renamed 'weather_observations' to 'weather_conditions'")
             
             # Keep only the essential columns, including our new calculated column
-            expected_cols = ["differenceInMinutes", "differenceInMinutes_offset", "cancelled", "weather_conditions", "trainStopping", "commercialStop"]
+            expected_cols = ["differenceInMinutes", "differenceInMinutes_offset", "differenceInMinutes_eachStation_offset", "cancelled", "weather_conditions", "trainStopping", "commercialStop"]
             available_cols = [col for col in expected_cols if col in cross_df.columns]
             
             if len(available_cols) > 0:
@@ -1281,11 +1282,13 @@ class TrainingPipeline:
         
     def add_train_delayed_feature(self, dataframe=None):
         """
-        Add a binary column 'trainDelayed' based on differenceInMinutes_offset.
+        Add a binary column 'trainDelayed' based on the configured target column.
         
         The column will be:
-        - True when differenceInMinutes_offset > 0 (train is delayed)
-        - False when differenceInMinutes_offset <= 0 (train is on time or early)
+        - True when target column > 0 (train is delayed)
+        - False when target column <= 0 (train is on time or early)
+        
+        The target column is determined by TRAIN_DELAYED_TARGET_COLUMN constant.
         
         Parameters:
         -----------
@@ -1304,32 +1307,40 @@ class TrainingPipeline:
             
         df = dataframe.copy()
         print(f"Adding 'trainDelayed' column to dataframe with {len(df)} rows")
+        print(f"Using '{TRAIN_DELAYED_TARGET_COLUMN}' as the basis for trainDelayed calculation")
+    
         
         if df.empty:
             print("Warning: Empty dataframe")
             return df
         
         try:
-            # Check if differenceInMinutes_offset column exists
-            if 'differenceInMinutes_offset' not in df.columns:
-                print("Error: 'differenceInMinutes_offset' column not found in dataframe")
+            # Check if the target column exists
+            if TRAIN_DELAYED_TARGET_COLUMN not in df.columns:
+                print(f"Error: '{TRAIN_DELAYED_TARGET_COLUMN}' column not found in dataframe")
+                print(f"Available columns: {list(df.columns)}")
                 return df
             
-            # Create trainDelayed column based on differenceInMinutes_offset
-            df['trainDelayed'] = df['differenceInMinutes_offset'] > 0
+            # Create trainDelayed column based on the configured target column
+            df['trainDelayed'] = df[TRAIN_DELAYED_TARGET_COLUMN] > 0
             
-            # Reorder columns to place trainDelayed after differenceInMinutes_offset
+            # Reorder columns to place trainDelayed after the target column
             cols = list(df.columns)
             # Remove trainDelayed from its current position
             cols.remove('trainDelayed')
-            # Find the position of differenceInMinutes_offset
-            diff_idx = cols.index('differenceInMinutes_offset')
-            # Insert trainDelayed after differenceInMinutes_offset
-            cols.insert(diff_idx + 1, 'trainDelayed')
-            # Rearrange the dataframe columns
-            df = df[cols]
+            # Find the position of the target column
+            if TRAIN_DELAYED_TARGET_COLUMN in cols:
+                target_idx = cols.index(TRAIN_DELAYED_TARGET_COLUMN)
+                # Insert trainDelayed after the target column
+                cols.insert(target_idx + 1, 'trainDelayed')
+                # Rearrange the dataframe columns
+                df = df[cols]
+            else:
+                # If target column not found in remaining columns, just append trainDelayed
+                cols.append('trainDelayed')
+                df = df[cols]
             
-            print(f"Successfully added 'trainDelayed' column")
+            print(f"Successfully added 'trainDelayed' column based on '{TRAIN_DELAYED_TARGET_COLUMN}'")
             print(f"Number of delayed trains: {df['trainDelayed'].sum()} ({df['trainDelayed'].mean() * 100:.2f}%)")
             
             return df

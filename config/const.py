@@ -22,6 +22,10 @@ DEFAULT_TARGET_FEATURE = 'trainDelayed'
 # Valid target features for selection
 VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled']
 
+# Target column to use for calculating trainDelayed feature
+TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_eachStation_offset'
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
+
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 
