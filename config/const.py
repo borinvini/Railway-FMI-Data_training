@@ -40,6 +40,14 @@ NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
 # Set to True to drop trainStopping and commercialStop from training
 DROP_TRAIN_FEATURES = True
 
+# Set to True to drop trainStopping and commercialStop from training
+delay = True
+
+# Value to be considered as a delay (in minutes)
+# Long-distance trains: 5 min
+# Short trains: 2-3 min
+TRAIN_DELAY_MINUTES = 5
+
 # Important weather conditions to check for missing value handling
 IMPORTANT_WEATHER_CONDITIONS = [
     'Relative humidity', 

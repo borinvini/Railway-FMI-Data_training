@@ -40,6 +40,7 @@ from config.const import (
     IMPORTANCE_THRESHOLD,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     TOP_FEATURES_COUNT,
+    TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     VALID_PREDICTION_FEATURES,
     VALID_TARGET_FEATURES,
@@ -1323,7 +1324,7 @@ class TrainingPipeline:
                 return df
             
             # Create trainDelayed column based on the configured target column
-            df['trainDelayed'] = df[TRAIN_DELAYED_TARGET_COLUMN] > 0
+            df['trainDelayed'] = df[TRAIN_DELAYED_TARGET_COLUMN] > TRAIN_DELAY_MINUTES
             
             # Reorder columns to place trainDelayed after the target column
             cols = list(df.columns)
