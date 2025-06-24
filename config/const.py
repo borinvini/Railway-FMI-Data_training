@@ -23,11 +23,14 @@ DEFAULT_TARGET_FEATURE = 'trainDelayed'
 VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled']
 
 # Target column to use for calculating trainDelayed feature
-TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_eachStation_offset'
+TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_offset'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
 
 # Valid prediction features (non-target features used for training)
 VALID_PREDICTION_FEATURES = ["weather_conditions", "trainStopping", "commercialStop"]
+
+# Target features that are categoricals for classification problems
+CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
 
 # Boolean features that need to be converted to numeric
 NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']

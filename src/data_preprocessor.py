@@ -25,6 +25,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
             
 
 from config.const import (
+    CATEGORIAL_TARGET_FEATURES,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DROP_TRAIN_FEATURES,
     IMPORTANT_FEATURES_OUTPUT_FOLDER,
@@ -1487,161 +1488,6 @@ class TrainingPipeline:
             print(f"Error saving dataframe for {month_id}: {e}")
             return False
     
-    def split_dataset(self, year_month, test_size=0.3, random_state=42):
-        """
-        Split a processed dataset into training and testing sets and save them separately.
-        
-        Parameters:
-        -----------
-        year_month : str
-            Year and month in format "YYYY_MM" for the filename.
-        test_size : float, optional
-            Proportion of the dataset to include in the test split. Defaults to 0.3.
-        random_state : int, optional
-            Random seed for reproducibility. Defaults to 42.
-            
-        Returns:
-        --------
-        dict
-            A summary of the split results.
-        """
-        try:
-            # Construct file path for the saved CSV
-            filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}.csv"
-            file_path = os.path.join(self.preprocessed_dir, filename)
-            
-            # Check if file exists
-            if not os.path.exists(file_path):
-                print(f"Error: File {file_path} not found")
-                return {
-                    "success": False,
-                    "error": f"File {file_path} not found"
-                }
-            
-            # Load the dataset
-            print(f"Loading dataset from {file_path}")
-            df = pd.read_csv(file_path)
-            
-            if df.empty:
-                print(f"Error: Empty dataset in {file_path}")
-                return {
-                    "success": False,
-                    "error": f"Empty dataset in {file_path}"
-                }
-            
-            # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'trainDelayed', 'cancelled']
-            target_column = None
-            
-            for option in target_options:
-                if option in df.columns:
-                    target_column = option
-                    break
-            
-            if not target_column:
-                print(f"Error: No target column found in dataset")
-                return {
-                    "success": False,
-                    "error": "No target column found in dataset"
-                }
-            
-            print(f"Identified target column: {target_column}")
-            
-            # Split features and target
-            X = df.drop(target_column, axis=1)
-            y = df[target_column]
-            
-            # Check if there are any features left after dropping the target
-            if X.empty:
-                print(f"Error: No feature columns found in dataset")
-                return {
-                    "success": False,
-                    "error": "No feature columns found in dataset"
-                }
-            
-            # For stratified split, ensure target is categorical
-            # If target is continuous (like differenceInMinutes), we can't use stratify
-            use_stratify = False
-            if target_column in ['trainDelayed', 'cancelled']:
-                use_stratify = True
-                print(f"Using stratified split on {target_column}")
-            else:
-                print(f"Target {target_column} is continuous, not using stratification")
-            
-            # Perform train-test split
-            if use_stratify:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=test_size, stratify=y, random_state=random_state
-                )
-            else:
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=test_size, random_state=random_state
-                )
-            
-            # Recombine features and target for saving
-            train_df = pd.concat([X_train, y_train], axis=1)
-            test_df = pd.concat([X_test, y_test], axis=1)
-            
-            # Create filenames for train and test sets
-            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_train.csv"
-            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year_month}_test.csv"
-            
-            train_path = os.path.join(self.preprocessed_dir, train_filename)
-            test_path = os.path.join(self.preprocessed_dir, test_filename)
-            
-            # Ensure output directory exists
-            os.makedirs(self.preprocessed_dir, exist_ok=True)
-            
-            # Save the datasets
-            train_df.to_csv(train_path, index=False)
-            test_df.to_csv(test_path, index=False)
-            
-            print(f"Successfully saved train dataset to {train_path}")
-            print(f"Successfully saved test dataset to {test_path}")
-            
-            # Print distribution statistics
-            print("\nDistribution Statistics:")
-            
-            # For categorical targets, show the distribution in percentages
-            if target_column in ['trainDelayed', 'cancelled']:
-                print("\nOriginal Distribution (%):")
-                print(df[target_column].value_counts(normalize=True) * 100)
-                
-                print("\nTraining Set Distribution (%):")
-                print(y_train.value_counts(normalize=True) * 100)
-                
-                print("\nTest Set Distribution (%):")
-                print(y_test.value_counts(normalize=True) * 100)
-            else:
-                # For continuous targets like differenceInMinutes, still show basic stats
-                # but also add bins for better visualization of distribution
-                print("\nOriginal Distribution:")
-                print(f"Mean: {df[target_column].mean():.2f}, Std: {df[target_column].std():.2f}")
-                
-                print("\nTraining Set Distribution:")
-                print(f"Mean: {y_train.mean():.2f}, Std: {y_train.std():.2f}")
-                
-                print("\nTest Set Distribution:")
-                print(f"Mean: {y_test.mean():.2f}, Std: {y_test.std():.2f}")
-            
-            # Return summary
-            return {
-                "success": True,
-                "train_size": len(train_df),
-                "test_size": len(test_df),
-                "train_path": train_path,
-                "test_path": test_path,
-                "target_column": target_column,
-                "stratified": use_stratify
-            }
-            
-        except Exception as e:
-            print(f"Error splitting dataset for {year_month}: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-        
     def split_month_dataset(self, month_id, test_size=0.3, random_state=42):
         """
         Split a processed month's dataset into training and testing sets and save them separately.
@@ -1685,7 +1531,7 @@ class TrainingPipeline:
                 }
             
             # Identify target column (should be one of these three based on previous processing)
-            target_options = ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled']
+            target_options = VALID_TARGET_FEATURES
             target_column = None
             
             for option in target_options:
@@ -1717,7 +1563,7 @@ class TrainingPipeline:
             # For stratified split, ensure target is categorical
             # If target is continuous (like differenceInMinutes), we can't use stratify
             use_stratify = False
-            if target_column in ['trainDelayed', 'cancelled']:
+            if target_column in CATEGORIAL_TARGET_FEATURES:
                 use_stratify = True
                 print(f"Using stratified split on {target_column}")
             else:
