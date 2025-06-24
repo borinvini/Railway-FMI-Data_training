@@ -885,7 +885,7 @@ class TrainingPipeline:
         - Fill missing values in trainStopping and commercialStop with False
         - Use variable-specific imputation for weather columns:
         - Zero for precipitation and snow metrics
-        - Median for temperature, humidity, and visibility
+        - Median for all other columns that still have missing values
         
         Parameters:
         -----------
@@ -1032,7 +1032,6 @@ class TrainingPipeline:
             
             # Group weather variables by appropriate imputation method
             zero_fill_cols = ['Precipitation amount', 'Precipitation intensity', 'Snow depth']
-            median_fill_cols = ['Air temperature', 'Relative humidity', 'Dew-point temperature', 'Horizontal visibility']
             
             # 1. Zero imputation for precipitation and snow metrics
             for col in zero_fill_cols:
@@ -1046,34 +1045,20 @@ class TrainingPipeline:
                         print(f"- Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
                         logger.info(f"Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
             
-            # 2. Median imputation for temperature and other continuous variables
-            for col in median_fill_cols:
-                if col in df.columns:
-                    nulls = df[col].isna().sum()
-                    if nulls > 0:
-                        # Calculate percentage of missing values
-                        percentage = (nulls / len(df)) * 100
-                        # Apply median imputation
-                        median_value = df[col].median()
-                        df[col] = df[col].fillna(median_value)
-                        print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
-                        logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+            # 2. Median imputation for all remaining columns with missing values
+            # Find all columns that still have missing values after zero imputation
+            remaining_cols_with_na = [col for col in df.columns if df[col].isna().sum() > 0]
             
-            # For any remaining important weather columns, use median imputation
-            remaining_cols = [col for col in available_important_cols 
-                            if col not in zero_fill_cols and col not in median_fill_cols]
-            
-            for col in remaining_cols:
-                if col in df.columns:
-                    nulls = df[col].isna().sum()
-                    if nulls > 0:
-                        # Calculate percentage of missing values
-                        percentage = (nulls / len(df)) * 100
-                        # Apply median imputation as default for other weather columns
-                        median_value = df[col].median()
-                        df[col] = df[col].fillna(median_value)
-                        print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
-                        logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+            for col in remaining_cols_with_na:
+                nulls = df[col].isna().sum()
+                if nulls > 0:
+                    # Calculate percentage of missing values
+                    percentage = (nulls / len(df)) * 100
+                    # Apply median imputation to all remaining columns
+                    median_value = df[col].median()
+                    df[col] = df[col].fillna(median_value)
+                    print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+                    logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
             
             # Count total rows dropped
             total_dropped = original_row_count - len(df)
@@ -1488,9 +1473,10 @@ class TrainingPipeline:
             print(f"Error saving dataframe for {month_id}: {e}")
             return False
     
-    def split_month_dataset(self, month_id, test_size=0.3, random_state=42):
+    def split_month_dataset(self, month_id, test_size=0.3, random_state=42, imbalance_threshold=20.0):
         """
         Split a processed month's dataset into training and testing sets and save them separately.
+        Automatically applies SMOTE-Tomek resampling for severely imbalanced categorical targets.
         
         Parameters:
         -----------
@@ -1500,6 +1486,9 @@ class TrainingPipeline:
             Proportion of the dataset to include in the test split. Defaults to 0.3.
         random_state : int, optional
             Random seed for reproducibility. Defaults to 42.
+        imbalance_threshold : float, optional
+            Threshold for minority class percentage. If minority class is below this percentage,
+            SMOTE-Tomek will be applied. Defaults to 20.0.
             
         Returns:
         --------
@@ -1579,6 +1568,63 @@ class TrainingPipeline:
                     X, y, test_size=test_size, random_state=random_state
                 )
             
+            # Store original training set size for comparison
+            original_train_size = len(y_train)
+            smote_applied = False
+            
+            # ========== NEW: SMOTE-TOMEK FOR CLASS IMBALANCE ==========
+            if target_column in CATEGORIAL_TARGET_FEATURES:
+                # Check class distribution in training set
+                class_counts = y_train.value_counts()
+                total_samples = len(y_train)
+                class_percentages = (class_counts / total_samples * 100).sort_values(ascending=True)
+                
+                minority_class_pct = class_percentages.iloc[0]  # Smallest class percentage
+                minority_class_label = class_percentages.index[0]
+                
+                print(f"\nClass distribution in training set:")
+                for class_label, percentage in class_percentages.items():
+                    print(f"  {class_label}: {percentage:.2f}%")
+                
+                # Apply SMOTE-Tomek if minority class is below threshold
+                if minority_class_pct < imbalance_threshold:
+                    print(f"\nDetected significant class imbalance (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+                    print(f"Applying SMOTE-Tomek to balance the training set (threshold: {imbalance_threshold}%)...")
+                    
+                    try:
+                        # Initialize SMOTE-Tomek
+                        smote_tomek = SMOTETomek(random_state=random_state)
+                        
+                        # Apply resampling to training data only (never touch test data)
+                        X_train_resampled, y_train_resampled = smote_tomek.fit_resample(X_train, y_train)
+                        
+                        # Convert back to pandas DataFrame/Series to maintain structure and column names
+                        X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
+                        y_train = pd.Series(y_train_resampled, name=y_train.name)
+                        
+                        # Calculate new distribution
+                        new_class_counts = y_train.value_counts()
+                        new_total_samples = len(y_train)
+                        new_class_percentages = (new_class_counts / new_total_samples * 100).sort_values(ascending=True)
+                        
+                        print(f"After SMOTE-Tomek resampling:")
+                        print(f"  Training set size: {new_total_samples} (was {original_train_size}, change: +{new_total_samples - original_train_size})")
+                        for class_label, percentage in new_class_percentages.items():
+                            count = new_class_counts[class_label]
+                            original_count = class_counts.get(class_label, 0)
+                            print(f"  {class_label}: {count} samples ({percentage:.2f}%, was {original_count})")
+                        
+                        smote_applied = True
+                        
+                    except Exception as e:
+                        print(f"Error applying SMOTE-Tomek: {str(e)}")
+                        print("Continuing with original imbalanced dataset...")
+                        smote_applied = False
+                else:
+                    print(f"\nClass distribution acceptable (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+                    print(f"Skipping SMOTE-Tomek resampling (threshold: {imbalance_threshold}%)")
+            # ========== END SMOTE-TOMEK SECTION ==========
+            
             # Recombine features and target for saving
             train_df = pd.concat([X_train, y_train], axis=1)
             test_df = pd.concat([X_test, y_test], axis=1)
@@ -1601,13 +1647,16 @@ class TrainingPipeline:
             print(f"Successfully saved test dataset to {test_path}")
             
             # Print and log distribution statistics
-            print("\nDistribution Statistics:")
+            print("\nFinal Distribution Statistics:")
             
             # Use the logging context manager for distribution statistics
             with self.get_logger("split_dataset_distribution.log", "split_distribution", month_id) as logger:
                 logger.info(f"Dataset split completed - Train size: {len(train_df)}, Test size: {len(test_df)}")
                 logger.info(f"Target column: {target_column}")
                 logger.info(f"Stratified split used: {use_stratify}")
+                logger.info(f"SMOTE-Tomek applied: {smote_applied}")
+                if smote_applied:
+                    logger.info(f"Original train size: {original_train_size}, Final train size: {len(train_df)}")
                 
                 # For categorical targets, show the distribution in percentages
                 if target_column in ['trainDelayed', 'cancelled']:
@@ -1615,7 +1664,7 @@ class TrainingPipeline:
                     original_dist = df[target_column].value_counts(normalize=True) * 100
                     print(original_dist)
                     
-                    print("\nTraining Set Distribution (%):")
+                    print("\nFinal Training Set Distribution (%):")
                     train_dist = y_train.value_counts(normalize=True) * 100
                     print(train_dist)
                     
@@ -1629,7 +1678,7 @@ class TrainingPipeline:
                     for label, percentage in original_dist.items():
                         logger.info(f"  {label}: {percentage:.2f}%")
                     
-                    logger.info("Training Set Distribution (%):")
+                    logger.info("Final Training Set Distribution (%):")
                     for label, percentage in train_dist.items():
                         logger.info(f"  {label}: {percentage:.2f}%")
                     
@@ -1638,11 +1687,21 @@ class TrainingPipeline:
                         logger.info(f"  {label}: {percentage:.2f}%")
                     
                     # Calculate and log distribution differences
-                    logger.info("Distribution Differences (Train vs Original):")
+                    logger.info("Distribution Differences (Final Train vs Original):")
                     for label in original_dist.index:
                         if label in train_dist.index:
                             diff = train_dist[label] - original_dist[label]
                             logger.info(f"  {label}: {diff:+.2f} percentage points")
+                    
+                    # Log SMOTE-Tomek specific info
+                    if smote_applied:
+                        logger.info("=== SMOTE-Tomek Resampling Applied ===")
+                        logger.info(f"Reason: Minority class below {imbalance_threshold}% threshold")
+                        logger.info(f"Training samples added: {len(train_df) - original_train_size}")
+                        for label in train_dist.index:
+                            original_count = df[df[target_column] == label].shape[0] * (1 - test_size)  # Approximate
+                            final_count = (train_dist[label] / 100) * len(train_df)
+                            logger.info(f"  {label}: ~{original_count:.0f} -> {final_count:.0f} samples")
                     
                 else:
                     # For continuous targets like differenceInMinutes, show basic stats
@@ -1689,10 +1748,13 @@ class TrainingPipeline:
                 "success": True,
                 "train_size": len(train_df),
                 "test_size": len(test_df),
+                "original_train_size": original_train_size,
                 "train_path": train_path,
                 "test_path": test_path,
                 "target_column": target_column,
-                "stratified": use_stratify
+                "stratified": use_stratify,
+                "smote_applied": smote_applied,
+                "imbalance_threshold": imbalance_threshold
             }
             
         except Exception as e:

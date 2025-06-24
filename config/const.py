@@ -65,6 +65,10 @@ IMPORTANT_WEATHER_CONDITIONS = [
 FILTER_TRAINS_BY_STATIONS = False  # Set to True to filter trains by required stations
 REQUIRED_STATIONS = ['HKI', 'OL', 'ROI']  # Trains must pass through ALL of these stations
 
+# SMOTE-Tomek configuration
+IMBALANCE_THRESHOLD = 20.0  # Apply SMOTE-Tomek if minority class < this %
+SMOTE_RANDOM_STATE = 42     # For reproducible resampling
+
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.05
 # Number of top features to select for XGBoost important features
