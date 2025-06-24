@@ -17,13 +17,15 @@ REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
 # Target feature to use for prediction
 DEFAULT_TARGET_FEATURE = 'trainDelayed'  
-# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
+# 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
 # Valid target features for selection
-VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled']
+VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 
+                         'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled']
 
 # Target column to use for calculating trainDelayed feature
-TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_offset'
+TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_eachStation_offset'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
 
 # Valid prediction features (non-target features used for training)

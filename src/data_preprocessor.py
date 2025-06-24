@@ -1241,8 +1241,7 @@ class TrainingPipeline:
                 
                 # Exclude both existing excluded columns and the new missing indicators
                 columns_to_scale = [col for col in all_numeric_columns 
-                                if col not in ['differenceInMinutes', 'differenceInMinutes_offset', 
-                                                'trainStopping', 'commercialStop']
+                                if col not in VALID_TARGET_FEATURES
                                 and not col.endswith('_missing')]
                             
                 # Report which columns will be scaled and which ones are excluded
@@ -1600,29 +1599,89 @@ class TrainingPipeline:
             print(f"Successfully saved train dataset to {train_path}")
             print(f"Successfully saved test dataset to {test_path}")
             
-            # Print distribution statistics
+            # Print and log distribution statistics
             print("\nDistribution Statistics:")
             
-            # For categorical targets, show the distribution in percentages
-            if target_column in ['trainDelayed', 'cancelled']:
-                print("\nOriginal Distribution (%):")
-                print(df[target_column].value_counts(normalize=True) * 100)
+            # Use the logging context manager for distribution statistics
+            with self.get_logger("split_dataset_distribution.log", "split_distribution", month_id) as logger:
+                logger.info(f"Dataset split completed - Train size: {len(train_df)}, Test size: {len(test_df)}")
+                logger.info(f"Target column: {target_column}")
+                logger.info(f"Stratified split used: {use_stratify}")
                 
-                print("\nTraining Set Distribution (%):")
-                print(y_train.value_counts(normalize=True) * 100)
-                
-                print("\nTest Set Distribution (%):")
-                print(y_test.value_counts(normalize=True) * 100)
-            else:
-                # For continuous targets like differenceInMinutes, show basic stats
-                print("\nOriginal Distribution:")
-                print(f"Mean: {df[target_column].mean():.2f}, Std: {df[target_column].std():.2f}")
-                
-                print("\nTraining Set Distribution:")
-                print(f"Mean: {y_train.mean():.2f}, Std: {y_train.std():.2f}")
-                
-                print("\nTest Set Distribution:")
-                print(f"Mean: {y_test.mean():.2f}, Std: {y_test.std():.2f}")
+                # For categorical targets, show the distribution in percentages
+                if target_column in ['trainDelayed', 'cancelled']:
+                    print("\nOriginal Distribution (%):")
+                    original_dist = df[target_column].value_counts(normalize=True) * 100
+                    print(original_dist)
+                    
+                    print("\nTraining Set Distribution (%):")
+                    train_dist = y_train.value_counts(normalize=True) * 100
+                    print(train_dist)
+                    
+                    print("\nTest Set Distribution (%):")
+                    test_dist = y_test.value_counts(normalize=True) * 100
+                    print(test_dist)
+                    
+                    # Log the categorical distributions
+                    logger.info("=== Categorical Target Distribution Analysis ===")
+                    logger.info("Original Distribution (%):")
+                    for label, percentage in original_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    logger.info("Training Set Distribution (%):")
+                    for label, percentage in train_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    logger.info("Test Set Distribution (%):")
+                    for label, percentage in test_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    # Calculate and log distribution differences
+                    logger.info("Distribution Differences (Train vs Original):")
+                    for label in original_dist.index:
+                        if label in train_dist.index:
+                            diff = train_dist[label] - original_dist[label]
+                            logger.info(f"  {label}: {diff:+.2f} percentage points")
+                    
+                else:
+                    # For continuous targets like differenceInMinutes, show basic stats
+                    original_mean = df[target_column].mean()
+                    original_std = df[target_column].std()
+                    train_mean = y_train.mean()
+                    train_std = y_train.std()
+                    test_mean = y_test.mean()
+                    test_std = y_test.std()
+                    
+                    print("\nOriginal Distribution:")
+                    print(f"Mean: {original_mean:.2f}, Std: {original_std:.2f}")
+                    
+                    print("\nTraining Set Distribution:")
+                    print(f"Mean: {train_mean:.2f}, Std: {train_std:.2f}")
+                    
+                    print("\nTest Set Distribution:")
+                    print(f"Mean: {test_mean:.2f}, Std: {test_std:.2f}")
+                    
+                    # Log the continuous distributions
+                    logger.info("=== Continuous Target Distribution Analysis ===")
+                    logger.info(f"Original Distribution - Mean: {original_mean:.4f}, Std: {original_std:.4f}")
+                    logger.info(f"Training Set Distribution - Mean: {train_mean:.4f}, Std: {train_std:.4f}")
+                    logger.info(f"Test Set Distribution - Mean: {test_mean:.4f}, Std: {test_std:.4f}")
+                    
+                    # Calculate and log distribution differences
+                    mean_diff_train = train_mean - original_mean
+                    std_diff_train = train_std - original_std
+                    mean_diff_test = test_mean - original_mean
+                    std_diff_test = test_std - original_std
+                    
+                    logger.info("Distribution Differences:")
+                    logger.info(f"  Train vs Original - Mean diff: {mean_diff_train:+.4f}, Std diff: {std_diff_train:+.4f}")
+                    logger.info(f"  Test vs Original - Mean diff: {mean_diff_test:+.4f}, Std diff: {std_diff_test:+.4f}")
+                    
+                    # Additional statistics for continuous targets
+                    logger.info("Additional Statistics:")
+                    logger.info(f"  Original - Min: {df[target_column].min():.4f}, Max: {df[target_column].max():.4f}")
+                    logger.info(f"  Training - Min: {y_train.min():.4f}, Max: {y_train.max():.4f}")
+                    logger.info(f"  Test - Min: {y_test.min():.4f}, Max: {y_test.max():.4f}")
             
             # Return summary
             return {
