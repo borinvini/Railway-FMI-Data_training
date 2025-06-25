@@ -47,6 +47,7 @@ from config.const import (
     TRAIN_DELAYED_TARGET_COLUMN,
     VALID_PREDICTION_FEATURES,
     VALID_TARGET_FEATURES,
+    WEIGHT_DELAY_COLUMN,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     FILTER_TRAINS_BY_STATIONS,
@@ -1408,246 +1409,6 @@ class TrainingPipeline:
             print(f"Error saving dataframe for {month_id}: {e}")
             return False
     
-    def apply_smote_tomek_resampling(self, X_train, y_train, target_column, imbalance_threshold, random_state=42):
-        """
-        Apply SMOTE-Tomek resampling to training data if class imbalance exceeds threshold.
-        
-        This method checks for class imbalance in categorical target variables and applies
-        SMOTE-Tomek resampling if the minority class percentage falls below the specified threshold.
-        
-        Parameters:
-        -----------
-        X_train : pandas.DataFrame
-            Training features.
-        y_train : pandas.Series
-            Training target values.
-        target_column : str
-            Name of the target column.
-        imbalance_threshold : float
-            Threshold for minority class percentage. If minority class is below this percentage,
-            SMOTE-Tomek will be applied.
-        random_state : int, optional
-            Random seed for reproducibility. Defaults to 42.
-            
-        Returns:
-        --------
-        tuple
-            (X_train_resampled, y_train_resampled, smote_applied, resampling_info)
-            - X_train_resampled: Potentially resampled training features
-            - y_train_resampled: Potentially resampled training target
-            - smote_applied: Boolean indicating if SMOTE-Tomek was applied
-            - resampling_info: Dictionary with resampling statistics
-        """
-        # Store original training set size for comparison
-        original_train_size = len(y_train)
-        smote_applied = False
-        resampling_info = {
-            "original_size": original_train_size,
-            "final_size": original_train_size,
-            "samples_added": 0,
-            "original_distribution": {},
-            "final_distribution": {},
-            "minority_class_pct": 0.0,
-            "threshold_used": imbalance_threshold
-        }
-        
-        # Only apply SMOTE-Tomek for categorical targets
-        if target_column not in CATEGORIAL_TARGET_FEATURES:
-            print(f"Target '{target_column}' is not categorical. Skipping SMOTE-Tomek resampling.")
-            return X_train, y_train, smote_applied, resampling_info
-        
-        # Check class distribution in training set
-        class_counts = y_train.value_counts()
-        total_samples = len(y_train)
-        class_percentages = (class_counts / total_samples * 100).sort_values(ascending=True)
-        
-        minority_class_pct = class_percentages.iloc[0]  # Smallest class percentage
-        minority_class_label = class_percentages.index[0]
-        
-        # Store original distribution
-        resampling_info["original_distribution"] = class_percentages.to_dict()
-        resampling_info["minority_class_pct"] = minority_class_pct
-        
-        print(f"\nClass distribution in training set:")
-        for class_label, percentage in class_percentages.items():
-            print(f"  {class_label}: {percentage:.2f}%")
-        
-        # Apply SMOTE-Tomek if minority class is below threshold
-        if minority_class_pct < imbalance_threshold:
-            print(f"\nDetected significant class imbalance (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
-            print(f"Applying SMOTE-Tomek to balance the training set (threshold: {imbalance_threshold}%)...")
-            
-            try:
-                # Initialize SMOTE-Tomek
-                smote_tomek = SMOTETomek(random_state=random_state)
-                
-                # Apply resampling to training data only (never touch test data)
-                X_train_resampled, y_train_resampled = smote_tomek.fit_resample(X_train, y_train)
-                
-                # Convert back to pandas DataFrame/Series to maintain structure and column names
-                X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
-                y_train = pd.Series(y_train_resampled, name=y_train.name)
-                
-                # Calculate new distribution
-                new_class_counts = y_train.value_counts()
-                new_total_samples = len(y_train)
-                new_class_percentages = (new_class_counts / new_total_samples * 100).sort_values(ascending=True)
-                
-                # Update resampling info
-                resampling_info["final_size"] = new_total_samples
-                resampling_info["samples_added"] = new_total_samples - original_train_size
-                resampling_info["final_distribution"] = new_class_percentages.to_dict()
-                
-                print(f"After SMOTE-Tomek resampling:")
-                print(f"  Training set size: {new_total_samples} (was {original_train_size}, change: +{new_total_samples - original_train_size})")
-                for class_label, percentage in new_class_percentages.items():
-                    count = new_class_counts[class_label]
-                    original_count = class_counts.get(class_label, 0)
-                    print(f"  {class_label}: {count} samples ({percentage:.2f}%, was {original_count})")
-                
-                smote_applied = True
-                
-            except Exception as e:
-                print(f"Error applying SMOTE-Tomek: {str(e)}")
-                print("Continuing with original imbalanced dataset...")
-                smote_applied = False
-                # Keep original data
-                X_train = X_train
-                y_train = y_train
-        else:
-            print(f"\nClass distribution acceptable (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
-            print(f"Skipping SMOTE-Tomek resampling (threshold: {imbalance_threshold}%)")
-        
-        # Set final distribution in resampling info
-        if not smote_applied:
-            resampling_info["final_distribution"] = resampling_info["original_distribution"]
-        
-        return X_train, y_train, smote_applied, resampling_info
-
-    def apply_edited_nearest_neighbors_resampling(self, X_train, y_train, target_column, imbalance_threshold, random_state=42, n_neighbors=3):
-        """
-        Apply EditedNearestNeighbors undersampling to training data if class imbalance exceeds threshold.
-        
-        This method checks for class imbalance in categorical target variables and applies
-        EditedNearestNeighbors undersampling if the minority class percentage falls below the specified threshold.
-        Unlike SMOTE-Tomek which oversamples, ENN removes instances that don't agree with their neighbors,
-        typically resulting in a cleaner but smaller dataset.
-        
-        Parameters:
-        -----------
-        X_train : pandas.DataFrame
-            Training features.
-        y_train : pandas.Series
-            Training target values.
-        target_column : str
-            Name of the target column.
-        imbalance_threshold : float
-            Threshold for minority class percentage. If minority class is below this percentage,
-            EditedNearestNeighbors will be applied.
-        random_state : int, optional
-            Random seed for reproducibility. Defaults to 42.
-        n_neighbors : int, optional
-            Number of neighbors to consider for EditedNearestNeighbors. Defaults to 3.
-            
-        Returns:
-        --------
-        tuple
-            (X_train_resampled, y_train_resampled, enn_applied, resampling_info)
-            - X_train_resampled: Potentially resampled training features
-            - y_train_resampled: Potentially resampled training target
-            - enn_applied: Boolean indicating if EditedNearestNeighbors was applied
-            - resampling_info: Dictionary with resampling statistics
-        """
-        from imblearn.under_sampling import EditedNearestNeighbours
-        
-        # Store original training set size for comparison
-        original_train_size = len(y_train)
-        enn_applied = False
-        resampling_info = {
-            "original_size": original_train_size,
-            "final_size": original_train_size,
-            "samples_removed": 0,
-            "original_distribution": {},
-            "final_distribution": {},
-            "minority_class_pct": 0.0,
-            "threshold_used": imbalance_threshold,
-            "n_neighbors": n_neighbors
-        }
-        
-        # Only apply ENN for categorical targets
-        if target_column not in CATEGORIAL_TARGET_FEATURES:
-            print(f"Target '{target_column}' is not categorical. Skipping EditedNearestNeighbors resampling.")
-            return X_train, y_train, enn_applied, resampling_info
-        
-        # Check class distribution in training set
-        class_counts = y_train.value_counts()
-        total_samples = len(y_train)
-        class_percentages = (class_counts / total_samples * 100).sort_values(ascending=True)
-        
-        minority_class_pct = class_percentages.iloc[0]  # Smallest class percentage
-        minority_class_label = class_percentages.index[0]
-        
-        # Store original distribution
-        resampling_info["original_distribution"] = class_percentages.to_dict()
-        resampling_info["minority_class_pct"] = minority_class_pct
-        
-        print(f"\nClass distribution in training set:")
-        for class_label, percentage in class_percentages.items():
-            print(f"  {class_label}: {percentage:.2f}%")
-        
-        # Apply EditedNearestNeighbors if minority class is below threshold
-        if minority_class_pct < imbalance_threshold:
-            print(f"\nDetected significant class imbalance (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
-            print(f"Applying EditedNearestNeighbors to clean the training set (threshold: {imbalance_threshold}%, n_neighbors: {n_neighbors})...")
-            
-            try:
-                # Initialize EditedNearestNeighbors
-                enn = EditedNearestNeighbours(n_neighbors=n_neighbors, random_state=random_state)
-                
-                # Apply undersampling to training data only (never touch test data)
-                X_train_resampled, y_train_resampled = enn.fit_resample(X_train, y_train)
-                
-                # Convert back to pandas DataFrame/Series to maintain structure and column names
-                X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
-                y_train = pd.Series(y_train_resampled, name=y_train.name)
-                
-                # Calculate new distribution
-                new_class_counts = y_train.value_counts()
-                new_total_samples = len(y_train)
-                new_class_percentages = (new_class_counts / new_total_samples * 100).sort_values(ascending=True)
-                
-                # Update resampling info
-                resampling_info["final_size"] = new_total_samples
-                resampling_info["samples_removed"] = original_train_size - new_total_samples
-                resampling_info["final_distribution"] = new_class_percentages.to_dict()
-                
-                print(f"After EditedNearestNeighbors undersampling:")
-                print(f"  Training set size: {new_total_samples} (was {original_train_size}, change: -{original_train_size - new_total_samples})")
-                for class_label, percentage in new_class_percentages.items():
-                    count = new_class_counts[class_label]
-                    original_count = class_counts.get(class_label, 0)
-                    removed_count = original_count - count
-                    print(f"  {class_label}: {count} samples ({percentage:.2f}%, was {original_count}, removed {removed_count})")
-                
-                enn_applied = True
-                
-            except Exception as e:
-                print(f"Error applying EditedNearestNeighbors: {str(e)}")
-                print("Continuing with original imbalanced dataset...")
-                enn_applied = False
-                # Keep original data
-                X_train = X_train
-                y_train = y_train
-        else:
-            print(f"\nClass distribution acceptable (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
-            print(f"Skipping EditedNearestNeighbors undersampling (threshold: {imbalance_threshold}%)")
-        
-        # Set final distribution in resampling info
-        if not enn_applied:
-            resampling_info["final_distribution"] = resampling_info["original_distribution"]
-        
-        return X_train, y_train, enn_applied, resampling_info
-
     def split_month_dataset(self, month_id, test_size=0.3, random_state=42):
         """
         Split a processed month's dataset into training and testing sets and save them separately.
@@ -1722,6 +1483,7 @@ class TrainingPipeline:
                 }
             
             # For stratified split, ensure target is categorical
+            # stratify parameterensures that the class distribution is preserved in both the training and test sets
             # If target is continuous (like differenceInMinutes), we can't use stratify
             use_stratify = False
             if target_column in CATEGORIAL_TARGET_FEATURES:
@@ -1946,7 +1708,7 @@ class TrainingPipeline:
     def train_decision_tree_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
-        Now includes SHAP analysis for enhanced model interpretability.
+        Includes SHAP analysis for enhanced model interpretability.
         Updated to include sample weights based on delay magnitude.
         
         Parameters:
@@ -1971,8 +1733,8 @@ class TrainingPipeline:
         try:
             # Use default values from constants if not provided
             if param_distributions is None:
-                from config.const import RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
-                param_distributions = RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
+                from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
+                param_distributions = DECISION_TREE_PARAM_DISTRIBUTIONS
             
             if n_iter is None:
                 from config.const import RANDOM_SEARCH_ITERATIONS
@@ -2040,7 +1802,7 @@ class TrainingPipeline:
             
             # Check if we have classification or regression problem
             is_classification = True
-            if target_column in ['differenceInMinutes', 'differenceInMinutes_offset']:
+            if target_column in REGRESSION_PROBLEM:
                 is_classification = False
                 print(f"Target '{target_column}' indicates a regression problem")
             else:
@@ -2049,10 +1811,10 @@ class TrainingPipeline:
             if is_classification:
                 # NEW: Create sample weights for classification if delay info is available
                 sample_weights = None
-                if 'differenceInMinutes' in train_df.columns:
+                if WEIGHT_DELAY_COLUMN in train_df.columns:
                     print("Using weighted samples based on delay magnitude for randomized search")
                     # Create sample weights based on delay magnitude
-                    delay_col = 'differenceInMinutes'
+                    delay_col = WEIGHT_DELAY_COLUMN
                     sample_weights = np.ones(len(y_train))
                     
                     # Get delay values for each training sample
@@ -2068,16 +1830,21 @@ class TrainingPipeline:
                     
                     print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
                 
-                from sklearn.model_selection import RandomizedSearchCV
-                
+                # Create proper CV strategy for classification
+                cv_strategy = StratifiedKFold(
+                    n_splits=cv,       
+                    shuffle=True,
+                    random_state=random_state
+                )
+
                 # Initialize base classifier
                 dt = DecisionTreeClassifier(random_state=random_state)
                 
                 print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
-                
+            
                 # Run RandomizedSearchCV
                 random_search = RandomizedSearchCV(
-                    dt, param_distributions, n_iter=n_iter, cv=cv, 
+                    dt, param_distributions, n_iter=n_iter, cv=cv_strategy, 
                     scoring='accuracy', random_state=random_state, n_jobs=-1
                 )
                 
@@ -4656,3 +4423,243 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
+        
+    def apply_smote_tomek_resampling(self, X_train, y_train, target_column, imbalance_threshold, random_state=42):
+        """
+        Apply SMOTE-Tomek resampling to training data if class imbalance exceeds threshold.
+        
+        This method checks for class imbalance in categorical target variables and applies
+        SMOTE-Tomek resampling if the minority class percentage falls below the specified threshold.
+        
+        Parameters:
+        -----------
+        X_train : pandas.DataFrame
+            Training features.
+        y_train : pandas.Series
+            Training target values.
+        target_column : str
+            Name of the target column.
+        imbalance_threshold : float
+            Threshold for minority class percentage. If minority class is below this percentage,
+            SMOTE-Tomek will be applied.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        tuple
+            (X_train_resampled, y_train_resampled, smote_applied, resampling_info)
+            - X_train_resampled: Potentially resampled training features
+            - y_train_resampled: Potentially resampled training target
+            - smote_applied: Boolean indicating if SMOTE-Tomek was applied
+            - resampling_info: Dictionary with resampling statistics
+        """
+        # Store original training set size for comparison
+        original_train_size = len(y_train)
+        smote_applied = False
+        resampling_info = {
+            "original_size": original_train_size,
+            "final_size": original_train_size,
+            "samples_added": 0,
+            "original_distribution": {},
+            "final_distribution": {},
+            "minority_class_pct": 0.0,
+            "threshold_used": imbalance_threshold
+        }
+        
+        # Only apply SMOTE-Tomek for categorical targets
+        if target_column not in CATEGORIAL_TARGET_FEATURES:
+            print(f"Target '{target_column}' is not categorical. Skipping SMOTE-Tomek resampling.")
+            return X_train, y_train, smote_applied, resampling_info
+        
+        # Check class distribution in training set
+        class_counts = y_train.value_counts()
+        total_samples = len(y_train)
+        class_percentages = (class_counts / total_samples * 100).sort_values(ascending=True)
+        
+        minority_class_pct = class_percentages.iloc[0]  # Smallest class percentage
+        minority_class_label = class_percentages.index[0]
+        
+        # Store original distribution
+        resampling_info["original_distribution"] = class_percentages.to_dict()
+        resampling_info["minority_class_pct"] = minority_class_pct
+        
+        print(f"\nClass distribution in training set:")
+        for class_label, percentage in class_percentages.items():
+            print(f"  {class_label}: {percentage:.2f}%")
+        
+        # Apply SMOTE-Tomek if minority class is below threshold
+        if minority_class_pct < imbalance_threshold:
+            print(f"\nDetected significant class imbalance (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+            print(f"Applying SMOTE-Tomek to balance the training set (threshold: {imbalance_threshold}%)...")
+            
+            try:
+                # Initialize SMOTE-Tomek
+                smote_tomek = SMOTETomek(random_state=random_state)
+                
+                # Apply resampling to training data only (never touch test data)
+                X_train_resampled, y_train_resampled = smote_tomek.fit_resample(X_train, y_train)
+                
+                # Convert back to pandas DataFrame/Series to maintain structure and column names
+                X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
+                y_train = pd.Series(y_train_resampled, name=y_train.name)
+                
+                # Calculate new distribution
+                new_class_counts = y_train.value_counts()
+                new_total_samples = len(y_train)
+                new_class_percentages = (new_class_counts / new_total_samples * 100).sort_values(ascending=True)
+                
+                # Update resampling info
+                resampling_info["final_size"] = new_total_samples
+                resampling_info["samples_added"] = new_total_samples - original_train_size
+                resampling_info["final_distribution"] = new_class_percentages.to_dict()
+                
+                print(f"After SMOTE-Tomek resampling:")
+                print(f"  Training set size: {new_total_samples} (was {original_train_size}, change: +{new_total_samples - original_train_size})")
+                for class_label, percentage in new_class_percentages.items():
+                    count = new_class_counts[class_label]
+                    original_count = class_counts.get(class_label, 0)
+                    print(f"  {class_label}: {count} samples ({percentage:.2f}%, was {original_count})")
+                
+                smote_applied = True
+                
+            except Exception as e:
+                print(f"Error applying SMOTE-Tomek: {str(e)}")
+                print("Continuing with original imbalanced dataset...")
+                smote_applied = False
+                # Keep original data
+                X_train = X_train
+                y_train = y_train
+        else:
+            print(f"\nClass distribution acceptable (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+            print(f"Skipping SMOTE-Tomek resampling (threshold: {imbalance_threshold}%)")
+        
+        # Set final distribution in resampling info
+        if not smote_applied:
+            resampling_info["final_distribution"] = resampling_info["original_distribution"]
+        
+        return X_train, y_train, smote_applied, resampling_info
+
+    def apply_edited_nearest_neighbors_resampling(self, X_train, y_train, target_column, imbalance_threshold, random_state=42, n_neighbors=3):
+        """
+        Apply EditedNearestNeighbors undersampling to training data if class imbalance exceeds threshold.
+        
+        This method checks for class imbalance in categorical target variables and applies
+        EditedNearestNeighbors undersampling if the minority class percentage falls below the specified threshold.
+        Unlike SMOTE-Tomek which oversamples, ENN removes instances that don't agree with their neighbors,
+        typically resulting in a cleaner but smaller dataset.
+        
+        Parameters:
+        -----------
+        X_train : pandas.DataFrame
+            Training features.
+        y_train : pandas.Series
+            Training target values.
+        target_column : str
+            Name of the target column.
+        imbalance_threshold : float
+            Threshold for minority class percentage. If minority class is below this percentage,
+            EditedNearestNeighbors will be applied.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+        n_neighbors : int, optional
+            Number of neighbors to consider for EditedNearestNeighbors. Defaults to 3.
+            
+        Returns:
+        --------
+        tuple
+            (X_train_resampled, y_train_resampled, enn_applied, resampling_info)
+            - X_train_resampled: Potentially resampled training features
+            - y_train_resampled: Potentially resampled training target
+            - enn_applied: Boolean indicating if EditedNearestNeighbors was applied
+            - resampling_info: Dictionary with resampling statistics
+        """
+        from imblearn.under_sampling import EditedNearestNeighbours
+        
+        # Store original training set size for comparison
+        original_train_size = len(y_train)
+        enn_applied = False
+        resampling_info = {
+            "original_size": original_train_size,
+            "final_size": original_train_size,
+            "samples_removed": 0,
+            "original_distribution": {},
+            "final_distribution": {},
+            "minority_class_pct": 0.0,
+            "threshold_used": imbalance_threshold,
+            "n_neighbors": n_neighbors
+        }
+        
+        # Only apply ENN for categorical targets
+        if target_column not in CATEGORIAL_TARGET_FEATURES:
+            print(f"Target '{target_column}' is not categorical. Skipping EditedNearestNeighbors resampling.")
+            return X_train, y_train, enn_applied, resampling_info
+        
+        # Check class distribution in training set
+        class_counts = y_train.value_counts()
+        total_samples = len(y_train)
+        class_percentages = (class_counts / total_samples * 100).sort_values(ascending=True)
+        
+        minority_class_pct = class_percentages.iloc[0]  # Smallest class percentage
+        minority_class_label = class_percentages.index[0]
+        
+        # Store original distribution
+        resampling_info["original_distribution"] = class_percentages.to_dict()
+        resampling_info["minority_class_pct"] = minority_class_pct
+        
+        print(f"\nClass distribution in training set:")
+        for class_label, percentage in class_percentages.items():
+            print(f"  {class_label}: {percentage:.2f}%")
+        
+        # Apply EditedNearestNeighbors if minority class is below threshold
+        if minority_class_pct < imbalance_threshold:
+            print(f"\nDetected significant class imbalance (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+            print(f"Applying EditedNearestNeighbors to clean the training set (threshold: {imbalance_threshold}%, n_neighbors: {n_neighbors})...")
+            
+            try:
+                # Initialize EditedNearestNeighbors
+                enn = EditedNearestNeighbours(n_neighbors=n_neighbors, random_state=random_state)
+                
+                # Apply undersampling to training data only (never touch test data)
+                X_train_resampled, y_train_resampled = enn.fit_resample(X_train, y_train)
+                
+                # Convert back to pandas DataFrame/Series to maintain structure and column names
+                X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
+                y_train = pd.Series(y_train_resampled, name=y_train.name)
+                
+                # Calculate new distribution
+                new_class_counts = y_train.value_counts()
+                new_total_samples = len(y_train)
+                new_class_percentages = (new_class_counts / new_total_samples * 100).sort_values(ascending=True)
+                
+                # Update resampling info
+                resampling_info["final_size"] = new_total_samples
+                resampling_info["samples_removed"] = original_train_size - new_total_samples
+                resampling_info["final_distribution"] = new_class_percentages.to_dict()
+                
+                print(f"After EditedNearestNeighbors undersampling:")
+                print(f"  Training set size: {new_total_samples} (was {original_train_size}, change: -{original_train_size - new_total_samples})")
+                for class_label, percentage in new_class_percentages.items():
+                    count = new_class_counts[class_label]
+                    original_count = class_counts.get(class_label, 0)
+                    removed_count = original_count - count
+                    print(f"  {class_label}: {count} samples ({percentage:.2f}%, was {original_count}, removed {removed_count})")
+                
+                enn_applied = True
+                
+            except Exception as e:
+                print(f"Error applying EditedNearestNeighbors: {str(e)}")
+                print("Continuing with original imbalanced dataset...")
+                enn_applied = False
+                # Keep original data
+                X_train = X_train
+                y_train = y_train
+        else:
+            print(f"\nClass distribution acceptable (minority class '{minority_class_label}': {minority_class_pct:.2f}%)")
+            print(f"Skipping EditedNearestNeighbors undersampling (threshold: {imbalance_threshold}%)")
+        
+        # Set final distribution in resampling info
+        if not enn_applied:
+            resampling_info["final_distribution"] = resampling_info["original_distribution"]
+        
+        return X_train, y_train, enn_applied, resampling_info
