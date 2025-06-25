@@ -2181,8 +2181,6 @@ class TrainingPipeline:
                     
                     print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
                 
-                from sklearn.model_selection import RandomizedSearchCV
-                
                 # STEP 1: FIRST TRAIN A MODEL TO IDENTIFY IMPORTANT FEATURES
                 print(f"Training initial Decision Tree classifier to identify important features...")
                 dt_initial = DecisionTreeClassifier(random_state=random_state)
