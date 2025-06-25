@@ -66,10 +66,6 @@ IMPORTANT_WEATHER_CONDITIONS = [
 FILTER_TRAINS_BY_STATIONS = False  # Set to True to filter trains by required stations
 REQUIRED_STATIONS = ['HKI', 'OL', 'ROI']  # Trains must pass through ALL of these stations
 
-# SMOTE-Tomek configuration
-IMBALANCE_THRESHOLD = 30.0  # Apply SMOTE-Tomek if minority class < this %
-SMOTE_RANDOM_STATE = 42     # For reproducible resampling
-
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.05
 # Number of top features to select for XGBoost important features
@@ -127,3 +123,16 @@ XGBOOST_DEFAULT_PARAMS = {
 # RandomizedSearchCV settings
 RANDOM_SEARCH_ITERATIONS = 50
 RANDOM_SEARCH_CV_FOLDS = 5
+
+# Resampling configuration
+RESAMPLING_METHOD = "SMOTE_TOMEK"  # Options: "SMOTE_TOMEK", "EDITED_NEAREST_NEIGHBORS", "NONE"
+# "SMOTE_TOMEK": Apply SMOTE-Tomek for oversampling + cleaning
+# "EDITED_NEAREST_NEIGHBORS": Apply EditedNearestNeighbors for undersampling
+# "NONE": No resampling applied
+
+# EditedNearestNeighbors specific configuration (used when RESAMPLING_METHOD = "EDITED_NEAREST_NEIGHBORS")
+ENN_N_NEIGHBORS = 3  # Number of neighbors for EditedNearestNeighbors
+
+# SMOTE-Tomek configuration
+IMBALANCE_THRESHOLD = 30.0  # Apply SMOTE-Tomek if minority class < this %
+SMOTE_RANDOM_STATE = 42     # For reproducible resampling
