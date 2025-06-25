@@ -103,7 +103,7 @@ DECISION_TREE_PARAM_DISTRIBUTIONS = {
     'max_features': [None, 'sqrt', 'log2', 0.5, 0.7],
     'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'ccp_alpha': [0.0, 0.001, 0.01, 0.05],
-    'class_weight': ['balanced', 'balanced_subsample', None] 
+    'class_weight': ['balanced', None] 
 }
 
 # Parameter distributions for XGBoost with RandomizedSearchCV
