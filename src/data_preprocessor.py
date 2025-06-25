@@ -2081,7 +2081,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics.
         """
-        try:
+        pass
+        """try:
             # Use default values from constants if not provided
             if param_distributions is None:
                 from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
@@ -2452,7 +2453,7 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }
+            }"""
 
     def train_xgboost_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
@@ -2478,7 +2479,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics.
         """
-        try:
+        pass
+        """try:
             # Use default values from constants if not provided
             if param_distributions is None:
                 from config.const import XGBOOST_PARAM_DISTRIBUTIONS
@@ -3041,7 +3043,7 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }
+            }"""
 
     def train_xgboost_rs_with_important_features(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
@@ -3067,7 +3069,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics.
         """
-        try:
+        pass
+        """try:
             # Use default values from constants if not provided
             if param_distributions is None:
                 from config.const import XGBOOST_PARAM_DISTRIBUTIONS
@@ -3709,7 +3712,7 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }
+            }"""
 
     def train_regularized_regression(self, month_id, alpha_lasso=0.1, alpha_ridge=1.0, random_state=42):
         """
@@ -3732,7 +3735,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics and coefficients.
         """
-        try:
+        pass
+        """try:
             # Construct file paths for the train and test sets
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
             test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
@@ -3956,7 +3960,7 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }
+            }"""
  
     def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None, y_pred_proba=None):
         """
