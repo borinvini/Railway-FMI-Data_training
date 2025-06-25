@@ -42,6 +42,7 @@ from config.const import (
     REGRESSION_PROBLEM,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     RESAMPLING_METHOD,
+    SCORE_METRIC,
     TOP_FEATURES_COUNT,
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
@@ -1845,7 +1846,7 @@ class TrainingPipeline:
                 # Run RandomizedSearchCV
                 random_search = RandomizedSearchCV(
                     dt, param_distributions, n_iter=n_iter, cv=cv_strategy, 
-                    scoring='accuracy', random_state=random_state, n_jobs=-1
+                    scoring=SCORE_METRIC, random_state=random_state, n_jobs=-1
                 )
                 
                 # Fit RandomizedSearchCV with sample weights if available

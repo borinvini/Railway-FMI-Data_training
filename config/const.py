@@ -72,9 +72,9 @@ IMPORTANCE_THRESHOLD = 0.05
 TOP_FEATURES_COUNT = 5
 
 # Sample weighting parameters for delay-based weighting
-WEIGHT_DELAY_COLUMN = 'differenceInMinutes_eachStation_offset'
-MAX_SAMPLE_WEIGHT_CLASSIFICATION = 5.0  # Maximum weight for classification models
-MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Maximum weight for regression models
+WEIGHT_DELAY_COLUMN = 'differenceInMinutes_eachStation_offset' # Put 'NONE' to disable the weights
+MAX_SAMPLE_WEIGHT_CLASSIFICATION = 5.0  # Put 1 to disable the weights for classification
+MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Put 1 to disable the weights for regression
 
 # Pipeline stages configuration
 PIPELINE_STAGES = [
@@ -114,6 +114,27 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
     'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
     'gamma': [0, 0.1, 0.2, 0.3, 0.4]
 }
+
+# ===================================================================================================================
+# CHOOSING THE CLASSIFICATOR
+# ===================================================================================================================
+# 
+# Scoring Option       | Best For                       | Requires           | Description
+# ---------------------|--------------------------------|--------------------|---------------------------------
+# 'accuracy'           | Balanced datasets              | predict()          | Standard accuracy (correct/total)
+# 'balanced_accuracy'  | **Imbalanced datasets**        | predict()          | Average recall per class
+# 'f1'                 | Binary classification          | predict()          | Harmonic mean of precision/recall
+# 'f1_weighted'        | Multiclass imbalanced          | predict()          | F1 weighted by class support
+# 'roc_auc'            | **Binary + probabilities**     | predict_proba()    | Area under ROC curve
+# 'average_precision'  | **Imbalanced + probabilities** | predict_proba()    | Area under PR curve
+#
+# RECOMMENDATIONS FOR TRAIN DELAY PREDICTION:
+# - If imbalanced binary: Use 'roc_auc' or 'balanced_accuracy'
+# - If balanced binary: Use 'accuracy' or 'f1' 
+# - If very rare events: Use 'average_precision'
+# ===================================================================================================================
+SCORE_METRIC = 'roc_auc'
+
 
 # RandomizedSearchCV settings
 RANDOM_SEARCH_ITERATIONS = 50
