@@ -22,7 +22,12 @@ from sklearn.model_selection import RandomizedSearchCV
 from sklearn.model_selection import ParameterSampler, KFold, StratifiedKFold
 from sklearn.linear_model import Lasso, Ridge
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import (
+    accuracy_score, balanced_accuracy_score, roc_auc_score, 
+    average_precision_score, cohen_kappa_score, f1_score,
+    classification_report, confusion_matrix,
+    mean_squared_error, mean_absolute_error, r2_score
+)
             
 
 from config.const import (
@@ -1711,6 +1716,7 @@ class TrainingPipeline:
         Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
         Includes SHAP analysis for enhanced model interpretability.
         Updated to include sample weights based on delay magnitude.
+        Now uses comprehensive evaluation method for consistent metrics.
         
         Parameters:
         -----------
@@ -1870,24 +1876,24 @@ class TrainingPipeline:
                 else:
                     best_dt.fit(X_train, y_train)
                 
-                # Predict
-                y_pred = best_dt.predict(X_test)
+                # === NEW COMPREHENSIVE EVALUATION METHOD ===
+                evaluation_result = self.evaluate_model_comprehensive(
+                    model=best_dt,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_name="Decision Tree with RandomizedSearchCV",
+                    month_id=month_id,
+                    output_dir=self.randomized_search_dir,
+                    target_column=target_column,
+                    random_search_obj=random_search,  # Pass the RandomizedSearchCV object
+                    is_classification=is_classification
+                )
                 
-                # Evaluate model
-                accuracy = accuracy_score(y_test, y_pred)
-                report = classification_report(y_test, y_pred, output_dict=True)
-                conf_matrix = confusion_matrix(y_test, y_pred)
-                
-                print(f"\nDecision Tree Classifier Results (Tuned with RandomizedSearchCV):")
-                print(f"Accuracy: {accuracy:.4f}")
-                print("\nClassification Report:")
-                print(classification_report(y_test, y_pred))
-                
-                print("\nConfusion Matrix:")
-                print(conf_matrix)
-                
-                # Extract and save metrics
-                metrics_result = self.extract_and_save_metrics(y_test, y_pred, report, f"{month_id}_randomized_search", output_dir=self.randomized_search_dir)
+                if not evaluation_result["success"]:
+                    return {
+                        "success": False,
+                        "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                    }
                 
                 # Feature importance
                 feature_importance = pd.DataFrame({
@@ -1998,22 +2004,20 @@ class TrainingPipeline:
                     baseline_metrics_file = os.path.join(self.decision_tree_dir, f"model_metrics_{month_id}.csv")
                     if os.path.exists(baseline_metrics_file):
                         baseline_metrics = pd.read_csv(baseline_metrics_file)
-                        baseline_accuracy = baseline_metrics['accuracy'].values[0]
-                        print(f"Baseline model accuracy: {baseline_accuracy:.4f}")
-                        print(f"RandomizedSearchCV model accuracy: {accuracy:.4f}")
-                        improvement = ((accuracy - baseline_accuracy) / baseline_accuracy) * 100
-                        print(f"Improvement: {improvement:.2f}%")
+                        if 'accuracy' in baseline_metrics.columns:
+                            baseline_accuracy = baseline_metrics['accuracy'].values[0]
+                            current_accuracy = evaluation_result.get('accuracy', 0)
+                            print(f"Baseline model accuracy: {baseline_accuracy:.4f}")
+                            print(f"RandomizedSearchCV model accuracy: {current_accuracy:.4f}")
+                            improvement = ((current_accuracy - baseline_accuracy) / baseline_accuracy) * 100
+                            print(f"Improvement: {improvement:.2f}%")
                     
                     return {
                         "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy,
-                        "report": report,
+                        **evaluation_result,  # Include all evaluation results
                         "best_params": best_params,
-                        "metrics": metrics_result["metrics"],
                         "model_path": model_path,
                         "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"],
                         "shap_analysis": shap_result,  # Include SHAP results
                         "used_sample_weights": sample_weights is not None
                     }
@@ -2022,12 +2026,8 @@ class TrainingPipeline:
                     print(f"Warning: Could not save model: {str(e)}")
                     return {
                         "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy,
-                        "report": report,
+                        **evaluation_result,  # Include evaluation results even if save failed
                         "best_params": best_params,
-                        "metrics": metrics_result["metrics"],
-                        "metrics_path": metrics_result["metrics_path"],
                         "model_saved": False,
                         "shap_analysis": shap_result,  # Include SHAP results even if model save failed
                         "used_sample_weights": sample_weights is not None
@@ -2068,7 +2068,7 @@ class TrainingPipeline:
             above this threshold will be kept. Defaults to IMPORTANCE_THRESHOLD.
         param_distributions : dict, optional
             Dictionary with parameters names as keys and distributions or lists of parameters to try.
-            Defaults to RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS from constants.
+            Defaults to DECISION_TREE_PARAM_DISTRIBUTIONS from constants.
         n_iter : int, optional
             Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
         cv : int, optional
@@ -2084,8 +2084,8 @@ class TrainingPipeline:
         try:
             # Use default values from constants if not provided
             if param_distributions is None:
-                from config.const import RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
-                param_distributions = RANDOMIZED_SEARCH_PARAM_DISTRIBUTIONS
+                from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
+                param_distributions = DECISION_TREE_PARAM_DISTRIBUTIONS
             
             if n_iter is None:
                 from config.const import RANDOM_SEARCH_ITERATIONS
@@ -3960,14 +3960,26 @@ class TrainingPipeline:
                 "error": str(e)
             }
  
-    def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None):
+    def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None, y_pred_proba=None):
         """
         Extract key metrics from model evaluation and save them to a CSV file.
         Enhanced for imbalanced classification problems.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True target values
+        y_pred : array-like
+            Predicted target values
+        report : dict
+            Classification report dictionary from sklearn
+        month_id : str
+            Month identifier for file naming
+        output_dir : str, optional
+            Output directory path
+        y_pred_proba : array-like, optional
+            Predicted probabilities for positive class (for ROC AUC, PR AUC)
         """
-        from sklearn.metrics import (accuracy_score, balanced_accuracy_score, 
-                                    roc_auc_score, average_precision_score,
-                                    cohen_kappa_score)
         
         # Create metrics dictionary
         metrics = {}
@@ -3980,36 +3992,45 @@ class TrainingPipeline:
         metrics['accuracy'] = accuracy_score(y_test, y_pred)
         metrics['balanced_accuracy'] = balanced_accuracy_score(y_test, y_pred)
         
-        # ROC AUC and PR AUC for binary classification
-        if len(np.unique(y_test)) == 2:
-            try:
-                # Get prediction probabilities if available
-                if hasattr(self, '_last_model') and hasattr(self._last_model, 'predict_proba'):
-                    y_proba = self._last_model.predict_proba(self._last_X_test)[:, 1]
-                    metrics['roc_auc'] = roc_auc_score(y_test, y_proba)
-                    metrics['pr_auc'] = average_precision_score(y_test, y_proba)
-                else:
-                    # Use predictions as fallback
-                    metrics['roc_auc'] = roc_auc_score(y_test, y_pred)
-            except:
-                metrics['roc_auc'] = None
-                metrics['pr_auc'] = None
-        
         # Cohen's Kappa (accounts for class imbalance)
         metrics['cohen_kappa'] = cohen_kappa_score(y_test, y_pred)
         
-        # Extract F1 scores from the classification report
+        # F1 scores
+        if len(np.unique(y_test)) == 2:
+            metrics['f1'] = f1_score(y_test, y_pred)
+        else:
+            metrics['f1'] = f1_score(y_test, y_pred, average='weighted')
+        
         metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
         metrics['macro_avg_f1'] = report['macro avg']['f1-score']
         
-        # For classification, also extract F1 scores for each class
+        # ROC AUC and PR AUC for binary classification
+        if len(np.unique(y_test)) == 2:
+            if y_pred_proba is not None:
+                try:
+                    metrics['roc_auc'] = roc_auc_score(y_test, y_pred_proba)
+                    metrics['pr_auc'] = average_precision_score(y_test, y_pred_proba)
+                except Exception as e:
+                    print(f"Warning: Could not calculate ROC/PR AUC: {e}")
+                    metrics['roc_auc'] = None
+                    metrics['pr_auc'] = None
+            else:
+                # Try to calculate ROC AUC with predictions as fallback
+                try:
+                    metrics['roc_auc'] = roc_auc_score(y_test, y_pred)
+                except:
+                    metrics['roc_auc'] = None
+                metrics['pr_auc'] = None
+        else:
+            metrics['roc_auc'] = None
+            metrics['pr_auc'] = None
+        
+        # For classification, also extract metrics for each class
         for class_label in report:
             if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
                 metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
                 metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
                 metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
-                
-                # Calculate class support
                 metrics[f'class_{class_label}_support'] = report[class_label]['support']
         
         # Add class distribution info
@@ -4018,8 +4039,25 @@ class TrainingPipeline:
             metrics[f'class_{class_val}_test_count'] = count
             metrics[f'class_{class_val}_test_percentage'] = (count / len(y_test)) * 100
         
-        # Print metrics with focus on imbalanced performance
-        print("\nModel Metrics (Focus on Imbalanced Classification):")
+        # Add the optimized metric value
+        if SCORE_METRIC == 'roc_auc' and metrics.get('roc_auc') is not None:
+            metrics['optimized_metric_value'] = metrics['roc_auc']
+        elif SCORE_METRIC == 'balanced_accuracy':
+            metrics['optimized_metric_value'] = metrics['balanced_accuracy']
+        elif SCORE_METRIC == 'f1':
+            metrics['optimized_metric_value'] = metrics['f1']
+        elif SCORE_METRIC == 'f1_weighted':
+            metrics['optimized_metric_value'] = metrics['weighted_avg_f1']
+        elif SCORE_METRIC == 'average_precision' and metrics.get('pr_auc') is not None:
+            metrics['optimized_metric_value'] = metrics['pr_auc']
+        else:
+            metrics['optimized_metric_value'] = metrics['accuracy']
+        
+        metrics['optimized_metric_name'] = SCORE_METRIC
+        
+        # Print metrics with focus on the optimized metric
+        print(f"\nDetailed Model Metrics:")
+        print(f"Optimized Metric ({SCORE_METRIC}): {metrics['optimized_metric_value']:.4f}")
         print(f"Accuracy: {metrics['accuracy']:.4f}")
         print(f"Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
         if metrics.get('roc_auc'):
@@ -4050,7 +4088,287 @@ class TrainingPipeline:
             "metrics": metrics,
             "metrics_path": metrics_path
         }
-    
+
+    def evaluate_model_comprehensive(self, model, X_test, y_test, model_name, month_id, 
+                                    output_dir, target_column, best_cv_score=None, 
+                                    random_search_obj=None, is_classification=True):
+        """
+        Comprehensive model evaluation method that can be used across all training techniques.
+        
+        Handles both classification and regression problems, calculates relevant metrics
+        based on the configured SCORE_METRIC, and provides consistent output formatting.
+        
+        Parameters:
+        -----------
+        model : sklearn model or compatible
+            The trained model to evaluate.
+        X_test : pandas.DataFrame
+            Test features.
+        y_test : pandas.Series
+            Test target values.
+        model_name : str
+            Name of the model/technique (e.g., "Decision Tree RandomizedSearchCV").
+        month_id : str
+            Month identifier for file naming.
+        output_dir : str
+            Directory to save evaluation results.
+        target_column : str
+            Name of the target column being predicted.
+        best_cv_score : float, optional
+            Best cross-validation score from hyperparameter tuning.
+        random_search_obj : RandomizedSearchCV object, optional
+            The RandomizedSearchCV object to extract best_score_ from.
+        is_classification : bool, optional
+            Whether this is a classification problem. Defaults to True.
+            
+        Returns:
+        --------
+        dict
+            Comprehensive evaluation results dictionary.
+        """
+       
+        print(f"\n{'='*80}")
+        print(f"COMPREHENSIVE MODEL EVALUATION: {model_name}")
+        print(f"{'='*80}")
+        
+        # Extract best CV score if RandomizedSearchCV object provided
+        if best_cv_score is None and random_search_obj is not None:
+            best_cv_score = random_search_obj.best_score_
+        
+        if is_classification:
+            # === CLASSIFICATION EVALUATION ===
+            
+            # Make predictions
+            y_pred = model.predict(X_test)
+            y_pred_proba = None
+            
+            # Get probabilities for metrics that need them
+            try:
+                y_pred_proba = model.predict_proba(X_test)
+                if len(y_pred_proba.shape) > 1 and y_pred_proba.shape[1] > 1:
+                    y_pred_proba = y_pred_proba[:, 1]  # Probability of positive class
+            except Exception as e:
+                print(f"Note: Could not get prediction probabilities: {e}")
+                y_pred_proba = None
+            
+            # Calculate all relevant metrics
+            metrics = {}
+            metrics['accuracy'] = accuracy_score(y_test, y_pred)
+            metrics['balanced_accuracy'] = balanced_accuracy_score(y_test, y_pred)
+            metrics['cohen_kappa'] = cohen_kappa_score(y_test, y_pred)
+            
+            # F1 scores
+            if len(np.unique(y_test)) == 2:
+                metrics['f1'] = f1_score(y_test, y_pred)
+            else:
+                metrics['f1'] = f1_score(y_test, y_pred, average='weighted')
+            
+            # Classification report
+            report = classification_report(y_test, y_pred, output_dict=True)
+            metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
+            metrics['macro_avg_f1'] = report['macro avg']['f1-score']
+            
+            # ROC AUC and PR AUC for binary classification
+            if len(np.unique(y_test)) == 2 and y_pred_proba is not None:
+                try:
+                    metrics['roc_auc'] = roc_auc_score(y_test, y_pred_proba)
+                    metrics['pr_auc'] = average_precision_score(y_test, y_pred_proba)
+                except Exception as e:
+                    print(f"Warning: Could not calculate ROC/PR AUC: {e}")
+                    metrics['roc_auc'] = None
+                    metrics['pr_auc'] = None
+            else:
+                metrics['roc_auc'] = None
+                metrics['pr_auc'] = None
+            
+            # Determine the optimized metric value
+            optimized_metric_value = None
+            optimized_metric_name = SCORE_METRIC
+            
+            if SCORE_METRIC == 'roc_auc' and metrics.get('roc_auc') is not None:
+                optimized_metric_value = metrics['roc_auc']
+            elif SCORE_METRIC == 'balanced_accuracy':
+                optimized_metric_value = metrics['balanced_accuracy']
+            elif SCORE_METRIC == 'f1':
+                optimized_metric_value = metrics['f1']
+            elif SCORE_METRIC == 'f1_weighted':
+                optimized_metric_value = metrics['weighted_avg_f1']
+            elif SCORE_METRIC == 'average_precision' and metrics.get('pr_auc') is not None:
+                optimized_metric_value = metrics['pr_auc']
+            else:
+                # Fallback to accuracy
+                optimized_metric_value = metrics['accuracy']
+                optimized_metric_name = 'accuracy'
+            
+            # Print results
+            print(f"Target Column: {target_column}")
+            print(f"Model Type: Classification")
+            if best_cv_score is not None:
+                print(f"Best CV Score ({SCORE_METRIC}): {best_cv_score:.4f}")
+            print(f"Test {optimized_metric_name}: {optimized_metric_value:.4f}")
+            
+            print(f"\nCore Classification Metrics:")
+            print(f"  Accuracy: {metrics['accuracy']:.4f}")
+            print(f"  Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
+            print(f"  F1 Score: {metrics['f1']:.4f}")
+            print(f"  Cohen's Kappa: {metrics['cohen_kappa']:.4f}")
+            
+            if metrics.get('roc_auc') is not None:
+                print(f"  ROC AUC: {metrics['roc_auc']:.4f}")
+            if metrics.get('pr_auc') is not None:
+                print(f"  PR AUC: {metrics['pr_auc']:.4f}")
+            
+            print(f"\nDetailed Classification Report:")
+            print(classification_report(y_test, y_pred))
+            
+            conf_matrix = confusion_matrix(y_test, y_pred)
+            print(f"\nConfusion Matrix:")
+            print(conf_matrix)
+            
+            # Add per-class metrics
+            for class_label in report:
+                if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
+                    metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
+                    metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
+                    metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
+                    metrics[f'class_{class_label}_support'] = report[class_label]['support']
+            
+            # Add class distribution
+            unique, counts = np.unique(y_test, return_counts=True)
+            for class_val, count in zip(unique, counts):
+                metrics[f'class_{class_val}_test_count'] = count
+                metrics[f'class_{class_val}_test_percentage'] = (count / len(y_test)) * 100
+            
+            # Store additional info
+            metrics['optimized_metric_value'] = optimized_metric_value
+            metrics['optimized_metric_name'] = optimized_metric_name
+            metrics['best_cv_score'] = best_cv_score
+            
+            # Save enhanced metrics
+            enhanced_metrics_result = self.extract_and_save_metrics(
+                y_test, y_pred, report, month_id, 
+                output_dir=output_dir, 
+                y_pred_proba=y_pred_proba
+            )
+            
+            return {
+                "success": True,
+                "model_type": "classification",
+                "predictions": y_pred,
+                "probabilities": y_pred_proba,
+                "accuracy": metrics['accuracy'],
+                "optimized_metric": optimized_metric_value,
+                "optimized_metric_name": optimized_metric_name,
+                "best_cv_score": best_cv_score,
+                "balanced_accuracy": metrics['balanced_accuracy'],
+                "f1_score": metrics['f1'],
+                "roc_auc": metrics.get('roc_auc'),
+                "pr_auc": metrics.get('pr_auc'),
+                "cohen_kappa": metrics['cohen_kappa'],
+                "confusion_matrix": conf_matrix,
+                "classification_report": report,
+                "all_metrics": metrics,
+                "metrics_path": enhanced_metrics_result["metrics_path"]
+            }
+        
+        else:
+            # === REGRESSION EVALUATION ===
+            
+            # Handle different model types for regression prediction
+            if hasattr(model, 'predict'):
+                # Standard sklearn-style model
+                y_pred = model.predict(X_test)
+            elif hasattr(model, 'predict') and hasattr(X_test, 'values'):
+                # XGBoost booster with DMatrix needed
+                import xgboost as xgb
+                dtest = xgb.DMatrix(X_test)
+                y_pred = model.predict(dtest)
+            else:
+                raise ValueError("Cannot determine how to make predictions with this model")
+            
+            # Calculate regression metrics
+            mse = mean_squared_error(y_test, y_pred)
+            rmse = np.sqrt(mse)
+            mae = mean_absolute_error(y_test, y_pred)
+            r2 = r2_score(y_test, y_pred)
+            
+            # Determine optimized metric (for regression, usually R² or negative MSE)
+            optimized_metric_value = None
+            optimized_metric_name = SCORE_METRIC if SCORE_METRIC in ['r2', 'neg_mean_squared_error'] else 'r2'
+            
+            if optimized_metric_name == 'r2':
+                optimized_metric_value = r2
+            elif optimized_metric_name == 'neg_mean_squared_error':
+                optimized_metric_value = -mse
+            else:
+                optimized_metric_value = r2
+                optimized_metric_name = 'r2'
+            
+            # Print results
+            print(f"Target Column: {target_column}")
+            print(f"Model Type: Regression")
+            if best_cv_score is not None:
+                print(f"Best CV Score ({SCORE_METRIC}): {best_cv_score:.4f}")
+            print(f"Test {optimized_metric_name}: {optimized_metric_value:.4f}")
+            
+            print(f"\nRegression Metrics:")
+            print(f"  RMSE: {rmse:.4f}")
+            print(f"  MAE: {mae:.4f}")
+            print(f"  R²: {r2:.4f}")
+            print(f"  MSE: {mse:.4f}")
+            
+            # Additional regression statistics
+            residuals = y_test - y_pred
+            mean_residual = np.mean(residuals)
+            std_residual = np.std(residuals)
+            
+            print(f"\nResidual Analysis:")
+            print(f"  Mean Residual: {mean_residual:.4f}")
+            print(f"  Std Residual: {std_residual:.4f}")
+            print(f"  Target Range: [{y_test.min():.2f}, {y_test.max():.2f}]")
+            print(f"  Prediction Range: [{y_pred.min():.2f}, {y_pred.max():.2f}]")
+            
+            # Save regression metrics
+            metrics = {
+                'mse': mse,
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2,
+                'mean_residual': mean_residual,
+                'std_residual': std_residual,
+                'optimized_metric_value': optimized_metric_value,
+                'optimized_metric_name': optimized_metric_name,
+                'best_cv_score': best_cv_score,
+                'target_min': y_test.min(),
+                'target_max': y_test.max(),
+                'pred_min': y_pred.min(),
+                'pred_max': y_pred.max()
+            }
+            
+            regression_metrics_result = self.extract_and_save_regression_metrics(
+                y_test, y_pred, month_id, output_dir=output_dir
+            )
+
+            print(f"{'='*80}")
+            print(f"EVALUATION COMPLETE: {model_name}")
+            print(f"{'='*80}\n")
+            
+            return {
+                "success": True,
+                "model_type": "regression",
+                "predictions": y_pred,
+                "rmse": rmse,
+                "mae": mae,
+                "r2": r2,
+                "mse": mse,
+                "optimized_metric": optimized_metric_value,
+                "optimized_metric_name": optimized_metric_name,
+                "best_cv_score": best_cv_score,
+                "residuals": residuals,
+                "all_metrics": metrics,
+                "metrics_path": regression_metrics_result["metrics_path"]
+            }
+        
     def analyze_model_with_shap(self, model, X_test, y_test, model_type, month_id, 
                             output_dir, target_column, max_samples=1000, 
                             random_state=42, model_name="model", baseline_data=None):
