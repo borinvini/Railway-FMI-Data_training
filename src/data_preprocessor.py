@@ -1821,7 +1821,7 @@ class TrainingPipeline:
                     delays = train_df[delay_col].values
                     
                     # Apply weights - higher delays get higher weights
-                    delayed_idx = (delays > 0)
+                    delayed_idx = (delays > TRAIN_DELAY_MINUTES)
                     if np.any(delayed_idx):
                         # Normalize delay values by mean positive delay
                         mean_delay = delays[delayed_idx].mean()
