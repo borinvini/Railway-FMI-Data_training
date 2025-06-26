@@ -2429,6 +2429,7 @@ class TrainingPipeline:
         Train an XGBoost model (classifier or regressor) with hyperparameter tuning using manual CV.
         Supports sample weights based on delay magnitude for classification tasks.
         Now includes SHAP analysis for enhanced model interpretability.
+        Uses the comprehensive evaluation method for consistent metrics across all models.
         
         Parameters:
         -----------
@@ -2780,53 +2781,27 @@ class TrainingPipeline:
             xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
             os.makedirs(xgboost_rs_dir, exist_ok=True)
             
-            # Evaluate on test set
-            if is_classification:
-                y_pred = xgb_model.predict(X_test)
-                accuracy = accuracy_score(y_test, y_pred)
-                report = classification_report(y_test, y_pred, output_dict=True)
-                conf_matrix = confusion_matrix(y_test, y_pred)
-                
-                print(f"\nXGBoost Classifier Results:")
-                print(f"Accuracy: {accuracy:.4f}")
-                print("\nClassification Report:")
-                print(classification_report(y_test, y_pred))
-                
-                print("\nConfusion Matrix:")
-                print(conf_matrix)
-                
-                # Extract and save metrics
-                metrics_result = self.extract_and_save_metrics(
-                    y_test, y_pred, report, f"{month_id}_rs", 
-                    output_dir=xgboost_rs_dir
-                )
-            else:
-                # Handle regression evaluation - check if using booster or regressor
-                if best_method == "weighted" and hasattr(xgb_model, 'predict'):
-                    # If using booster with custom objective (has predict method)
-                    dtest = xgb.DMatrix(X_test)
-                    y_pred = xgb_model.predict(dtest)
-                else:
-                    # Standard XGBRegressor
-                    y_pred = xgb_model.predict(X_test)
-                
-                # Use the regression metrics function
-                metrics_result = self.extract_and_save_regression_metrics(
-                    y_test, y_pred, f"{month_id}_rs", 
-                    output_dir=xgboost_rs_dir
-                )
-                
-                # Keep these lines for printing to console
-                mse = metrics_result["metrics"]["mse"]
-                rmse = metrics_result["metrics"]["rmse"]
-                mae = metrics_result["metrics"]["mae"]
-                r2 = metrics_result["metrics"]["r2"]
-                
-                print(f"\nXGBoost Regressor Results:")
-                print(f"RMSE: {rmse:.4f}")
-                print(f"MAE: {mae:.4f}")
-                print(f"R²: {r2:.4f}")
+            # === NEW: USE COMPREHENSIVE EVALUATION METHOD ===
+            print(f"\nUsing comprehensive evaluation method for XGBoost model...")
+            evaluation_result = self.evaluate_model_comprehensive(
+                model=xgb_model,
+                X_test=X_test,
+                y_test=y_test,
+                model_name="XGBoost with RandomizedSearchCV",
+                month_id=month_id,
+                output_dir=xgboost_rs_dir,
+                target_column=target_column,
+                best_cv_score=best_score,  # Pass the best CV score
+                random_search_obj=None,  # No RandomizedSearchCV object since we do manual search
+                is_classification=is_classification
+            )
             
+            if not evaluation_result["success"]:
+                return {
+                    "success": False,
+                    "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                }
+
             # Get feature importance
             if best_method == "weighted" and hasattr(xgb_model, 'get_score'):
                 # For booster with custom objective
@@ -2849,7 +2824,7 @@ class TrainingPipeline:
             print("\nFeature Importance (top 10):")
             print(feature_importance.head(10))
             
-            # ========== NEW: ADD SHAP ANALYSIS ==========
+            # ========== SHAP ANALYSIS ==========
             print("\nPerforming SHAP analysis on the XGBoost RandomizedSearchCV model...")
             
             shap_result = self.analyze_model_with_shap(
@@ -2947,76 +2922,48 @@ class TrainingPipeline:
                         f.write(f"{param}: {value}\n")
                 print(f"Best parameters saved to {params_path}")
                 
-                # If sample weights were used, save their distribution
+                # NEW: Save sample weights information if used
                 if sample_weights is not None:
-                    weights_df = pd.DataFrame({
-                        'weight': sample_weights
-                    })
-                    weights_filename = f"sample_weights_distribution_{month_id}.csv"
+                    weights_filename = f"sample_weights_info_{month_id}.txt"
                     weights_path = os.path.join(xgboost_rs_dir, weights_filename)
-                    weights_df.describe().to_csv(weights_path)
-                    print(f"Weight distribution saved to {weights_path}")
+                    with open(weights_path, 'w') as f:
+                        f.write(f"Sample Weights Information - {month_id}\n")
+                        f.write("="*40 + "\n")
+                        f.write(f"Used sample weights: Yes\n")
+                        f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                        f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                        f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                        f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                        f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                    print(f"Sample weights info saved to {weights_path}")
                 
-                if is_classification:
-                    return {
-                        "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy,
-                        "report": report,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"],
-                        "used_sample_weights": sample_weights is not None,
-                        "shap_analysis": shap_result  # Include SHAP results
-                    }
-                else:
-                    return {
-                        "success": True,
-                        "model_type": "regression",
-                        "rmse": rmse,
-                        "r2": r2,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "custom_objective": best_method == "weighted",
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"],
-                        "shap_analysis": shap_result  # Include SHAP results
-                    }
+                # Return comprehensive results similar to decision tree method
+                return {
+                    "success": True,
+                    **evaluation_result,  # Include all evaluation results
+                    "best_params": best_params,
+                    "best_method": best_method,
+                    "best_cv_score": best_score,
+                    "custom_objective": best_method == "weighted",
+                    "model_path": model_path,
+                    "feature_importance_path": importance_path,
+                    "shap_analysis": shap_result,  # Include SHAP results
+                    "used_sample_weights": sample_weights is not None
+                }
                     
             except Exception as e:
                 print(f"Warning: Could not save model: {str(e)}")
-                if is_classification:
-                    return {
-                        "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy if 'accuracy' in locals() else None,
-                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
-                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
-                        "model_saved": False,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "used_sample_weights": sample_weights is not None,
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
-                    }
-                else:
-                    return {
-                        "success": True,
-                        "model_type": "regression",
-                        "rmse": rmse if 'rmse' in locals() else None,
-                        "r2": r2 if 'r2' in locals() else None,
-                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
-                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
-                        "model_saved": False,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "custom_objective": best_method == "weighted",
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
-                    }
+                return {
+                    "success": True,
+                    **evaluation_result,  # Include evaluation results even if save failed
+                    "best_params": best_params,
+                    "best_method": best_method,
+                    "best_cv_score": best_score,
+                    "custom_objective": best_method == "weighted",
+                    "model_saved": False,
+                    "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                    "used_sample_weights": sample_weights is not None
+                }
                 
         except Exception as e:
             import traceback
