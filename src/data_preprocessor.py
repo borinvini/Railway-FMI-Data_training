@@ -4862,6 +4862,7 @@ class TrainingPipeline:
         return X_train, y_train, smote_applied, resampling_info
 
     def apply_edited_nearest_neighbors_resampling(self, X_train, y_train, target_column, imbalance_threshold, random_state=42, n_neighbors=3):
+
         """
         Apply EditedNearestNeighbors undersampling to training data if class imbalance exceeds threshold.
         
@@ -4984,3 +4985,37 @@ class TrainingPipeline:
             resampling_info["final_distribution"] = resampling_info["original_distribution"]
         
         return X_train, y_train, enn_applied, resampling_info
+
+
+        """
+        Apply class weight parameter to a model class if supported.
+        
+        Parameters:
+        -----------
+        model_class : class
+            The sklearn model class (e.g., DecisionTreeClassifier).
+        base_params : dict
+            Base parameters for the model.
+        class_weight_param : various
+            Class weight parameter to apply.
+            
+        Returns:
+        --------
+        dict
+            Updated parameters including class_weight if supported.
+        """
+        updated_params = base_params.copy()
+        
+        # Check if the model supports class_weight
+        try:
+            # Try creating a dummy instance to check if class_weight is supported
+            dummy_model = model_class()
+            if hasattr(dummy_model, 'class_weight') or 'class_weight' in dummy_model.get_params():
+                updated_params['class_weight'] = class_weight_param
+                print(f"Applied class_weight to {model_class.__name__}")
+            else:
+                print(f"Model {model_class.__name__} does not support class_weight parameter")
+        except Exception as e:
+            print(f"Could not determine class_weight support for {model_class.__name__}: {e}")
+        
+        return updated_params

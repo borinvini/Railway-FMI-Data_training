@@ -103,7 +103,7 @@ DECISION_TREE_PARAM_DISTRIBUTIONS = {
     'max_features': [None, 'sqrt', 'log2', 0.5, 0.7],
     'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'ccp_alpha': [0.0, 0.001, 0.01, 0.05],
-    'class_weight': ['balanced', None] 
+    'class_weight': ['balanced', {False:1, True:5}, {False:1, True:10}, {False:1, True:15}, None] 
 }
 
 # Parameter distributions for XGBoost with RandomizedSearchCV
@@ -134,7 +134,7 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
 # - If balanced binary: Use 'accuracy' or 'f1' 
 # - If very rare events: Use 'average_precision'
 # ===================================================================================================================
-SCORE_METRIC = 'average_precision'
+SCORE_METRIC = 'roc_auc'
 
 
 # RandomizedSearchCV settings
