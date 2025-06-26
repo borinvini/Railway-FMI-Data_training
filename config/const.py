@@ -88,9 +88,7 @@ PIPELINE_STAGES = [
     "split_dataset",
     "train_regularized_regression", 
     "train_decision_tree_with_randomized_search_cv", 
-    "train_decision_tree_rs_with_important_features", 
-    "train_xgboost_with_randomized_search_cv",
-    "train_xgboost_rs_with_important_features"
+    "train_xgboost_with_randomized_search_cv"
 ]
 
 

@@ -434,21 +434,7 @@ class TrainingPipeline:
                             print(f"Successfully trained decision tree with RandomizedSearchCV for {month_id}")
                             counters["successful_randomized_search"] = counters.get("successful_randomized_search", 0) + 1
 
-                        # Point to the new final stage
-                        state["current_stage"] = "train_decision_tree_rs_with_important_features"
-
-                    case "train_decision_tree_rs_with_important_features":
-                        print(f"Training decision tree with RandomizedSearchCV on important features for {month_id}...")
-                        combined_result = self.train_decision_tree_rs_with_important_features(month_id)
-                        
-                        if not combined_result.get("success", False):
-                            print(f"Failed to train with combined approach for {month_id}: {combined_result.get('error', 'Unknown error')}")
-                            counters["failed_combined_approach"] = counters.get("failed_combined_approach", 0) + 1
-                        else:
-                            print(f"Successfully trained with combined approach for {month_id}")
-                            counters["successful_combined_approach"] = counters.get("successful_combined_approach", 0) + 1
-
-                        # Continue to the XGBoost stage
+                        # UPDATED: Go directly to XGBoost instead of important features
                         state["current_stage"] = "train_xgboost_with_randomized_search_cv"
 
                     case "train_xgboost_with_randomized_search_cv":
@@ -462,21 +448,7 @@ class TrainingPipeline:
                             print(f"Successfully trained XGBoost with RandomizedSearchCV for {month_id}")
                             counters["successful_xgboost_rs"] = counters.get("successful_xgboost_rs", 0) + 1
 
-                        # Point to the new stage
-                        state["current_stage"] = "train_xgboost_rs_with_important_features"
-
-                    case "train_xgboost_rs_with_important_features":
-                        print(f"Training XGBoost with RandomizedSearchCV on top {TOP_FEATURES_COUNT} features for {month_id}...")
-                        xgb_rs_important_result = self.train_xgboost_rs_with_important_features(month_id)
-                        
-                        if not xgb_rs_important_result.get("success", False):
-                            print(f"Failed to train XGBoost with RandomizedSearchCV on top features for {month_id}: {xgb_rs_important_result.get('error', 'Unknown error')}")
-                            counters["failed_xgboost_rs_important"] = counters.get("failed_xgboost_rs_important", 0) + 1
-                        else:
-                            print(f"Successfully trained XGBoost with RandomizedSearchCV on top features for {month_id}")
-                            counters["successful_xgboost_rs_important"] = counters.get("successful_xgboost_rs_important", 0) + 1
-
-                        # This is the last stage, so we're done
+                        # UPDATED: This is now the last stage, so we're done
                         state["current_stage"] = None
                         
                         # Clear the dataframe from memory if it exists
@@ -495,13 +467,13 @@ class TrainingPipeline:
             **counters
         }
         
-        # Print summary - UPDATED to include snow depth merge counter
+        # Print summary - UPDATED to remove mentions of removed methods
         print("\n" + "="*50)
         print("Processing Summary:")
         print(f"Total months processed: {summary['total_months']}")
         print(f"Total files processed: {summary['total_files']}")
         print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
-        print(f"Successfully merged snow depth columns: {summary['successful_snow_depth_merge']}")  # NEW LINE
+        print(f"Successfully merged snow depth columns: {summary['successful_snow_depth_merge']}")
         print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
         print(f"Successfully deduplicated: {summary['successful_deduplication']}")
         print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
@@ -511,15 +483,10 @@ class TrainingPipeline:
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Successfully trained regularized regression models: {summary.get('successful_regularized_regression', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
-        print(f"Successfully trained with RandomizedSearchCV on important features: {summary.get('successful_combined_approach', 0)}")
         print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
-        print(f"Successfully trained XGBoost models with RandomizedSearchCV on top features: {summary.get('successful_xgboost_rs_important', 0)}")
         print(f"Failed to train regularized regression models: {summary.get('failed_regularized_regression', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
-        print(f"Failed to train with RandomizedSearchCV on important features: {summary.get('failed_combined_approach', 0)}")
-        print(f"Failed to train XGBoost models: {summary.get('failed_xgboost', 0)}")
         print(f"Failed to train XGBoost models with RandomizedSearchCV: {summary.get('failed_xgboost_rs', 0)}")
-        print(f"Failed to train XGBoost models with RandomizedSearchCV on top features: {summary.get('failed_xgboost_rs_important', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
     
         print("="*50)
@@ -2479,8 +2446,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics.
         """
-        pass
-        """try:
+
+        try:
             # Use default values from constants if not provided
             if param_distributions is None:
                 from config.const import XGBOOST_PARAM_DISTRIBUTIONS
@@ -3043,7 +3010,7 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }"""
+            }
 
     def train_xgboost_rs_with_important_features(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
