@@ -54,6 +54,8 @@ from config.const import (
     VALID_PREDICTION_FEATURES,
     VALID_TARGET_FEATURES,
     WEIGHT_DELAY_COLUMN,
+    XGBOOST_METHODS_CONFIG,
+    XGBOOST_OBJECTIVE_FUNCTIONS,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     FILTER_TRAINS_BY_STATIONS,
@@ -2440,7 +2442,7 @@ class TrainingPipeline:
             Number of cross-validation folds.
         random_state : int, optional
             Random seed for reproducibility. Defaults to 42.
-                    
+                
         Returns:
         --------
         dict
@@ -2557,16 +2559,6 @@ class TrainingPipeline:
                 
                 print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
             
-            # Define custom objective function for regression if needed
-            def stable_weighted_mse(y_pred, dtrain):
-                y_true = dtrain.get_label()
-                # UPDATED: Use constant from config instead of hardcoded value
-                weights = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
-                # More stable gradient calculation
-                grad = weights * (y_pred - y_true)
-                hess = weights
-                return grad, hess
-            
             # Generate parameter combinations
             param_list = list(ParameterSampler(param_distributions, n_iter=n_iter, random_state=random_state))
             
@@ -2585,19 +2577,33 @@ class TrainingPipeline:
             before_mem = process.memory_info().rss / 1024 / 1024
             print(f"Memory usage before training: {before_mem:.2f} MB")
             
-            # Define methods to try based on problem type
-            methods_to_try = []
+            # === UPDATED: Use methods configuration from const.py ===
+            problem_type = "classification" if is_classification else "regression"
+            methods_config = XGBOOST_METHODS_CONFIG[problem_type]
             
-            if is_classification:
-                # For classification, just use standard method, possibly with sample weights
-                methods_to_try = [{"name": "standard", "obj": None}]
-            else:
-                # For regression, try both standard and custom objective
-                methods_to_try = [
-                    {"name": "standard", "obj": None},
-                    {"name": "weighted", "obj": stable_weighted_mse}
-                ]
-                print(f"For regression, will try {len(methods_to_try)} different objective approaches")
+            # Resolve objective functions from configuration
+            methods_to_try = []
+            for method_config in methods_config:
+                method_dict = {
+                    "name": method_config["name"],
+                    "obj": None
+                }
+                
+                # Resolve objective function if specified
+                if method_config["obj"] is not None:
+                    if isinstance(method_config["obj"], str):
+                        # String reference to function in XGBOOST_OBJECTIVE_FUNCTIONS
+                        method_dict["obj"] = XGBOOST_OBJECTIVE_FUNCTIONS[method_config["obj"]]
+                    else:
+                        # Direct function reference
+                        method_dict["obj"] = method_config["obj"]
+                
+                methods_to_try.append(method_dict)
+            
+            print(f"For {problem_type}, will try {len(methods_to_try)} different objective approaches:")
+            for method in methods_to_try:
+                obj_name = method["obj"].__name__ if method["obj"] is not None else "default"
+                print(f"  - {method['name']}: {obj_name}")
             
             # Try each parameter combination and each method
             overall_best_score = float('-inf')
@@ -2751,12 +2757,19 @@ class TrainingPipeline:
                     }
                     # Note: 'silent' parameter has been removed as it's deprecated
                     
+                    # Get the objective function for the best method
+                    best_objective_func = None
+                    for method in methods_to_try:
+                        if method["name"] == best_method:
+                            best_objective_func = method["obj"]
+                            break
+                    
                     # Train the model with custom objective
                     xgb_model = xgb.train(
                         xgb_params,
                         dtrain,
                         num_boost_round=best_params.get('n_estimators', 100),
-                        obj=stable_weighted_mse
+                        obj=best_objective_func
                     )
                 else:
                     print("Training final model with standard objective")
@@ -2927,6 +2940,9 @@ class TrainingPipeline:
                 params_filename = f"best_params_{month_id}_rs.txt"
                 params_path = os.path.join(xgboost_rs_dir, params_filename)
                 with open(params_path, 'w') as f:
+                    f.write(f"Best Method: {best_method}\n")
+                    f.write(f"Best CV Score: {best_score:.4f}\n\n")
+                    f.write("Best Parameters:\n")
                     for param, value in best_params.items():
                         f.write(f"{param}: {value}\n")
                 print(f"Best parameters saved to {params_path}")

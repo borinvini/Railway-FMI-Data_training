@@ -1,4 +1,5 @@
 from scipy.stats import randint
+import numpy as np
 
 # Constants for file processing
 FOLDER_NAME = "data"
@@ -152,3 +153,52 @@ ENN_N_NEIGHBORS = 3  # Number of neighbors for EditedNearestNeighbors
 # SMOTE-Tomek configuration
 IMBALANCE_THRESHOLD = 30.0  # Apply SMOTE-Tomek if minority class < this %
 SMOTE_RANDOM_STATE = 42     # For reproducible resampling
+
+
+# ===================================================================================================================
+# XGBOOST OBJECTIVE FUNCTIONS
+# ===================================================================================================================
+
+def stable_weighted_mse(y_pred, dtrain):
+    """
+    Custom XGBoost objective function for regression with weighted MSE.
+    
+    Applies higher weights to samples with larger target values, making the model
+    more sensitive to larger delays while maintaining numerical stability.
+    
+    Parameters:
+    -----------
+    y_pred : array-like
+        Predicted values from the model
+    dtrain : xgboost.DMatrix
+        Training data matrix containing true labels
+        
+    Returns:
+    --------
+    tuple
+        (gradient, hessian) for XGBoost optimization
+    """
+    y_true = dtrain.get_label()
+    # Use constant from config instead of hardcoded value
+    weights = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
+    # More stable gradient calculation
+    grad = weights * (y_pred - y_true)
+    hess = weights
+    return grad, hess
+
+# Dictionary of available objective functions for XGBoost
+XGBOOST_OBJECTIVE_FUNCTIONS = {
+    "standard": None,  # Use XGBoost's default objective
+    "weighted_mse": stable_weighted_mse  # Custom weighted MSE for regression
+}
+
+# Configuration for which objective functions to try for different problem types
+XGBOOST_METHODS_CONFIG = {
+    "classification": [
+        {"name": "standard", "obj": None}
+    ],
+    "regression": [
+        {"name": "standard", "obj": None},
+        {"name": "weighted", "obj": "weighted_mse"}  # Reference to function key
+    ]
+}
