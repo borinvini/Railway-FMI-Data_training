@@ -2539,6 +2539,15 @@ class TrainingPipeline:
             else:
                 print(f"Target '{target_column}' indicates a classification problem")
             
+            # Calculate scale_pos_weight for binary classification
+            if is_classification and len(np.unique(y_train)) == 2:
+                pos_samples = np.sum(y_train == True)  # or == 1
+                neg_samples = len(y_train) - pos_samples
+                scale_pos_weight = neg_samples / pos_samples if pos_samples > 0 else 1.0
+                print(f"Calculated scale_pos_weight: {scale_pos_weight:.2f}")
+            else:
+                scale_pos_weight = 1.0
+
             # Create sample weights for classification if delay info is available
             sample_weights = None
             if WEIGHT_DELAY_COLUMN in train_df.columns:
@@ -2621,8 +2630,10 @@ class TrainingPipeline:
                     
                     # Set the objective based on problem type
                     if is_classification:
-                        if target_column == 'trainDelayed':  # Binary classification
+                        if target_column == 'trainDelayed' or target_column == 'cancelled':  # Binary classification
                             current_params['objective'] = 'binary:logistic'
+                            current_params['eval_metric'] = 'auc'
+                            current_params['scale_pos_weight'] = scale_pos_weight
                         else:  # Multi-class
                             current_params['objective'] = 'multi:softprob'
                             current_params['num_class'] = len(np.unique(y_train))
@@ -2663,8 +2674,33 @@ class TrainingPipeline:
                             y_pred = model.predict(X_fold_val)
                             
                             # Evaluate
-                            from sklearn.metrics import accuracy_score
-                            score = accuracy_score(y_fold_val, y_pred)
+                            if SCORE_METRIC == 'roc_auc':
+                                # Need probabilities for ROC AUC
+                                if hasattr(model, 'predict_proba'):
+                                    y_pred_proba = model.predict_proba(X_fold_val)
+                                    if len(y_pred_proba.shape) > 1 and y_pred_proba.shape[1] > 1:
+                                        y_pred_proba = y_pred_proba[:, 1]  # Positive class probability
+                                    score = roc_auc_score(y_fold_val, y_pred_proba)
+                                else:
+                                    # Fallback to accuracy if probabilities not available
+                                    score = accuracy_score(y_fold_val, y_pred)
+                            elif SCORE_METRIC == 'balanced_accuracy':
+                                score = balanced_accuracy_score(y_fold_val, y_pred)
+                            elif SCORE_METRIC == 'f1':
+                                score = f1_score(y_fold_val, y_pred)
+                            elif SCORE_METRIC == 'f1_weighted':
+                                score = f1_score(y_fold_val, y_pred, average='weighted')
+                            elif SCORE_METRIC == 'average_precision':
+                                if hasattr(model, 'predict_proba'):
+                                    y_pred_proba = model.predict_proba(X_fold_val)
+                                    if len(y_pred_proba.shape) > 1 and y_pred_proba.shape[1] > 1:
+                                        y_pred_proba = y_pred_proba[:, 1]
+                                    score = average_precision_score(y_fold_val, y_pred_proba)
+                                else:
+                                    score = accuracy_score(y_fold_val, y_pred)
+                            else:
+                                # Default to accuracy
+                                score = accuracy_score(y_fold_val, y_pred)
                             
                         else:
                             # For regression with custom objective, use lower-level API
