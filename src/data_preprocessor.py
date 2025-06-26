@@ -2463,7 +2463,7 @@ class TrainingPipeline:
             
             # MEMORY OPTIMIZATION: Limit parameters for better memory usage
             n_iter = min(n_iter, 20)  # Reduce number of iterations
-            cv = min(cv, 3)  # Reduce CV folds
+            cv = min(cv, 5)  # Reduce CV folds
             
             # Construct file paths for the train and test sets
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
@@ -2538,17 +2538,17 @@ class TrainingPipeline:
             
             # Create sample weights for classification if delay info is available
             sample_weights = None
-            if is_classification and 'differenceInMinutes' in train_df.columns:
+            if WEIGHT_DELAY_COLUMN in train_df.columns:
                 print("Using weighted samples based on delay magnitude for randomized search")
                 # Create sample weights based on delay magnitude
-                delay_col = 'differenceInMinutes'
+                delay_col = WEIGHT_DELAY_COLUMN
                 sample_weights = np.ones(len(y_train))
                 
                 # Get delay values for each training sample
                 delays = train_df[delay_col].values
                 
                 # Apply weights - higher delays get higher weights
-                delayed_idx = (delays > 0)
+                delayed_idx = (delays > TRAIN_DELAY_MINUTES)
                 if np.any(delayed_idx):
                     # Normalize delay values by mean positive delay, using more moderate weights
                     mean_delay = delays[delayed_idx].mean()
