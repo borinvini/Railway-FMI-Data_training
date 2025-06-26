@@ -11,9 +11,10 @@ DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
+BALANCED_RANDOM_FOREST_OUTPUT_FOLDER = "data/output/balanced_random_forest"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'trainDelayed'  
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes_offset'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
@@ -91,6 +92,7 @@ PIPELINE_STAGES = [
     "train_decision_tree_rs_with_important_features", 
     "train_xgboost_with_randomized_search_cv",
     "train_xgboost_rs_with_important_features"
+    "train_balanced_random_forest"
 ]
 
 
@@ -113,6 +115,13 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
     'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
     'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
     'gamma': [0, 0.1, 0.2, 0.3, 0.4]
+}
+
+# Parameters for Balanced Random Forest
+BALANCED_RANDOM_FOREST_PARAMS = {
+    "n_estimators": 100,
+    "random_state": 42,
+    "n_jobs": -1
 }
 
 # ===================================================================================================================
@@ -141,7 +150,7 @@ RANDOM_SEARCH_ITERATIONS = 50
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration
-RESAMPLING_METHOD = "SMOTE_TOMEK"  
+RESAMPLING_METHOD = "NONE"
 # Options: "SMOTE_TOMEK", "EDITED_NEAREST_NEIGHBORS", "NONE"
 # "SMOTE_TOMEK": Apply SMOTE-Tomek for oversampling + cleaning
 # "EDITED_NEAREST_NEIGHBORS": Apply EditedNearestNeighbors for undersampling

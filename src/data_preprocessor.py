@@ -18,6 +18,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 from imblearn.combine import SMOTETomek
 from imblearn.under_sampling import EditedNearestNeighbours
+from imblearn.ensemble import BalancedRandomForestClassifier
 from src.file_utils import generate_output_path
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.model_selection import ParameterSampler, KFold, StratifiedKFold
@@ -47,6 +48,8 @@ from config.const import (
     IMPORTANCE_THRESHOLD,
     REGRESSION_PROBLEM,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
+    BALANCED_RANDOM_FOREST_OUTPUT_FOLDER,
+    BALANCED_RANDOM_FOREST_PARAMS,
     RESAMPLING_METHOD,
     SCORE_METRIC,
     TOP_FEATURES_COUNT,
@@ -78,7 +81,8 @@ class TrainingPipeline:
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
-
+        self.balanced_random_forest_dir = os.path.join(self.project_root, BALANCED_RANDOM_FOREST_OUTPUT_FOLDER)
+        
         # Create log directory
         self.log_dir = os.path.join(self.project_root, "data", "output", "log")
         os.makedirs(self.log_dir, exist_ok=True)
@@ -201,8 +205,10 @@ class TrainingPipeline:
             "successful_splits": 0,
             "successful_decision_tree": 0,
             "successful_regularized_regression": 0,
+            "successful_balanced_rf": 0,
             "failed_decision_tree": 0,
             "failed_regularized_regression": 0,
+            "failed_balanced_rf": 0,
             "failed_files": 0
 
         }
@@ -479,13 +485,30 @@ class TrainingPipeline:
                             print(f"Successfully trained XGBoost with RandomizedSearchCV on top features for {month_id}")
                             counters["successful_xgboost_rs_important"] = counters.get("successful_xgboost_rs_important", 0) + 1
 
-                        # This is the last stage, so we're done
-                        state["current_stage"] = None
+                        # New pipeline stage added here. 
+                        state["current_stage"] = "train_balanced_random_forest"
                         
                         # Clear the dataframe from memory if it exists
                         if "df" in state and state["df"] is not None:
                             del state["df"]
                     
+                    case "train_balanced_random_forest":
+                        print(f"Training Balanced Random Forest for {month_id}...")
+                        brf_result = self.train_balanced_random_forest(month_id)
+
+                        if not brf_result.get("success", False):
+                            print(f"Failed to train Balanced Random Forest for {month_id}: {brf_result.get('error', 'Unknown error')}")
+                            counters["failed_balanced_rf"] = counters.get("failed_balanced_rf", 0) + 1
+                        else:
+                            print(f"Successfully trained Balanced Random Forest for {month_id}")
+                            counters["successful_balanced_rf"] = counters.get("successful_balanced_rf", 0) + 1
+
+                        state["current_stage"] = None
+                                            
+                        # Clear the dataframe from memory if it exists
+                        if "df" in state and state["df"] is not None:
+                            del state["df"]
+                
                     case _:
                         # Should never reach here
                         print(f"Unknown pipeline stage: {state['current_stage']}")
@@ -517,12 +540,14 @@ class TrainingPipeline:
         print(f"Successfully trained with RandomizedSearchCV on important features: {summary.get('successful_combined_approach', 0)}")
         print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
         print(f"Successfully trained XGBoost models with RandomizedSearchCV on top features: {summary.get('successful_xgboost_rs_important', 0)}")
+        print(f"Successfully trained Balanced Random Forest models: {summary.get('successful_balanced_rf', 0)}")
         print(f"Failed to train regularized regression models: {summary.get('failed_regularized_regression', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
         print(f"Failed to train with RandomizedSearchCV on important features: {summary.get('failed_combined_approach', 0)}")
         print(f"Failed to train XGBoost models: {summary.get('failed_xgboost', 0)}")
         print(f"Failed to train XGBoost models with RandomizedSearchCV: {summary.get('failed_xgboost_rs', 0)}")
         print(f"Failed to train XGBoost models with RandomizedSearchCV on top features: {summary.get('failed_xgboost_rs_important', 0)}")
+        print(f"Failed to train Balanced Random Forest models: {summary.get('failed_balanced_rf', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
     
         print("="*50)
@@ -3716,6 +3741,100 @@ class TrainingPipeline:
                 "success": False,
                 "error": str(e)
             }
+
+    def train_balanced_random_forest(self, month_id): 
+        """
+        Train a BalancedRandomForestClassifier on preprocessed data for a given month.
+
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier (e.g., "2023-2024_12") for file naming.
+
+        Returns:
+        --------
+        dict
+            Results including success status, evaluation metrics, and SHAP analysis.
+        """
+        # Create output directory for this method's results
+        output_dir = os.path.join(self.project_root, BALANCED_RANDOM_FOREST_OUTPUT_FOLDER)
+        os.makedirs(output_dir, exist_ok=True)
+
+        try:
+            # Load preprocessed train and test data
+            train_filename = f"{self.DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{self.DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                print(f"Error: Train file {train_path} or test file {test_path} not found")
+                return {"success": False, "error": "Train or test file not found"}
+
+            train_df = pd.read_csv(train_path)
+            test_df = pd.read_csv(test_path)
+
+            # Identify target column (assuming categorical target like 'trainDelayed')
+            target_column = [col for col in CATEGORIAL_TARGET_FEATURES if col in train_df.columns]
+            if not target_column:
+                return {"success": False, "error": "No categorical target feature found"}
+            target_column = target_column[0]
+
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+
+            # Initialize and train the BalancedRandomForestClassifier
+            brf_model = BalancedRandomForestClassifier(**BALANCED_RANDOM_FOREST_PARAMS)
+            brf_model.fit(X_train, y_train)
+
+            # Save the model
+            model_filename = f"balanced_rf_model_{month_id}.joblib"
+            model_path = os.path.join(output_dir, model_filename)
+            joblib.dump(brf_model, model_path)
+            print(f"Model saved to {model_path}")
+
+            # Evaluate the model and save metrics
+            eval_result = self.evaluate_model_comprehensive(
+                model=brf_model,
+                X_test=X_test,
+                y_test=y_test,
+                model_name="Balanced Random Forest",
+                month_id=month_id,
+                output_dir=output_dir,
+                target_column=target_column,
+                is_classification=True
+            )
+
+            # Save metrics to CSV (already handled by evaluate_model_comprehensive)
+            metrics_path = eval_result.get("metrics_path")
+            metrics = eval_result.get("all_metrics")
+
+            # Perform SHAP analysis for interpretability
+            shap_result = self.analyze_model_with_shap(
+                model=brf_model,
+                X_test=X_test,
+                y_test=y_test,
+                model_type="classification",
+                month_id=month_id,
+                output_dir=output_dir,
+                target_column=target_column,
+                model_name="Balanced Random Forest"
+            )
+
+            return {
+                "success": True,
+                "model_path": model_path,
+                "metrics_path": metrics_path,
+                "metrics": metrics,
+                "eval_result": eval_result,
+                "shap_result": shap_result
+            }
+
+        except Exception as e:
+            print(f"Error training BalancedRandomForestClassifier for {month_id}: {str(e)}")
+            return {"success": False, "error": str(e)}
 
     def train_regularized_regression(self, month_id, alpha_lasso=0.1, alpha_ridge=1.0, random_state=42):
         """
