@@ -14,8 +14,11 @@ IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
+# Weather column missing value threshold (drop columns with more missing values than this %)
+WEATHER_MISSING_THRESHOLD = 30.0
+
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes_eachStation_offset'  
+DEFAULT_TARGET_FEATURE = 'trainDelayed'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
@@ -159,7 +162,7 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
 # - If balanced binary: Use 'accuracy' or 'f1' 
 # - If very rare events: Use 'average_precision'
 # ===================================================================================================================
-SCORE_METRIC = 'accuracy'
+SCORE_METRIC = 'roc_auc'
 
 
 # RandomizedSearchCV settings

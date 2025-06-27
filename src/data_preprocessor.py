@@ -823,10 +823,11 @@ class TrainingPipeline:
     def handle_missing_values(self, dataframe=None, month_id=None):
         """
         Handle missing values in preprocessed dataframes with enhanced imputation strategy.
-        Now includes initial data completeness analysis.
+        Now includes initial data completeness analysis and weather column filtering.
         
         Processes the provided dataframe and handles missing values:
-        - Drop rows where all weather condition columns have missing values
+        - Drop weather columns that exceed the missing value threshold
+        - Drop rows where all remaining weather condition columns have missing values
         - Drop rows where differenceInMinutes or cancelled are None
         - Fill missing values in trainStopping and commercialStop with False
         - Use variable-specific imputation for weather columns:
@@ -909,6 +910,7 @@ class TrainingPipeline:
             
             # Count rows before cleaning
             original_row_count = len(df)
+            original_col_count = len(df.columns)
             
             # Fill missing values in trainStopping and commercialStop with 0 (since they're now numeric)
             for col in NON_NUMERIC_FEATURES:
@@ -946,21 +948,69 @@ class TrainingPipeline:
                 dropped_required = 0
             
             # Step 3: Handle weather condition columns
-            # Filter the list to only include columns that actually exist in the dataframe
+            print(f"\n--- WEATHER COLUMN FILTERING ---")
+            logger.info("=== Weather Column Filtering ===")
+            
+            # NEW: Drop weather columns that exceed the missing value threshold
+            from config.const import WEATHER_MISSING_THRESHOLD
+            
+            # Identify all weather-related columns (not just important ones)
+            all_weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in self.important_conditions)]
+            
+            if all_weather_cols:
+                print(f"Checking missing value threshold for {len(all_weather_cols)} weather-related columns...")
+                logger.info(f"Checking missing value threshold for {len(all_weather_cols)} weather-related columns...")
+                
+                columns_to_drop = []
+                columns_kept = []
+                
+                for col in all_weather_cols:
+                    missing_count = df[col].isna().sum()
+                    missing_pct = (missing_count / len(df)) * 100
+                    
+                    if missing_pct > WEATHER_MISSING_THRESHOLD:
+                        columns_to_drop.append(col)
+                        print(f"  - DROPPING '{col}': {missing_count} missing ({missing_pct:.2f}% > {WEATHER_MISSING_THRESHOLD}%)")
+                        logger.info(f"DROPPING '{col}': {missing_pct:.2f}% missing > {WEATHER_MISSING_THRESHOLD}% threshold")
+                    else:
+                        columns_kept.append(col)
+                        print(f"  - KEEPING '{col}': {missing_count} missing ({missing_pct:.2f}% <= {WEATHER_MISSING_THRESHOLD}%)")
+                        logger.info(f"KEEPING '{col}': {missing_pct:.2f}% missing <= {WEATHER_MISSING_THRESHOLD}% threshold")
+                
+                # Drop columns that exceed the threshold
+                if columns_to_drop:
+                    df = df.drop(columns=columns_to_drop)
+                    print(f"\nDropped {len(columns_to_drop)} weather columns exceeding {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"Dropped {len(columns_to_drop)} weather columns exceeding {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"Dropped columns: {columns_to_drop}")
+                else:
+                    print(f"\nNo weather columns exceeded the {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"No weather columns exceeded the {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    
+                print(f"Kept {len(columns_kept)} weather columns within threshold")
+                logger.info(f"Kept {len(columns_kept)} weather columns within threshold")
+            else:
+                print("No weather-related columns found in dataframe")
+                logger.info("No weather-related columns found in dataframe")
+            
+            print("--- END WEATHER COLUMN FILTERING ---\n")
+            logger.info("=== End Weather Column Filtering ===")
+            
+            # Update the available important columns list after dropping columns
             available_important_cols = [col for col in self.important_conditions if col in df.columns]
             
             if not available_important_cols:
-                print("Warning: None of the specified important weather conditions found in the dataframe")
-                logger.warning("None of the specified important weather conditions found in the dataframe")
+                print("Warning: None of the specified important weather conditions found in the dataframe after filtering")
+                logger.warning("None of the specified important weather conditions found in the dataframe after filtering")
                 return df
             
-            print(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
-            logger.info(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
+            print(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
+            logger.info(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
             
             # Store count before dropping weather condition rows
             before_weather_drop = len(df)
             
-            # Drop rows where ALL of the important weather conditions are missing
+            # Drop rows where ALL of the remaining important weather conditions are missing
             # (Keep rows with at least one of the specified conditions)
             df = df.dropna(subset=available_important_cols, how='all')
             
@@ -1006,25 +1056,28 @@ class TrainingPipeline:
                     print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
                     logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
             
-            # Count total rows dropped
-            total_dropped = original_row_count - len(df)
-            total_dropped_percentage = (total_dropped / original_row_count) * 100 if original_row_count > 0 else 0
+            # Count total rows and columns dropped
+            total_rows_dropped = original_row_count - len(df)
+            total_cols_dropped = original_col_count - len(df.columns)
+            total_dropped_percentage = (total_rows_dropped / original_row_count) * 100 if original_row_count > 0 else 0
             
             # Report the results
-            print(f"Missing values handling complete:")
-            print(f"- Original row count: {original_row_count}")
+            print(f"\nMissing values handling complete:")
+            print(f"- Original shape: {original_row_count} rows × {original_col_count} columns")
+            print(f"- Columns dropped (weather threshold): {total_cols_dropped}")
             print(f"- Rows dropped due to missing required columns: {dropped_required}")
             print(f"- Rows dropped due to missing all weather conditions: {dropped_weather}")
-            print(f"- Total rows dropped: {total_dropped} ({total_dropped_percentage:.2f}%)")
-            print(f"- Remaining rows: {len(df)}")
+            print(f"- Total rows dropped: {total_rows_dropped} ({total_dropped_percentage:.2f}%)")
+            print(f"- Final shape: {len(df)} rows × {len(df.columns)} columns")
             
             # Log the summary
             logger.info(f"Missing values handling complete:")
-            logger.info(f"Original row count: {original_row_count}")
+            logger.info(f"Original shape: {original_row_count} rows × {original_col_count} columns")
+            logger.info(f"Columns dropped (weather threshold): {total_cols_dropped}")
             logger.info(f"Rows dropped due to missing required columns: {dropped_required}")
             logger.info(f"Rows dropped due to missing all weather conditions: {dropped_weather}")
-            logger.info(f"Total rows dropped: {total_dropped} ({total_dropped_percentage:.2f}%)")
-            logger.info(f"Remaining rows: {len(df)}")
+            logger.info(f"Total rows dropped: {total_rows_dropped} ({total_dropped_percentage:.2f}%)")
+            logger.info(f"Final shape: {len(df)} rows × {len(df.columns)} columns")
             
             # Calculate percentage of data retained
             if original_row_count > 0:
@@ -1032,7 +1085,7 @@ class TrainingPipeline:
                 print(f"- Data retention: {retention_percentage:.2f}%")
                 logger.info(f"Data retention: {retention_percentage:.2f}%")
                 
-            # Additional statistics on the important columns
+            # Additional statistics on the remaining important columns
             for col in available_important_cols:
                 non_null_count = df[col].count()
                 null_count = len(df) - non_null_count
