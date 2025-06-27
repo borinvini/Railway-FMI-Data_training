@@ -4601,6 +4601,94 @@ class TrainingPipeline:
             "metrics_path": metrics_path
         }
 
+    def extract_and_save_regression_metrics(self, y_test, y_pred, month_id, output_dir=None):
+        """
+        Extract key metrics from regression model evaluation and save them to a CSV file.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True target values
+        y_pred : array-like
+            Predicted target values
+        month_id : str
+            Month identifier for file naming
+        output_dir : str, optional
+            Output directory path
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing metrics and file path
+        """
+        # Import required metrics
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        import numpy as np
+        import pandas as pd
+        import os
+        
+        # Create metrics dictionary
+        metrics = {}
+        
+        # Use a default output directory if none provided
+        if output_dir is None:
+            output_dir = self.output_dir
+        
+        # Calculate regression metrics
+        metrics['mse'] = mean_squared_error(y_test, y_pred)
+        metrics['rmse'] = np.sqrt(metrics['mse'])
+        metrics['mae'] = mean_absolute_error(y_test, y_pred)
+        metrics['r2'] = r2_score(y_test, y_pred)
+        
+        # Calculate residual statistics
+        residuals = y_test - y_pred
+        metrics['mean_residual'] = np.mean(residuals)
+        metrics['std_residual'] = np.std(residuals)
+        metrics['median_residual'] = np.median(residuals)
+        
+        # Calculate target and prediction ranges
+        metrics['target_min'] = float(np.min(y_test))
+        metrics['target_max'] = float(np.max(y_test))
+        metrics['target_mean'] = float(np.mean(y_test))
+        metrics['target_std'] = float(np.std(y_test))
+        
+        metrics['pred_min'] = float(np.min(y_pred))
+        metrics['pred_max'] = float(np.max(y_pred))
+        metrics['pred_mean'] = float(np.mean(y_pred))
+        metrics['pred_std'] = float(np.std(y_pred))
+        
+        # Calculate additional useful metrics
+        metrics['explained_variance'] = 1 - (np.var(residuals) / np.var(y_test))
+        metrics['mean_absolute_percentage_error'] = np.mean(np.abs((y_test - y_pred) / np.where(y_test != 0, y_test, 1))) * 100
+        
+        # Add sample size
+        metrics['n_samples'] = len(y_test)
+        
+        # Print key metrics
+        print(f"\nRegression Model Metrics:")
+        print(f"RMSE: {metrics['rmse']:.4f}")
+        print(f"MAE: {metrics['mae']:.4f}")
+        print(f"R²: {metrics['r2']:.4f}")
+        print(f"MSE: {metrics['mse']:.4f}")
+        print(f"Mean Residual: {metrics['mean_residual']:.4f}")
+        print(f"Std Residual: {metrics['std_residual']:.4f}")
+        
+        # Save metrics to a file
+        metrics_filename = f"model_metrics_{month_id}.csv"
+        metrics_path = os.path.join(output_dir, metrics_filename)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        
+        # Save to CSV
+        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        print(f"Regression model metrics saved to {metrics_path}")
+        
+        return {
+            "metrics": metrics,
+            "metrics_path": metrics_path
+        }
+
     def evaluate_model_comprehensive(self, model, X_test, y_test, model_name, month_id, 
                                     output_dir, target_column, best_cv_score=None, 
                                     random_search_obj=None, is_classification=True):
