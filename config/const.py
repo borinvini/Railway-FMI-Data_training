@@ -7,6 +7,7 @@ INPUT_FOLDER = "data/input"
 OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/preprocessed"
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
+RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
 DATA_FILE_PREFIX = "matched_data_"
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
@@ -14,7 +15,7 @@ XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'trainDelayed'  
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes_eachStation_offset'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
@@ -89,6 +90,7 @@ PIPELINE_STAGES = [
     "split_dataset",
     "train_regularized_regression", 
     "train_decision_tree_with_randomized_search_cv", 
+    "train_random_forest_with_randomized_search_cv",
     "train_xgboost_with_randomized_search_cv"
 ]
 
@@ -103,6 +105,20 @@ DECISION_TREE_PARAM_DISTRIBUTIONS = {
     'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'ccp_alpha': [0.0, 0.001, 0.01, 0.05],
     'class_weight': ['balanced', {False:1, True:5}, {False:1, True:10}, {False:1, True:15}, None] 
+}
+
+# Parameter distributions for Random Forest with RandomizedSearchCV
+RANDOM_FOREST_PARAM_DISTRIBUTIONS = {
+    'n_estimators': randint(50, 300),
+    'max_depth': randint(3, 20),
+    'min_samples_split': randint(2, 20),
+    'min_samples_leaf': randint(1, 15),
+    'max_features': ['sqrt', 'log2', 0.3, 0.5, 0.7, None],
+    'bootstrap': [True, False],  # Both options available
+    'criterion': ['gini', 'entropy'],
+    'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
+    'class_weight': ['balanced', {False:1, True:5}, {False:1, True:10}, None],
+    'ccp_alpha': [0.0, 0.001, 0.01, 0.05]
 }
 
 # Parameter distributions for XGBoost with RandomizedSearchCV
@@ -134,11 +150,11 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
 # - If balanced binary: Use 'accuracy' or 'f1' 
 # - If very rare events: Use 'average_precision'
 # ===================================================================================================================
-SCORE_METRIC = 'roc_auc'
+SCORE_METRIC = 'accuracy'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 50
+RANDOM_SEARCH_ITERATIONS = 20
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration

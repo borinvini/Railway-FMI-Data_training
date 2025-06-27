@@ -42,6 +42,7 @@ from config.const import (
     OUTPUT_FOLDER,
     PIPELINE_STAGES,
     PREPROCESSED_OUTPUT_FOLDER,
+    RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     IMPORTANCE_THRESHOLD,
     REGRESSION_PROBLEM,
@@ -76,9 +77,11 @@ class TrainingPipeline:
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
         self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
+        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)  # NEW
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
+
 
         # Create log directory
         self.log_dir = os.path.join(self.project_root, "data", "output", "log")
@@ -199,11 +202,12 @@ class TrainingPipeline:
             "successful_saves": 0,
             "successful_splits": 0,
             "successful_decision_tree": 0,
+            "successful_random_forest": 0,  # NEW
             "successful_regularized_regression": 0,
             "failed_decision_tree": 0,
+            "failed_random_forest": 0,  # NEW
             "failed_regularized_regression": 0,
             "failed_files": 0
-
         }
         
         # Process each month's data
@@ -437,6 +441,20 @@ class TrainingPipeline:
                             counters["successful_randomized_search"] = counters.get("successful_randomized_search", 0) + 1
 
                         # UPDATED: Go directly to XGBoost instead of important features
+                        state["current_stage"] = "train_random_forest_with_randomized_search_cv"
+
+                    case "train_random_forest_with_randomized_search_cv":
+                        print(f"Training Random Forest with RandomizedSearchCV for {month_id}...")
+                        random_forest_result = self.train_random_forest_with_randomized_search_cv(month_id)
+                        
+                        if not random_forest_result.get("success", False):
+                            print(f"Failed to train Random Forest with RandomizedSearchCV for {month_id}: {random_forest_result.get('error', 'Unknown error')}")
+                            counters["failed_random_forest"] = counters.get("failed_random_forest", 0) + 1
+                        else:
+                            print(f"Successfully trained Random Forest with RandomizedSearchCV for {month_id}")
+                            counters["successful_random_forest"] = counters.get("successful_random_forest", 0) + 1
+
+                        # Move to the next stage
                         state["current_stage"] = "train_xgboost_with_randomized_search_cv"
 
                     case "train_xgboost_with_randomized_search_cv":
@@ -485,12 +503,13 @@ class TrainingPipeline:
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Successfully trained regularized regression models: {summary.get('successful_regularized_regression', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
+        print(f"Successfully trained Random Forest models with RandomizedSearchCV: {summary.get('successful_random_forest', 0)}")  # NEW
         print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
         print(f"Failed to train regularized regression models: {summary.get('failed_regularized_regression', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
+        print(f"Failed to train Random Forest models with RandomizedSearchCV: {summary.get('failed_random_forest', 0)}")  # NEW
         print(f"Failed to train XGBoost models with RandomizedSearchCV: {summary.get('failed_xgboost_rs', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
-    
         print("="*50)
         
         return summary
@@ -2424,6 +2443,531 @@ class TrainingPipeline:
                 "error": str(e)
             }"""
 
+    def train_random_forest_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
+        """
+        Train a Random Forest classifier/regressor with hyperparameter tuning using RandomizedSearchCV.
+        Includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights based on delay magnitude.
+        Uses comprehensive evaluation method for consistent metrics.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+            Defaults to RANDOM_FOREST_PARAM_DISTRIBUTIONS from constants.
+        n_iter : int, optional
+            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
+        cv : int, optional
+            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import RANDOM_FOREST_PARAM_DISTRIBUTIONS
+                param_distributions = RANDOM_FOREST_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = VALID_TARGET_FEATURES
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column in REGRESSION_PROBLEM:
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            if is_classification:
+                from sklearn.ensemble import RandomForestClassifier
+                
+                # NEW: Create sample weights for classification if delay info is available
+                sample_weights = None
+                if WEIGHT_DELAY_COLUMN in train_df.columns:
+                    print("Using weighted samples based on delay magnitude for randomized search")
+                    # Create sample weights based on delay magnitude
+                    delay_col = WEIGHT_DELAY_COLUMN
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    delayed_idx = (delays > TRAIN_DELAY_MINUTES)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
+                # Create proper CV strategy for classification
+                cv_strategy = StratifiedKFold(
+                    n_splits=cv,       
+                    shuffle=True,
+                    random_state=random_state
+                )
+
+                # Initialize base classifier
+                rf = RandomForestClassifier(random_state=random_state, n_jobs=-1)
+                
+                print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
+            
+                # Run RandomizedSearchCV
+                random_search = RandomizedSearchCV(
+                    rf, param_distributions, n_iter=n_iter, cv=cv_strategy, 
+                    scoring=SCORE_METRIC, random_state=random_state, n_jobs=-1
+                )
+                
+                # Fit RandomizedSearchCV with sample weights if available
+                if sample_weights is not None:
+                    print("Training RandomizedSearchCV with sample weights")
+                    # Note: RandomizedSearchCV will automatically handle sample weights for cross-validation
+                    random_search.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    random_search.fit(X_train, y_train)
+                
+                best_params = random_search.best_params_
+                print(f"Best Hyperparameters: {best_params}")
+                
+                # Train model with best parameters
+                best_rf = RandomForestClassifier(**best_params, random_state=random_state, n_jobs=-1)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    best_rf.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    best_rf.fit(X_train, y_train)
+                
+                # Create Random Forest output directory
+                random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+                os.makedirs(random_forest_dir, exist_ok=True)
+                
+                # === USE COMPREHENSIVE EVALUATION METHOD ===
+                evaluation_result = self.evaluate_model_comprehensive(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_name="Random Forest with RandomizedSearchCV",
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    random_search_obj=random_search,  # Pass the RandomizedSearchCV object
+                    is_classification=is_classification
+                )
+                
+                if not evaluation_result["success"]:
+                    return {
+                        "success": False,
+                        "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                    }
+                
+                # Feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': best_rf.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # ========== SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the Random Forest RandomizedSearchCV tuned model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="random_forest_randomized_search",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for Random Forest RandomizedSearchCV model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (Random Forest RandomizedSearchCV)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
+                # Save the model and params
+                try:
+                    import joblib
+                    
+                    # Save the model
+                    model_filename = f"random_forest_{month_id}_randomized_search.joblib"
+                    model_path = os.path.join(random_forest_dir, model_filename)
+                    joblib.dump(best_rf, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{month_id}_randomized_search.csv"
+                    importance_path = os.path.join(random_forest_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save best parameters
+                    params_filename = f"best_params_{month_id}_randomized_search.txt"
+                    params_path = os.path.join(random_forest_dir, params_filename)
+                    with open(params_path, 'w') as f:
+                        for param, value in best_params.items():
+                            f.write(f"{param}: {value}\n")
+                    print(f"Best parameters saved to {params_path}")
+                    
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(random_forest_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include all evaluation results
+                        "best_params": best_params,
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include evaluation results even if save failed
+                        "best_params": best_params,
+                        "model_saved": False,
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
+                    }
+            else:
+                # For regression problems
+                from sklearn.ensemble import RandomForestRegressor
+                
+                # Create sample weights for regression if delay info is available
+                sample_weights = None
+                if WEIGHT_DELAY_COLUMN in train_df.columns:
+                    print("Using weighted samples based on delay magnitude for randomized search")
+                    # Create sample weights based on delay magnitude
+                    delay_col = WEIGHT_DELAY_COLUMN
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights (for regression)
+                    delayed_idx = (delays > TRAIN_DELAY_MINUTES)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight for regression
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
+                # Create proper CV strategy for regression
+                cv_strategy = KFold(
+                    n_splits=cv,
+                    shuffle=True,
+                    random_state=random_state
+                )
+
+                # Initialize base regressor
+                rf = RandomForestRegressor(random_state=random_state, n_jobs=-1)
+                
+                print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
+            
+                # Run RandomizedSearchCV
+                random_search = RandomizedSearchCV(
+                    rf, param_distributions, n_iter=n_iter, cv=cv_strategy, 
+                    scoring='neg_mean_squared_error', random_state=random_state, n_jobs=-1
+                )
+                
+                # Fit RandomizedSearchCV with sample weights if available
+                if sample_weights is not None:
+                    print("Training RandomizedSearchCV with sample weights")
+                    random_search.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    random_search.fit(X_train, y_train)
+                
+                best_params = random_search.best_params_
+                print(f"Best Hyperparameters: {best_params}")
+                
+                # Train model with best parameters
+                best_rf = RandomForestRegressor(**best_params, random_state=random_state, n_jobs=-1)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    best_rf.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    best_rf.fit(X_train, y_train)
+                
+                # Create Random Forest output directory
+                random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+                os.makedirs(random_forest_dir, exist_ok=True)
+                
+                # === USE COMPREHENSIVE EVALUATION METHOD ===
+                evaluation_result = self.evaluate_model_comprehensive(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_name="Random Forest with RandomizedSearchCV",
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    random_search_obj=random_search,  # Pass the RandomizedSearchCV object
+                    is_classification=is_classification
+                )
+                
+                if not evaluation_result["success"]:
+                    return {
+                        "success": False,
+                        "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                    }
+                
+                # Feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': best_rf.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # ========== SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the Random Forest RandomizedSearchCV tuned model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='regression',
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="random_forest_randomized_search",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for Random Forest RandomizedSearchCV model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (Random Forest RandomizedSearchCV)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Importance_Abs'] if pd.notna(row['SHAP_Importance_Abs']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>8.4f} {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
+                # Save the model and params
+                try:
+                    import joblib
+                    
+                    # Save the model
+                    model_filename = f"random_forest_{month_id}_randomized_search.joblib"
+                    model_path = os.path.join(random_forest_dir, model_filename)
+                    joblib.dump(best_rf, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{month_id}_randomized_search.csv"
+                    importance_path = os.path.join(random_forest_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save best parameters
+                    params_filename = f"best_params_{month_id}_randomized_search.txt"
+                    params_path = os.path.join(random_forest_dir, params_filename)
+                    with open(params_path, 'w') as f:
+                        for param, value in best_params.items():
+                            f.write(f"{param}: {value}\n")
+                    print(f"Best parameters saved to {params_path}")
+                    
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(random_forest_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_REGRESSION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include all evaluation results
+                        "best_params": best_params,
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include evaluation results even if save failed
+                        "best_params": best_params,
+                        "model_saved": False,
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
+                    }
+        
+        except Exception as e:
+            print(f"Error in RandomizedSearchCV for Random Forest {month_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     def train_xgboost_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
         """
         Train an XGBoost model (classifier or regressor) with hyperparameter tuning using manual CV.
@@ -2465,8 +3009,8 @@ class TrainingPipeline:
                 cv = RANDOM_SEARCH_CV_FOLDS
             
             # MEMORY OPTIMIZATION: Limit parameters for better memory usage
-            n_iter = min(n_iter, 20)  # Reduce number of iterations
-            cv = min(cv, 5)  # Reduce CV folds
+            #n_iter = min(n_iter, 20)  # Reduce number of iterations
+            #cv = min(cv, 5)  # Reduce CV folds
             
             # Construct file paths for the train and test sets
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
