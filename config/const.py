@@ -14,7 +14,7 @@ REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 BALANCED_RANDOM_FOREST_OUTPUT_FOLDER = "data/output/balanced_random_forest"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes_offset'  
+DEFAULT_TARGET_FEATURE = 'trainDelayed'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
