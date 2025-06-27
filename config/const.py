@@ -63,6 +63,15 @@ IMPORTANT_WEATHER_CONDITIONS = [
     'Gust speed'
 ]
 
+# List of weather features thathas 2 cols and need to merge in 1 col
+WEATHER_COLS_TO_MERGE = [
+    "Snow depth", 
+    "Precipitation amount", 
+    "Precipitation intensity", 
+    "Horizontal visibility", 
+    "Wind speed", 
+    "Gust speed"
+]
 
 # Train filtering configuration
 FILTER_TRAINS_BY_STATIONS = False  # Set to True to filter trains by required stations
@@ -80,7 +89,7 @@ MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Put 1 to disable the weights for regre
 
 # Pipeline stages configuration
 PIPELINE_STAGES = [
-    "merge_snow_depth_columns",
+    "merge_weather_columns",
     "clean_missing_values",
     "remove_duplicates", 
     "scale_numeric",
