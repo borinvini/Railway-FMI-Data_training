@@ -6,6 +6,7 @@ FOLDER_NAME = "data"
 INPUT_FOLDER = "data/input"
 OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/preprocessed"
+ALL_PREPROCESSED_OUTPUT_FOLDER = "data/output/all_preprocessed"
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
 DATA_FILE_PREFIX = "matched_data_"
@@ -103,7 +104,8 @@ PIPELINE_STAGES = [
     "train_regularized_regression", 
     "train_decision_tree_with_randomized_search_cv", 
     "train_random_forest_with_randomized_search_cv",
-    "train_xgboost_with_randomized_search_cv"
+    "train_xgboost_with_randomized_search_cv",
+    "merge_all_preprocessed_files"
 ]
 
 

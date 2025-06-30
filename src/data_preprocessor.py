@@ -31,6 +31,7 @@ from sklearn.metrics import (
             
 
 from config.const import (
+    ALL_PREPROCESSED_OUTPUT_FOLDER,
     CATEGORIAL_TARGET_FEATURES,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DROP_TRAIN_FEATURES,
@@ -77,8 +78,9 @@ class TrainingPipeline:
         self.project_root = os.path.dirname(self.script_dir)
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
+        self.all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)  # NEW LINE
         self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
-        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)  # NEW
+        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
@@ -442,7 +444,7 @@ class TrainingPipeline:
                             counters["successful_randomized_search"] = counters.get("successful_randomized_search", 0) + 1
 
                         # UPDATED: Go directly to XGBoost instead of important features
-                        state["current_stage"] = "train_random_forest_with_randomized_search_cv"
+                        state["current_stage"] = "train_xgboost_with_randomized_search_cv"
 
                     case "train_random_forest_with_randomized_search_cv":
                         print(f"Training Random Forest with RandomizedSearchCV for {month_id}...")
@@ -469,7 +471,23 @@ class TrainingPipeline:
                             print(f"Successfully trained XGBoost with RandomizedSearchCV for {month_id}")
                             counters["successful_xgboost_rs"] = counters.get("successful_xgboost_rs", 0) + 1
 
-                        # UPDATED: This is now the last stage, so we're done
+                        # Move to the next stage
+                        state["current_stage"] = "merge_all_preprocessed_files"
+
+                    case "merge_all_preprocessed_files":
+                        print(f"Merging all preprocessed files...")
+                        merge_result = self.merge_all_preprocessed_files()
+                        
+                        if not merge_result.get("success", False):
+                            print(f"Failed to merge preprocessed files: {merge_result.get('error', 'Unknown error')}")
+                            counters["failed_merge"] = counters.get("failed_merge", 0) + 1
+                        else:
+                            print(f"Successfully merged all preprocessed files")
+                            print(f"Output: {merge_result.get('output_path', 'Unknown')}")
+                            print(f"Total rows: {merge_result.get('total_rows', 0):,}")
+                            counters["successful_merge"] = counters.get("successful_merge", 0) + 1
+
+                        # This is the final stage
                         state["current_stage"] = None
                         
                         # Clear the dataframe from memory if it exists
@@ -504,12 +522,14 @@ class TrainingPipeline:
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Successfully trained regularized regression models: {summary.get('successful_regularized_regression', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
-        print(f"Successfully trained Random Forest models with RandomizedSearchCV: {summary.get('successful_random_forest', 0)}")  # NEW
+        print(f"Successfully trained Random Forest models with RandomizedSearchCV: {summary.get('successful_random_forest', 0)}")
         print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
+        print(f"Successfully merged all preprocessed files: {summary.get('successful_merge', 0)}")  # NEW LINE
         print(f"Failed to train regularized regression models: {summary.get('failed_regularized_regression', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
-        print(f"Failed to train Random Forest models with RandomizedSearchCV: {summary.get('failed_random_forest', 0)}")  # NEW
+        print(f"Failed to train Random Forest models with RandomizedSearchCV: {summary.get('failed_random_forest', 0)}")
         print(f"Failed to train XGBoost models with RandomizedSearchCV: {summary.get('failed_xgboost_rs', 0)}")
+        print(f"Failed to merge preprocessed files: {summary.get('failed_merge', 0)}")  # NEW LINE
         print(f"Failed to process: {summary['failed_files']}")
         print("="*50)
         
@@ -5686,3 +5706,202 @@ class TrainingPipeline:
             print(f"Could not determine class_weight support for {model_class.__name__}: {e}")
         
         return updated_params
+    
+    def merge_all_preprocessed_files(self):
+        """
+        Merge all preprocessed CSV files into a single file with a Month column.
+        
+        This method:
+        1. Finds all preprocessed CSV files in the preprocessed output directory
+        2. Extracts the month number from each filename
+        3. Reads each file and adds a Month column with the extracted month number
+        4. Merges all files into one DataFrame
+        5. Saves the merged file to the all_preprocessed directory
+        
+        Returns:
+        --------
+        dict
+            A summary of the merge operation results.
+        """
+        try:
+            print(f"\nMerging all preprocessed files...")
+            
+            # Create output directory
+            all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)
+            os.makedirs(all_preprocessed_dir, exist_ok=True)
+            
+            # Find all preprocessed CSV files
+            preprocessed_pattern = os.path.join(self.preprocessed_dir, f"{DATA_FILE_PREFIX_FOR_TRAINING}*.csv")
+            preprocessed_files = glob.glob(preprocessed_pattern)
+            
+            if not preprocessed_files:
+                print("No preprocessed files found to merge.")
+                return {
+                    "success": False,
+                    "error": "No preprocessed files found"
+                }
+            
+            print(f"Found {len(preprocessed_files)} preprocessed files to merge:")
+            for file_path in preprocessed_files:
+                print(f"  - {os.path.basename(file_path)}")
+            
+            # Initialize list to store DataFrames
+            all_dataframes = []
+            file_info = []
+            
+            # Process each file
+            for file_path in preprocessed_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"\nProcessing {filename}...")
+                    
+                    # Extract month number from filename using regex
+                    # Pattern matches: preprocessed_data_YYYY-YYYY_MM.csv or preprocessed_data_YYYY_MM.csv
+                    month_match = re.search(r'(\d{2})\.csv$', filename)
+                    
+                    if not month_match:
+                        print(f"Warning: Could not extract month from filename {filename}. Skipping.")
+                        continue
+                    
+                    month_number = int(month_match.group(1))
+                    print(f"  Extracted month: {month_number}")
+                    
+                    # Read the CSV file
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"  Warning: File {filename} is empty. Skipping.")
+                        continue
+                    
+                    # Add Month column
+                    df['Month'] = month_number
+                    
+                    # Add to list
+                    all_dataframes.append(df)
+                    file_info.append({
+                        "filename": filename,
+                        "month": month_number,
+                        "rows": len(df),
+                        "columns": len(df.columns)
+                    })
+                    
+                    print(f"  Added {len(df)} rows with {len(df.columns)} columns")
+                    
+                except Exception as e:
+                    print(f"Error processing file {filename}: {str(e)}")
+                    continue
+            
+            if not all_dataframes:
+                print("No valid files were processed.")
+                return {
+                    "success": False,
+                    "error": "No valid files were processed"
+                }
+            
+            # Merge all DataFrames
+            print(f"\nMerging {len(all_dataframes)} DataFrames...")
+            merged_df = pd.concat(all_dataframes, ignore_index=True)
+            
+            # Reorder columns to put Month first (after target columns if they exist)
+            columns = list(merged_df.columns)
+            
+            # Remove Month from its current position
+            columns.remove('Month')
+            
+            # Find target columns and insert Month after them
+            target_cols = [col for col in ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled'] 
+                        if col in columns]
+            
+            if target_cols:
+                # Insert Month after the last target column
+                last_target_idx = max([columns.index(col) for col in target_cols])
+                columns.insert(last_target_idx + 1, 'Month')
+            else:
+                # Insert Month at the beginning if no target columns found
+                columns.insert(0, 'Month')
+            
+            # Reorder the DataFrame
+            merged_df = merged_df[columns]
+            
+            # Generate output filename with current timestamp
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"all_preprocessed_data_{timestamp}.csv"
+            output_path = os.path.join(all_preprocessed_dir, output_filename)
+            
+            # Save merged file
+            merged_df.to_csv(output_path, index=False)
+            
+            # Print summary
+            print(f"\n{'='*60}")
+            print("MERGE OPERATION COMPLETED SUCCESSFULLY")
+            print(f"{'='*60}")
+            print(f"Output file: {output_path}")
+            print(f"Total rows: {len(merged_df):,}")
+            print(f"Total columns: {len(merged_df.columns)}")
+            print(f"Files merged: {len(all_dataframes)}")
+            
+            # Show month distribution
+            month_distribution = merged_df['Month'].value_counts().sort_index()
+            print(f"\nMonth distribution:")
+            for month, count in month_distribution.items():
+                print(f"  Month {month:2d}: {count:,} rows")
+            
+            # Show file details
+            print(f"\nFile details:")
+            for info in file_info:
+                print(f"  {info['filename']}: Month {info['month']}, {info['rows']:,} rows")
+            
+            print(f"\nColumn order:")
+            for i, col in enumerate(merged_df.columns, 1):
+                print(f"  {i:2d}. {col}")
+            
+            # Also save a summary file
+            summary_filename = f"merge_summary_{timestamp}.txt"
+            summary_path = os.path.join(all_preprocessed_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write(f"Preprocessed Files Merge Summary\n")
+                f.write("="*40 + "\n\n")
+                f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Output file: {output_filename}\n")
+                f.write(f"Total rows: {len(merged_df):,}\n")
+                f.write(f"Total columns: {len(merged_df.columns)}\n")
+                f.write(f"Files merged: {len(all_dataframes)}\n\n")
+                
+                f.write("Month Distribution:\n")
+                f.write("-" * 20 + "\n")
+                for month, count in month_distribution.items():
+                    f.write(f"Month {month:2d}: {count:,} rows\n")
+                
+                f.write("\nFile Details:\n")
+                f.write("-" * 20 + "\n")
+                for info in file_info:
+                    f.write(f"{info['filename']}: Month {info['month']}, {info['rows']:,} rows\n")
+                
+                f.write("\nColumn Order:\n")
+                f.write("-" * 20 + "\n")
+                for i, col in enumerate(merged_df.columns, 1):
+                    f.write(f"{i:2d}. {col}\n")
+            
+            print(f"Merge summary saved to: {summary_path}")
+            
+            return {
+                "success": True,
+                "output_path": output_path,
+                "summary_path": summary_path,
+                "total_rows": len(merged_df),
+                "total_columns": len(merged_df.columns),
+                "files_merged": len(all_dataframes),
+                "month_distribution": month_distribution.to_dict(),
+                "file_details": file_info
+            }
+            
+        except Exception as e:
+            print(f"Error merging preprocessed files: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
