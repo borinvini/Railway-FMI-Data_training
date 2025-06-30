@@ -44,6 +44,7 @@ from config.const import (
     OUTPUT_FOLDER,
     PIPELINE_STAGES,
     PREPROCESSED_OUTPUT_FOLDER,
+    RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     IMPORTANCE_THRESHOLD,
     REGRESSION_PROBLEM,
@@ -57,7 +58,10 @@ from config.const import (
     TRAIN_DELAYED_TARGET_COLUMN,
     VALID_PREDICTION_FEATURES,
     VALID_TARGET_FEATURES,
+    WEATHER_COLS_TO_MERGE,
     WEIGHT_DELAY_COLUMN,
+    XGBOOST_METHODS_CONFIG,
+    XGBOOST_OBJECTIVE_FUNCTIONS,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     FILTER_TRAINS_BY_STATIONS,
@@ -78,6 +82,7 @@ class TrainingPipeline:
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
         self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
+        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)  # NEW
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
@@ -204,13 +209,14 @@ class TrainingPipeline:
             "successful_saves": 0,
             "successful_splits": 0,
             "successful_decision_tree": 0,
+            "successful_random_forest": 0,  # NEW
             "successful_regularized_regression": 0,
             "successful_balanced_rf": 0,
             "failed_decision_tree": 0,
+            "failed_random_forest": 0,  # NEW
             "failed_regularized_regression": 0,
             "failed_balanced_rf": 0,
             "failed_files": 0
-
         }
         
         # Process each month's data
@@ -279,18 +285,18 @@ class TrainingPipeline:
             # Run the pipeline stages
             while state["current_stage"] and state["success"]:
                 match state["current_stage"]:
-                    case "merge_snow_depth_columns":  # NEW STAGE
-                        print(f"\nMerging snow depth columns for {month_id}...")
-                        merged_df = self.merge_snow_depth_columns(dataframe=state["df"], month_id=month_id)
-                        
+                    case "merge_weather_columns":  
+                        print(f"\nMerging weather columns for {month_id}...")
+                        merged_df = self.merge_weather_columns(dataframe=state["df"], month_id=month_id)
+                                        
                         # Clear previous dataframe from memory
                         del state["df"]
                         
                         if merged_df is None:
-                            print(f"Failed to merge snow depth columns for {month_id}")
+                            print(f"Failed to merge weather columns for {month_id}")
                             state["success"] = False
                         else:
-                            print(f"Successfully merged snow depth columns for {month_id}")
+                            print(f"Successfully merged weather columns for {month_id}")
                             counters["successful_snow_depth_merge"] += 1
                             state["df"] = merged_df
                             state["current_stage"] = "clean_missing_values"
@@ -443,21 +449,21 @@ class TrainingPipeline:
                             print(f"Successfully trained decision tree with RandomizedSearchCV for {month_id}")
                             counters["successful_randomized_search"] = counters.get("successful_randomized_search", 0) + 1
 
-                        # Point to the new final stage
-                        state["current_stage"] = "train_decision_tree_rs_with_important_features"
+                        # UPDATED: Go directly to XGBoost instead of important features
+                        state["current_stage"] = "train_random_forest_with_randomized_search_cv"
 
-                    case "train_decision_tree_rs_with_important_features":
-                        print(f"Training decision tree with RandomizedSearchCV on important features for {month_id}...")
-                        combined_result = self.train_decision_tree_rs_with_important_features(month_id)
+                    case "train_random_forest_with_randomized_search_cv":
+                        print(f"Training Random Forest with RandomizedSearchCV for {month_id}...")
+                        random_forest_result = self.train_random_forest_with_randomized_search_cv(month_id)
                         
-                        if not combined_result.get("success", False):
-                            print(f"Failed to train with combined approach for {month_id}: {combined_result.get('error', 'Unknown error')}")
-                            counters["failed_combined_approach"] = counters.get("failed_combined_approach", 0) + 1
+                        if not random_forest_result.get("success", False):
+                            print(f"Failed to train Random Forest with RandomizedSearchCV for {month_id}: {random_forest_result.get('error', 'Unknown error')}")
+                            counters["failed_random_forest"] = counters.get("failed_random_forest", 0) + 1
                         else:
-                            print(f"Successfully trained with combined approach for {month_id}")
-                            counters["successful_combined_approach"] = counters.get("successful_combined_approach", 0) + 1
+                            print(f"Successfully trained Random Forest with RandomizedSearchCV for {month_id}")
+                            counters["successful_random_forest"] = counters.get("successful_random_forest", 0) + 1
 
-                        # Continue to the XGBoost stage
+                        # Move to the next stage
                         state["current_stage"] = "train_xgboost_with_randomized_search_cv"
 
                     case "train_xgboost_with_randomized_search_cv":
@@ -521,13 +527,13 @@ class TrainingPipeline:
             **counters
         }
         
-        # Print summary - UPDATED to include snow depth merge counter
+        # Print summary - UPDATED to remove mentions of removed methods
         print("\n" + "="*50)
         print("Processing Summary:")
         print(f"Total months processed: {summary['total_months']}")
         print(f"Total files processed: {summary['total_files']}")
         print(f"Successfully preprocessed: {summary['successful_preprocessing']}")
-        print(f"Successfully merged snow depth columns: {summary['successful_snow_depth_merge']}")  # NEW LINE
+        print(f"Successfully merged snow depth columns: {summary['successful_snow_depth_merge']}")
         print(f"Successfully cleaned missing values: {summary['successful_cleaning']}")
         print(f"Successfully deduplicated: {summary['successful_deduplication']}")
         print(f"Successfully scaled numeric columns: {summary['successful_scaling']}")
@@ -537,19 +543,17 @@ class TrainingPipeline:
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Successfully trained regularized regression models: {summary.get('successful_regularized_regression', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
-        print(f"Successfully trained with RandomizedSearchCV on important features: {summary.get('successful_combined_approach', 0)}")
+        print(f"Successfully trained Random Forest models with RandomizedSearchCV: {summary.get('successful_random_forest', 0)}")  # NEW
         print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
         print(f"Successfully trained XGBoost models with RandomizedSearchCV on top features: {summary.get('successful_xgboost_rs_important', 0)}")
         print(f"Successfully trained Balanced Random Forest models: {summary.get('successful_balanced_rf', 0)}")
         print(f"Failed to train regularized regression models: {summary.get('failed_regularized_regression', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
-        print(f"Failed to train with RandomizedSearchCV on important features: {summary.get('failed_combined_approach', 0)}")
-        print(f"Failed to train XGBoost models: {summary.get('failed_xgboost', 0)}")
+        print(f"Failed to train Random Forest models with RandomizedSearchCV: {summary.get('failed_random_forest', 0)}")  # NEW
         print(f"Failed to train XGBoost models with RandomizedSearchCV: {summary.get('failed_xgboost_rs', 0)}")
         print(f"Failed to train XGBoost models with RandomizedSearchCV on top features: {summary.get('failed_xgboost_rs_important', 0)}")
         print(f"Failed to train Balanced Random Forest models: {summary.get('failed_balanced_rf', 0)}")
         print(f"Failed to process: {summary['failed_files']}")
-    
         print("="*50)
         training_end_time = dt.datetime.now() # end time of the training
         print(f"Total training time: {training_end_time -  training_start_time}")
@@ -714,23 +718,25 @@ class TrainingPipeline:
             traceback.print_exc()  # Print full traceback for debugging
             return None
         
-    def merge_snow_depth_columns(self, dataframe=None, month_id=None):
+    def merge_weather_columns(self, dataframe=None, month_id=None):
         """
-        Merge 'Snow depth' and 'Snow depth Other' columns, and drop 'Snow depth Other Distance'.
+        Merge weather feature columns that have 'Other' variants into their main columns.
         
-        If 'Snow depth' is missing (Null/None), use the value from 'Snow depth Other'.
-        If 'Snow depth' already has a value, do nothing.
-        Also drops 'Snow depth Other Distance' column if it exists.
+        For each weather feature in WEATHER_COLS_TO_MERGE:
+        - If main column (e.g., 'Snow depth') is missing, use value from 'Other' variant
+        - Drop the 'Other' and 'Other Distance' columns after merging
         
         Parameters:
         -----------
         dataframe : pandas.DataFrame
             The dataframe to process.
+        month_id : str, optional
+            Month identifier for logging purposes.
             
         Returns:
         --------
         pandas.DataFrame
-            The dataframe with merged snow depth columns and unwanted columns removed.
+            The dataframe with merged weather columns and unwanted columns removed.
         """
         # Check if dataframe is provided
         if dataframe is None:
@@ -738,122 +744,136 @@ class TrainingPipeline:
             return None
             
         df = dataframe.copy()
-        print(f"Merging snow depth columns in dataframe with {len(df)} rows and {len(df.columns)} columns")
+        print(f"Merging weather columns in dataframe with {len(df)} rows and {len(df.columns)} columns")
         
         if df.empty:
             print("Warning: Empty dataframe")
             return df
         
         # Use the new logging method
-        with self.get_logger("merge_snow_depth_columns.log", "merge_snow_depth", month_id) as logger:
+        with self.get_logger("merge_weather_columns.log", "merge_weather", month_id) as logger:
             try:
-                # Check if snow depth columns exist
-                snow_depth_col = 'Snow depth'
-                snow_depth_other_col = 'Snow depth Other'
-                snow_depth_other_distance_col = 'Snow depth Other Distance'
+                logger.info(f"Starting weather column merging for {len(WEATHER_COLS_TO_MERGE)} weather features")
                 
-                has_snow_depth = snow_depth_col in df.columns
-                has_snow_depth_other = snow_depth_other_col in df.columns
-                has_snow_depth_other_distance = snow_depth_other_distance_col in df.columns
+                total_merges = 0
+                total_drops = 0
                 
-                print(f"Snow depth columns found:")
-                print(f"- '{snow_depth_col}': {has_snow_depth}")
-                print(f"- '{snow_depth_other_col}': {has_snow_depth_other}")
-                print(f"- '{snow_depth_other_distance_col}': {has_snow_depth_other_distance}")
-                
-                # Log column detection
-                # logger.info(f"Column detection - Snow depth: {has_snow_depth}, Snow depth Other: {has_snow_depth_other}, Snow depth Other Distance: {has_snow_depth_other_distance}")
-                
-                # Initialize logging variables
-                initial_snow_depth_missing = 0
-                initial_snow_depth_other_missing = 0
-                values_successfully_merged = 0
-                final_snow_depth_missing = 0
-                
-                # Handle merging logic first
-                if not has_snow_depth and not has_snow_depth_other:
-                    print("Neither main snow depth column found. No merging needed.")
-                    logger.info(f"No snow depth columns found - Snow depth missing: N/A, Snow depth Other missing: N/A, Values merged: 0, Final missing: N/A")
-                elif not has_snow_depth and has_snow_depth_other:
-                    print(f"Only '{snow_depth_other_col}' found. Renaming to '{snow_depth_col}'.")
-                    initial_snow_depth_other_missing = df[snow_depth_other_col].isna().sum()
-                    df = df.rename(columns={snow_depth_other_col: snow_depth_col})
-                    final_snow_depth_missing = df[snow_depth_col].isna().sum()
-                    has_snow_depth = True
-                    has_snow_depth_other = False
-                    logger.info(f"Renamed column - Snow depth missing: N/A, Snow depth Other missing: {initial_snow_depth_other_missing}, Values merged: 0, Final missing: {final_snow_depth_missing}")
-                elif has_snow_depth and not has_snow_depth_other:
-                    print(f"Only '{snow_depth_col}' found. No merging needed.")
-                    initial_snow_depth_missing = df[snow_depth_col].isna().sum()
-                    final_snow_depth_missing = initial_snow_depth_missing
-                    logger.info(f"Only main column found - Snow depth missing: {initial_snow_depth_missing}, Snow depth Other missing: N/A, Values merged: 0, Final missing: {final_snow_depth_missing}")
-                else:
-                    # Both columns exist - proceed with merging logic
-                    print(f"Both snow depth columns found. Proceeding with merge logic.")
+                # Process each weather feature in the list
+                for weather_feature in WEATHER_COLS_TO_MERGE:
+                    main_col = weather_feature
+                    other_col = f"{weather_feature} Other"
+                    other_distance_col = f"{weather_feature} Other Distance"
                     
-                    # Count initial missing values in each column
-                    initial_snow_depth_missing = df[snow_depth_col].isna().sum()
-                    initial_snow_depth_other_missing = df[snow_depth_other_col].isna().sum()
+                    # Check which columns exist for this weather feature
+                    has_main = main_col in df.columns
+                    has_other = other_col in df.columns
+                    has_other_distance = other_distance_col in df.columns
                     
-                    print(f"Before merge:")
-                    print(f"- '{snow_depth_col}' missing values: {initial_snow_depth_missing}")
-                    print(f"- '{snow_depth_other_col}' missing values: {initial_snow_depth_other_missing}")
+                    print(f"\nProcessing '{weather_feature}':")
+                    print(f"- Main column '{main_col}': {has_main}")
+                    print(f"- Other column '{other_col}': {has_other}")
+                    print(f"- Other Distance column '{other_distance_col}': {has_other_distance}")
                     
-                    # logger.info(f"Before merge - Snow depth missing: {initial_snow_depth_missing}, Snow depth Other missing: {initial_snow_depth_other_missing}")
+                    # Initialize merge statistics for this feature
+                    initial_main_missing = 0
+                    initial_other_missing = 0
+                    values_merged = 0
+                    final_main_missing = 0
                     
-                    # Create a mask for rows where Snow depth is missing but Snow depth Other is not
-                    merge_mask = df[snow_depth_col].isna() & df[snow_depth_other_col].notna()
-                    merge_count = merge_mask.sum()
-                    
-                    if merge_count > 0:
-                        print(f"Merging {merge_count} values from '{snow_depth_other_col}' to '{snow_depth_col}'")
-                        # Fill missing Snow depth values with Snow depth Other values
-                        df.loc[merge_mask, snow_depth_col] = df.loc[merge_mask, snow_depth_other_col]
-                        values_successfully_merged = merge_count
+                    # Handle merging logic
+                    if not has_main and not has_other:
+                        print(f"  No columns found for '{weather_feature}'. Skipping.")
+                        logger.info(f"{weather_feature}: No columns found")
+                        
+                    elif not has_main and has_other:
+                        print(f"  Only 'Other' column found. Renaming '{other_col}' to '{main_col}'.")
+                        initial_other_missing = df[other_col].isna().sum()
+                        df = df.rename(columns={other_col: main_col})
+                        final_main_missing = df[main_col].isna().sum()
+                        has_main = True
+                        has_other = False
+                        logger.info(f"{weather_feature}: Renamed Other column to main - Missing: {final_main_missing}")
+                        
+                    elif has_main and not has_other:
+                        print(f"  Only main column found. No merging needed.")
+                        initial_main_missing = df[main_col].isna().sum()
+                        final_main_missing = initial_main_missing
+                        logger.info(f"{weather_feature}: Only main column - Missing: {final_main_missing}")
+                        
                     else:
-                        print("No values to merge (no rows where Snow depth is missing but Snow depth Other has values)")
-                        values_successfully_merged = 0
+                        # Both columns exist - proceed with merging logic
+                        print(f"  Both columns found. Proceeding with merge logic.")
+                        
+                        # Count initial missing values in each column
+                        initial_main_missing = df[main_col].isna().sum()
+                        initial_other_missing = df[other_col].isna().sum()
+                        
+                        print(f"  Before merge:")
+                        print(f"  - '{main_col}' missing values: {initial_main_missing}")
+                        print(f"  - '{other_col}' missing values: {initial_other_missing}")
+                        
+                        # Create a mask for rows where main column is missing but other column is not
+                        merge_mask = df[main_col].isna() & df[other_col].notna()
+                        merge_count = merge_mask.sum()
+                        
+                        if merge_count > 0:
+                            print(f"  Merging {merge_count} values from '{other_col}' to '{main_col}'")
+                            # Fill missing main column values with other column values
+                            df.loc[merge_mask, main_col] = df.loc[merge_mask, other_col]
+                            values_merged = merge_count
+                            total_merges += merge_count
+                        else:
+                            print(f"  No values to merge (no rows where {main_col} is missing but {other_col} has values)")
+                            values_merged = 0
+                        
+                        # Count final missing values
+                        final_main_missing = df[main_col].isna().sum()
+                        
+                        print(f"  After merge:")
+                        print(f"  - '{main_col}' missing values: {final_main_missing}")
+                        print(f"  - Values successfully merged: {values_merged}")
                     
-                    # Count final missing values
-                    final_snow_depth_missing = df[snow_depth_col].isna().sum()
+                    # Log the merge results for this feature
+                    logger.info(f"{weather_feature} - Main missing: {initial_main_missing}, Other missing: {initial_other_missing}, Values merged: {values_merged}, Final missing: {final_main_missing}")
                     
-                    print(f"After merge:")
-                    print(f"- '{snow_depth_col}' missing values: {final_snow_depth_missing}")
-                    print(f"- Values successfully merged: {initial_snow_depth_missing - final_snow_depth_missing}")
+                    # Drop unwanted columns for this feature
+                    columns_to_drop = []
+                    if has_other:
+                        columns_to_drop.append(other_col)
+                    if has_other_distance:
+                        columns_to_drop.append(other_distance_col)
                     
-                    # Log the merge results - only the essential summary
-                    logger.info(f"Snow depth missing: {initial_snow_depth_missing}, Snow depth Other missing: {initial_snow_depth_other_missing}, Values merged: {values_successfully_merged}, Final missing: {final_snow_depth_missing}")
+                    if columns_to_drop:
+                        df = df.drop(columns=columns_to_drop)
+                        total_drops += len(columns_to_drop)
+                        print(f"  Dropped columns: {columns_to_drop}")
+                    else:
+                        print(f"  No columns to drop for '{weather_feature}'")
                 
-                # Drop unwanted columns
-                columns_to_drop = []
-                if has_snow_depth_other:
-                    columns_to_drop.append(snow_depth_other_col)
-                if has_snow_depth_other_distance:
-                    columns_to_drop.append(snow_depth_other_distance_col)
+                # Summary logging
+                print(f"\nWeather column merging summary:")
+                print(f"- Total features processed: {len(WEATHER_COLS_TO_MERGE)}")
+                print(f"- Total values merged: {total_merges}")
+                print(f"- Total columns dropped: {total_drops}")
                 
-                if columns_to_drop:
-                    df = df.drop(columns=columns_to_drop)
-                    print(f"Dropped columns: {columns_to_drop}")
-                    # logger.info(f"Dropped columns: {columns_to_drop}")
-                else:
-                    print("No snow depth columns to drop")
-                    # logger.info("No snow depth columns to drop")
+                logger.info(f"Weather column merging completed - Features processed: {len(WEATHER_COLS_TO_MERGE)}, Total merges: {total_merges}, Columns dropped: {total_drops}")
+                logger.info(f"Final dataframe shape: {df.shape}")
                 
-                # logger.info(f"Processing completed successfully - Final shape: {df.shape}")
                 return df
                 
             except Exception as e:
-                print(f"Error merging snow depth columns: {e}")
-                logger.error(f"Error merging snow depth columns - Error: {str(e)}")
+                print(f"Error merging weather columns: {e}")
+                logger.error(f"Error merging weather columns: {str(e)}")
                 return dataframe  # Return original dataframe on error
 
     def handle_missing_values(self, dataframe=None, month_id=None):
         """
         Handle missing values in preprocessed dataframes with enhanced imputation strategy.
-        Now includes initial data completeness analysis.
+        Now includes initial data completeness analysis and weather column filtering.
         
         Processes the provided dataframe and handles missing values:
-        - Drop rows where all weather condition columns have missing values
+        - Drop weather columns that exceed the missing value threshold
+        - Drop rows where all remaining weather condition columns have missing values
         - Drop rows where differenceInMinutes or cancelled are None
         - Fill missing values in trainStopping and commercialStop with False
         - Use variable-specific imputation for weather columns:
@@ -936,6 +956,7 @@ class TrainingPipeline:
             
             # Count rows before cleaning
             original_row_count = len(df)
+            original_col_count = len(df.columns)
             
             # Fill missing values in trainStopping and commercialStop with 0 (since they're now numeric)
             for col in NON_NUMERIC_FEATURES:
@@ -973,21 +994,69 @@ class TrainingPipeline:
                 dropped_required = 0
             
             # Step 3: Handle weather condition columns
-            # Filter the list to only include columns that actually exist in the dataframe
+            print(f"\n--- WEATHER COLUMN FILTERING ---")
+            logger.info("=== Weather Column Filtering ===")
+            
+            # NEW: Drop weather columns that exceed the missing value threshold
+            from config.const import WEATHER_MISSING_THRESHOLD
+            
+            # Identify all weather-related columns (not just important ones)
+            all_weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in self.important_conditions)]
+            
+            if all_weather_cols:
+                print(f"Checking missing value threshold for {len(all_weather_cols)} weather-related columns...")
+                logger.info(f"Checking missing value threshold for {len(all_weather_cols)} weather-related columns...")
+                
+                columns_to_drop = []
+                columns_kept = []
+                
+                for col in all_weather_cols:
+                    missing_count = df[col].isna().sum()
+                    missing_pct = (missing_count / len(df)) * 100
+                    
+                    if missing_pct > WEATHER_MISSING_THRESHOLD:
+                        columns_to_drop.append(col)
+                        print(f"  - DROPPING '{col}': {missing_count} missing ({missing_pct:.2f}% > {WEATHER_MISSING_THRESHOLD}%)")
+                        logger.info(f"DROPPING '{col}': {missing_pct:.2f}% missing > {WEATHER_MISSING_THRESHOLD}% threshold")
+                    else:
+                        columns_kept.append(col)
+                        print(f"  - KEEPING '{col}': {missing_count} missing ({missing_pct:.2f}% <= {WEATHER_MISSING_THRESHOLD}%)")
+                        logger.info(f"KEEPING '{col}': {missing_pct:.2f}% missing <= {WEATHER_MISSING_THRESHOLD}% threshold")
+                
+                # Drop columns that exceed the threshold
+                if columns_to_drop:
+                    df = df.drop(columns=columns_to_drop)
+                    print(f"\nDropped {len(columns_to_drop)} weather columns exceeding {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"Dropped {len(columns_to_drop)} weather columns exceeding {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"Dropped columns: {columns_to_drop}")
+                else:
+                    print(f"\nNo weather columns exceeded the {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"No weather columns exceeded the {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    
+                print(f"Kept {len(columns_kept)} weather columns within threshold")
+                logger.info(f"Kept {len(columns_kept)} weather columns within threshold")
+            else:
+                print("No weather-related columns found in dataframe")
+                logger.info("No weather-related columns found in dataframe")
+            
+            print("--- END WEATHER COLUMN FILTERING ---\n")
+            logger.info("=== End Weather Column Filtering ===")
+            
+            # Update the available important columns list after dropping columns
             available_important_cols = [col for col in self.important_conditions if col in df.columns]
             
             if not available_important_cols:
-                print("Warning: None of the specified important weather conditions found in the dataframe")
-                logger.warning("None of the specified important weather conditions found in the dataframe")
+                print("Warning: None of the specified important weather conditions found in the dataframe after filtering")
+                logger.warning("None of the specified important weather conditions found in the dataframe after filtering")
                 return df
             
-            print(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
-            logger.info(f"Found {len(available_important_cols)} important weather condition columns: {available_important_cols}")
+            print(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
+            logger.info(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
             
             # Store count before dropping weather condition rows
             before_weather_drop = len(df)
             
-            # Drop rows where ALL of the important weather conditions are missing
+            # Drop rows where ALL of the remaining important weather conditions are missing
             # (Keep rows with at least one of the specified conditions)
             df = df.dropna(subset=available_important_cols, how='all')
             
@@ -1033,25 +1102,28 @@ class TrainingPipeline:
                     print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
                     logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
             
-            # Count total rows dropped
-            total_dropped = original_row_count - len(df)
-            total_dropped_percentage = (total_dropped / original_row_count) * 100 if original_row_count > 0 else 0
+            # Count total rows and columns dropped
+            total_rows_dropped = original_row_count - len(df)
+            total_cols_dropped = original_col_count - len(df.columns)
+            total_dropped_percentage = (total_rows_dropped / original_row_count) * 100 if original_row_count > 0 else 0
             
             # Report the results
-            print(f"Missing values handling complete:")
-            print(f"- Original row count: {original_row_count}")
+            print(f"\nMissing values handling complete:")
+            print(f"- Original shape: {original_row_count} rows × {original_col_count} columns")
+            print(f"- Columns dropped (weather threshold): {total_cols_dropped}")
             print(f"- Rows dropped due to missing required columns: {dropped_required}")
             print(f"- Rows dropped due to missing all weather conditions: {dropped_weather}")
-            print(f"- Total rows dropped: {total_dropped} ({total_dropped_percentage:.2f}%)")
-            print(f"- Remaining rows: {len(df)}")
+            print(f"- Total rows dropped: {total_rows_dropped} ({total_dropped_percentage:.2f}%)")
+            print(f"- Final shape: {len(df)} rows × {len(df.columns)} columns")
             
             # Log the summary
             logger.info(f"Missing values handling complete:")
-            logger.info(f"Original row count: {original_row_count}")
+            logger.info(f"Original shape: {original_row_count} rows × {original_col_count} columns")
+            logger.info(f"Columns dropped (weather threshold): {total_cols_dropped}")
             logger.info(f"Rows dropped due to missing required columns: {dropped_required}")
             logger.info(f"Rows dropped due to missing all weather conditions: {dropped_weather}")
-            logger.info(f"Total rows dropped: {total_dropped} ({total_dropped_percentage:.2f}%)")
-            logger.info(f"Remaining rows: {len(df)}")
+            logger.info(f"Total rows dropped: {total_rows_dropped} ({total_dropped_percentage:.2f}%)")
+            logger.info(f"Final shape: {len(df)} rows × {len(df.columns)} columns")
             
             # Calculate percentage of data retained
             if original_row_count > 0:
@@ -1059,7 +1131,7 @@ class TrainingPipeline:
                 print(f"- Data retention: {retention_percentage:.2f}%")
                 logger.info(f"Data retention: {retention_percentage:.2f}%")
                 
-            # Additional statistics on the important columns
+            # Additional statistics on the remaining important columns
             for col in available_important_cols:
                 non_null_count = df[col].count()
                 null_count = len(df) - non_null_count
@@ -2112,7 +2184,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics.
         """
-        try:
+        pass
+        """try:
             # Use default values from constants if not provided
             if param_distributions is None:
                 from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
@@ -2483,6 +2556,531 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
+            }"""
+
+    def train_random_forest_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
+        """
+        Train a Random Forest classifier/regressor with hyperparameter tuning using RandomizedSearchCV.
+        Includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights based on delay magnitude.
+        Uses comprehensive evaluation method for consistent metrics.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY-YYYY_MM" for the filename.
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+            Defaults to RANDOM_FOREST_PARAM_DISTRIBUTIONS from constants.
+        n_iter : int, optional
+            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
+        cv : int, optional
+            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+                
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import RANDOM_FOREST_PARAM_DISTRIBUTIONS
+                param_distributions = RANDOM_FOREST_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            # Construct file paths for the train and test sets
+            train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
+            test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
+            
+            train_path = os.path.join(self.preprocessed_dir, train_filename)
+            test_path = os.path.join(self.preprocessed_dir, test_filename)
+            
+            # Check if files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load datasets
+            print(f"Loading training data from {train_path}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading test data from {test_path}")
+            test_df = pd.read_csv(test_path)
+            
+            # Identify target column (should be one of these three based on previous processing)
+            target_options = VALID_TARGET_FEATURES
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                print(f"Error: No target column found in dataset")
+                return {
+                    "success": False,
+                    "error": "No target column found in dataset"
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Split features and target
+            X_train = train_df.drop(target_column, axis=1)
+            y_train = train_df[target_column]
+            
+            X_test = test_df.drop(target_column, axis=1)
+            y_test = test_df[target_column]
+
+            if 'data_year' in X_train.columns:
+                print(f"Dropping 'data_year' column from training features")
+                X_train = X_train.drop('data_year', axis=1)
+                
+            if 'data_year' in X_test.columns:
+                print(f"Dropping 'data_year' column from test features")
+                X_test = X_test.drop('data_year', axis=1)
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column in REGRESSION_PROBLEM:
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            if is_classification:
+                from sklearn.ensemble import RandomForestClassifier
+                
+                # NEW: Create sample weights for classification if delay info is available
+                sample_weights = None
+                if WEIGHT_DELAY_COLUMN in train_df.columns:
+                    print("Using weighted samples based on delay magnitude for randomized search")
+                    # Create sample weights based on delay magnitude
+                    delay_col = WEIGHT_DELAY_COLUMN
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    delayed_idx = (delays > TRAIN_DELAY_MINUTES)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
+                # Create proper CV strategy for classification
+                cv_strategy = StratifiedKFold(
+                    n_splits=cv,       
+                    shuffle=True,
+                    random_state=random_state
+                )
+
+                # Initialize base classifier
+                rf = RandomForestClassifier(random_state=random_state, n_jobs=-1)
+                
+                print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
+            
+                # Run RandomizedSearchCV
+                random_search = RandomizedSearchCV(
+                    rf, param_distributions, n_iter=n_iter, cv=cv_strategy, 
+                    scoring=SCORE_METRIC, random_state=random_state, n_jobs=-1
+                )
+                
+                # Fit RandomizedSearchCV with sample weights if available
+                if sample_weights is not None:
+                    print("Training RandomizedSearchCV with sample weights")
+                    # Note: RandomizedSearchCV will automatically handle sample weights for cross-validation
+                    random_search.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    random_search.fit(X_train, y_train)
+                
+                best_params = random_search.best_params_
+                print(f"Best Hyperparameters: {best_params}")
+                
+                # Train model with best parameters
+                best_rf = RandomForestClassifier(**best_params, random_state=random_state, n_jobs=-1)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    best_rf.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    best_rf.fit(X_train, y_train)
+                
+                # Create Random Forest output directory
+                random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+                os.makedirs(random_forest_dir, exist_ok=True)
+                
+                # === USE COMPREHENSIVE EVALUATION METHOD ===
+                evaluation_result = self.evaluate_model_comprehensive(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_name="Random Forest with RandomizedSearchCV",
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    random_search_obj=random_search,  # Pass the RandomizedSearchCV object
+                    is_classification=is_classification
+                )
+                
+                if not evaluation_result["success"]:
+                    return {
+                        "success": False,
+                        "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                    }
+                
+                # Feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': best_rf.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # ========== SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the Random Forest RandomizedSearchCV tuned model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="random_forest_randomized_search",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for Random Forest RandomizedSearchCV model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (Random Forest RandomizedSearchCV)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
+                # Save the model and params
+                try:
+                    import joblib
+                    
+                    # Save the model
+                    model_filename = f"random_forest_{month_id}_randomized_search.joblib"
+                    model_path = os.path.join(random_forest_dir, model_filename)
+                    joblib.dump(best_rf, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{month_id}_randomized_search.csv"
+                    importance_path = os.path.join(random_forest_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save best parameters
+                    params_filename = f"best_params_{month_id}_randomized_search.txt"
+                    params_path = os.path.join(random_forest_dir, params_filename)
+                    with open(params_path, 'w') as f:
+                        for param, value in best_params.items():
+                            f.write(f"{param}: {value}\n")
+                    print(f"Best parameters saved to {params_path}")
+                    
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(random_forest_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include all evaluation results
+                        "best_params": best_params,
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include evaluation results even if save failed
+                        "best_params": best_params,
+                        "model_saved": False,
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
+                    }
+            else:
+                # For regression problems
+                from sklearn.ensemble import RandomForestRegressor
+                
+                # Create sample weights for regression if delay info is available
+                sample_weights = None
+                if WEIGHT_DELAY_COLUMN in train_df.columns:
+                    print("Using weighted samples based on delay magnitude for randomized search")
+                    # Create sample weights based on delay magnitude
+                    delay_col = WEIGHT_DELAY_COLUMN
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights (for regression)
+                    delayed_idx = (delays > TRAIN_DELAY_MINUTES)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight for regression
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
+                # Create proper CV strategy for regression
+                cv_strategy = KFold(
+                    n_splits=cv,
+                    shuffle=True,
+                    random_state=random_state
+                )
+
+                # Initialize base regressor
+                rf = RandomForestRegressor(random_state=random_state, n_jobs=-1)
+                
+                print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
+            
+                # Run RandomizedSearchCV
+                random_search = RandomizedSearchCV(
+                    rf, param_distributions, n_iter=n_iter, cv=cv_strategy, 
+                    scoring='neg_mean_squared_error', random_state=random_state, n_jobs=-1
+                )
+                
+                # Fit RandomizedSearchCV with sample weights if available
+                if sample_weights is not None:
+                    print("Training RandomizedSearchCV with sample weights")
+                    random_search.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    random_search.fit(X_train, y_train)
+                
+                best_params = random_search.best_params_
+                print(f"Best Hyperparameters: {best_params}")
+                
+                # Train model with best parameters
+                best_rf = RandomForestRegressor(**best_params, random_state=random_state, n_jobs=-1)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    best_rf.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    best_rf.fit(X_train, y_train)
+                
+                # Create Random Forest output directory
+                random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+                os.makedirs(random_forest_dir, exist_ok=True)
+                
+                # === USE COMPREHENSIVE EVALUATION METHOD ===
+                evaluation_result = self.evaluate_model_comprehensive(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_name="Random Forest with RandomizedSearchCV",
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    random_search_obj=random_search,  # Pass the RandomizedSearchCV object
+                    is_classification=is_classification
+                )
+                
+                if not evaluation_result["success"]:
+                    return {
+                        "success": False,
+                        "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                    }
+                
+                # Feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': best_rf.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # ========== SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the Random Forest RandomizedSearchCV tuned model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=best_rf,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='regression',
+                    month_id=month_id,
+                    output_dir=random_forest_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="random_forest_randomized_search",
+                    baseline_data=train_df  # Use training data for better baseline calculation
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for Random Forest RandomizedSearchCV model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (Random Forest RandomizedSearchCV)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Importance_Abs'] if pd.notna(row['SHAP_Importance_Abs']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>8.4f} {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
+                # Save the model and params
+                try:
+                    import joblib
+                    
+                    # Save the model
+                    model_filename = f"random_forest_{month_id}_randomized_search.joblib"
+                    model_path = os.path.join(random_forest_dir, model_filename)
+                    joblib.dump(best_rf, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{month_id}_randomized_search.csv"
+                    importance_path = os.path.join(random_forest_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save best parameters
+                    params_filename = f"best_params_{month_id}_randomized_search.txt"
+                    params_path = os.path.join(random_forest_dir, params_filename)
+                    with open(params_path, 'w') as f:
+                        for param, value in best_params.items():
+                            f.write(f"{param}: {value}\n")
+                    print(f"Best parameters saved to {params_path}")
+                    
+                    # NEW: Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_{month_id}.txt"
+                        weights_path = os.path.join(random_forest_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - {month_id}\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_REGRESSION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include all evaluation results
+                        "best_params": best_params,
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "shap_analysis": shap_result,  # Include SHAP results
+                        "used_sample_weights": sample_weights is not None
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include evaluation results even if save failed
+                        "best_params": best_params,
+                        "model_saved": False,
+                        "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                        "used_sample_weights": sample_weights is not None
+                    }
+        
+        except Exception as e:
+            print(f"Error in RandomizedSearchCV for Random Forest {month_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
             }
 
     def train_xgboost_with_randomized_search_cv(self, month_id, param_distributions=None, n_iter=None, cv=None, random_state=42):
@@ -2490,6 +3088,7 @@ class TrainingPipeline:
         Train an XGBoost model (classifier or regressor) with hyperparameter tuning using manual CV.
         Supports sample weights based on delay magnitude for classification tasks.
         Now includes SHAP analysis for enhanced model interpretability.
+        Uses the comprehensive evaluation method for consistent metrics across all models.
         
         Parameters:
         -----------
@@ -2503,12 +3102,13 @@ class TrainingPipeline:
             Number of cross-validation folds.
         random_state : int, optional
             Random seed for reproducibility. Defaults to 42.
-                    
+                
         Returns:
         --------
         dict
             A summary of the training results, including model performance metrics.
         """
+
         try:
             # Use default values from constants if not provided
             if param_distributions is None:
@@ -2524,8 +3124,8 @@ class TrainingPipeline:
                 cv = RANDOM_SEARCH_CV_FOLDS
             
             # MEMORY OPTIMIZATION: Limit parameters for better memory usage
-            n_iter = min(n_iter, 20)  # Reduce number of iterations
-            cv = min(cv, 3)  # Reduce CV folds
+            #n_iter = min(n_iter, 20)  # Reduce number of iterations
+            #cv = min(cv, 5)  # Reduce CV folds
             
             # Construct file paths for the train and test sets
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
@@ -2598,19 +3198,28 @@ class TrainingPipeline:
             else:
                 print(f"Target '{target_column}' indicates a classification problem")
             
+            # Calculate scale_pos_weight for binary classification
+            if is_classification and len(np.unique(y_train)) == 2:
+                pos_samples = np.sum(y_train == True)  # or == 1
+                neg_samples = len(y_train) - pos_samples
+                scale_pos_weight = neg_samples / pos_samples if pos_samples > 0 else 1.0
+                print(f"Calculated scale_pos_weight: {scale_pos_weight:.2f}")
+            else:
+                scale_pos_weight = 1.0
+
             # Create sample weights for classification if delay info is available
             sample_weights = None
-            if is_classification and 'differenceInMinutes' in train_df.columns:
+            if WEIGHT_DELAY_COLUMN in train_df.columns:
                 print("Using weighted samples based on delay magnitude for randomized search")
                 # Create sample weights based on delay magnitude
-                delay_col = 'differenceInMinutes'
+                delay_col = WEIGHT_DELAY_COLUMN
                 sample_weights = np.ones(len(y_train))
                 
                 # Get delay values for each training sample
                 delays = train_df[delay_col].values
                 
                 # Apply weights - higher delays get higher weights
-                delayed_idx = (delays > 0)
+                delayed_idx = (delays > TRAIN_DELAY_MINUTES)
                 if np.any(delayed_idx):
                     # Normalize delay values by mean positive delay, using more moderate weights
                     mean_delay = delays[delayed_idx].mean()
@@ -2618,16 +3227,6 @@ class TrainingPipeline:
                     sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
                 
                 print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
-            
-            # Define custom objective function for regression if needed
-            def stable_weighted_mse(y_pred, dtrain):
-                y_true = dtrain.get_label()
-                # UPDATED: Use constant from config instead of hardcoded value
-                weights = np.minimum(MAX_SAMPLE_WEIGHT_REGRESSION, 1.0 + np.abs(y_true) / (np.abs(y_true).mean() * 2))
-                # More stable gradient calculation
-                grad = weights * (y_pred - y_true)
-                hess = weights
-                return grad, hess
             
             # Generate parameter combinations
             param_list = list(ParameterSampler(param_distributions, n_iter=n_iter, random_state=random_state))
@@ -2647,19 +3246,33 @@ class TrainingPipeline:
             before_mem = process.memory_info().rss / 1024 / 1024
             print(f"Memory usage before training: {before_mem:.2f} MB")
             
-            # Define methods to try based on problem type
-            methods_to_try = []
+            # === UPDATED: Use methods configuration from const.py ===
+            problem_type = "classification" if is_classification else "regression"
+            methods_config = XGBOOST_METHODS_CONFIG[problem_type]
             
-            if is_classification:
-                # For classification, just use standard method, possibly with sample weights
-                methods_to_try = [{"name": "standard", "obj": None}]
-            else:
-                # For regression, try both standard and custom objective
-                methods_to_try = [
-                    {"name": "standard", "obj": None},
-                    {"name": "weighted", "obj": stable_weighted_mse}
-                ]
-                print(f"For regression, will try {len(methods_to_try)} different objective approaches")
+            # Resolve objective functions from configuration
+            methods_to_try = []
+            for method_config in methods_config:
+                method_dict = {
+                    "name": method_config["name"],
+                    "obj": None
+                }
+                
+                # Resolve objective function if specified
+                if method_config["obj"] is not None:
+                    if isinstance(method_config["obj"], str):
+                        # String reference to function in XGBOOST_OBJECTIVE_FUNCTIONS
+                        method_dict["obj"] = XGBOOST_OBJECTIVE_FUNCTIONS[method_config["obj"]]
+                    else:
+                        # Direct function reference
+                        method_dict["obj"] = method_config["obj"]
+                
+                methods_to_try.append(method_dict)
+            
+            print(f"For {problem_type}, will try {len(methods_to_try)} different objective approaches:")
+            for method in methods_to_try:
+                obj_name = method["obj"].__name__ if method["obj"] is not None else "default"
+                print(f"  - {method['name']}: {obj_name}")
             
             # Try each parameter combination and each method
             overall_best_score = float('-inf')
@@ -2676,8 +3289,10 @@ class TrainingPipeline:
                     
                     # Set the objective based on problem type
                     if is_classification:
-                        if target_column == 'trainDelayed':  # Binary classification
+                        if target_column == 'trainDelayed' or target_column == 'cancelled':  # Binary classification
                             current_params['objective'] = 'binary:logistic'
+                            current_params['eval_metric'] = 'auc'
+                            current_params['scale_pos_weight'] = scale_pos_weight
                         else:  # Multi-class
                             current_params['objective'] = 'multi:softprob'
                             current_params['num_class'] = len(np.unique(y_train))
@@ -2718,8 +3333,33 @@ class TrainingPipeline:
                             y_pred = model.predict(X_fold_val)
                             
                             # Evaluate
-                            from sklearn.metrics import accuracy_score
-                            score = accuracy_score(y_fold_val, y_pred)
+                            if SCORE_METRIC == 'roc_auc':
+                                # Need probabilities for ROC AUC
+                                if hasattr(model, 'predict_proba'):
+                                    y_pred_proba = model.predict_proba(X_fold_val)
+                                    if len(y_pred_proba.shape) > 1 and y_pred_proba.shape[1] > 1:
+                                        y_pred_proba = y_pred_proba[:, 1]  # Positive class probability
+                                    score = roc_auc_score(y_fold_val, y_pred_proba)
+                                else:
+                                    # Fallback to accuracy if probabilities not available
+                                    score = accuracy_score(y_fold_val, y_pred)
+                            elif SCORE_METRIC == 'balanced_accuracy':
+                                score = balanced_accuracy_score(y_fold_val, y_pred)
+                            elif SCORE_METRIC == 'f1':
+                                score = f1_score(y_fold_val, y_pred)
+                            elif SCORE_METRIC == 'f1_weighted':
+                                score = f1_score(y_fold_val, y_pred, average='weighted')
+                            elif SCORE_METRIC == 'average_precision':
+                                if hasattr(model, 'predict_proba'):
+                                    y_pred_proba = model.predict_proba(X_fold_val)
+                                    if len(y_pred_proba.shape) > 1 and y_pred_proba.shape[1] > 1:
+                                        y_pred_proba = y_pred_proba[:, 1]
+                                    score = average_precision_score(y_fold_val, y_pred_proba)
+                                else:
+                                    score = accuracy_score(y_fold_val, y_pred)
+                            else:
+                                # Default to accuracy
+                                score = accuracy_score(y_fold_val, y_pred)
                             
                         else:
                             # For regression with custom objective, use lower-level API
@@ -2813,12 +3453,19 @@ class TrainingPipeline:
                     }
                     # Note: 'silent' parameter has been removed as it's deprecated
                     
+                    # Get the objective function for the best method
+                    best_objective_func = None
+                    for method in methods_to_try:
+                        if method["name"] == best_method:
+                            best_objective_func = method["obj"]
+                            break
+                    
                     # Train the model with custom objective
                     xgb_model = xgb.train(
                         xgb_params,
                         dtrain,
                         num_boost_round=best_params.get('n_estimators', 100),
-                        obj=stable_weighted_mse
+                        obj=best_objective_func
                     )
                 else:
                     print("Training final model with standard objective")
@@ -2829,53 +3476,27 @@ class TrainingPipeline:
             xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
             os.makedirs(xgboost_rs_dir, exist_ok=True)
             
-            # Evaluate on test set
-            if is_classification:
-                y_pred = xgb_model.predict(X_test)
-                accuracy = accuracy_score(y_test, y_pred)
-                report = classification_report(y_test, y_pred, output_dict=True)
-                conf_matrix = confusion_matrix(y_test, y_pred)
-                
-                print(f"\nXGBoost Classifier Results:")
-                print(f"Accuracy: {accuracy:.4f}")
-                print("\nClassification Report:")
-                print(classification_report(y_test, y_pred))
-                
-                print("\nConfusion Matrix:")
-                print(conf_matrix)
-                
-                # Extract and save metrics
-                metrics_result = self.extract_and_save_metrics(
-                    y_test, y_pred, report, f"{month_id}_rs", 
-                    output_dir=xgboost_rs_dir
-                )
-            else:
-                # Handle regression evaluation - check if using booster or regressor
-                if best_method == "weighted" and hasattr(xgb_model, 'predict'):
-                    # If using booster with custom objective (has predict method)
-                    dtest = xgb.DMatrix(X_test)
-                    y_pred = xgb_model.predict(dtest)
-                else:
-                    # Standard XGBRegressor
-                    y_pred = xgb_model.predict(X_test)
-                
-                # Use the regression metrics function
-                metrics_result = self.extract_and_save_regression_metrics(
-                    y_test, y_pred, f"{month_id}_rs", 
-                    output_dir=xgboost_rs_dir
-                )
-                
-                # Keep these lines for printing to console
-                mse = metrics_result["metrics"]["mse"]
-                rmse = metrics_result["metrics"]["rmse"]
-                mae = metrics_result["metrics"]["mae"]
-                r2 = metrics_result["metrics"]["r2"]
-                
-                print(f"\nXGBoost Regressor Results:")
-                print(f"RMSE: {rmse:.4f}")
-                print(f"MAE: {mae:.4f}")
-                print(f"R²: {r2:.4f}")
+            # === NEW: USE COMPREHENSIVE EVALUATION METHOD ===
+            print(f"\nUsing comprehensive evaluation method for XGBoost model...")
+            evaluation_result = self.evaluate_model_comprehensive(
+                model=xgb_model,
+                X_test=X_test,
+                y_test=y_test,
+                model_name="XGBoost with RandomizedSearchCV",
+                month_id=month_id,
+                output_dir=xgboost_rs_dir,
+                target_column=target_column,
+                best_cv_score=best_score,  # Pass the best CV score
+                random_search_obj=None,  # No RandomizedSearchCV object since we do manual search
+                is_classification=is_classification
+            )
             
+            if not evaluation_result["success"]:
+                return {
+                    "success": False,
+                    "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                }
+
             # Get feature importance
             if best_method == "weighted" and hasattr(xgb_model, 'get_score'):
                 # For booster with custom objective
@@ -2898,7 +3519,7 @@ class TrainingPipeline:
             print("\nFeature Importance (top 10):")
             print(feature_importance.head(10))
             
-            # ========== NEW: ADD SHAP ANALYSIS ==========
+            # ========== SHAP ANALYSIS ==========
             print("\nPerforming SHAP analysis on the XGBoost RandomizedSearchCV model...")
             
             shap_result = self.analyze_model_with_shap(
@@ -2989,80 +3610,55 @@ class TrainingPipeline:
                 params_filename = f"best_params_{month_id}_rs.txt"
                 params_path = os.path.join(xgboost_rs_dir, params_filename)
                 with open(params_path, 'w') as f:
+                    f.write(f"Best Method: {best_method}\n")
+                    f.write(f"Best CV Score: {best_score:.4f}\n\n")
+                    f.write("Best Parameters:\n")
                     for param, value in best_params.items():
                         f.write(f"{param}: {value}\n")
                 print(f"Best parameters saved to {params_path}")
                 
-                # If sample weights were used, save their distribution
+                # NEW: Save sample weights information if used
                 if sample_weights is not None:
-                    weights_df = pd.DataFrame({
-                        'weight': sample_weights
-                    })
-                    weights_filename = f"sample_weights_distribution_{month_id}.csv"
+                    weights_filename = f"sample_weights_info_{month_id}.txt"
                     weights_path = os.path.join(xgboost_rs_dir, weights_filename)
-                    weights_df.describe().to_csv(weights_path)
-                    print(f"Weight distribution saved to {weights_path}")
+                    with open(weights_path, 'w') as f:
+                        f.write(f"Sample Weights Information - {month_id}\n")
+                        f.write("="*40 + "\n")
+                        f.write(f"Used sample weights: Yes\n")
+                        f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                        f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                        f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                        f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                        f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                    print(f"Sample weights info saved to {weights_path}")
                 
-                if is_classification:
-                    return {
-                        "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy,
-                        "report": report,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"],
-                        "used_sample_weights": sample_weights is not None,
-                        "shap_analysis": shap_result  # Include SHAP results
-                    }
-                else:
-                    return {
-                        "success": True,
-                        "model_type": "regression",
-                        "rmse": rmse,
-                        "r2": r2,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "custom_objective": best_method == "weighted",
-                        "metrics": metrics_result["metrics"],
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "metrics_path": metrics_result["metrics_path"],
-                        "shap_analysis": shap_result  # Include SHAP results
-                    }
+                # Return comprehensive results similar to decision tree method
+                return {
+                    "success": True,
+                    **evaluation_result,  # Include all evaluation results
+                    "best_params": best_params,
+                    "best_method": best_method,
+                    "best_cv_score": best_score,
+                    "custom_objective": best_method == "weighted",
+                    "model_path": model_path,
+                    "feature_importance_path": importance_path,
+                    "shap_analysis": shap_result,  # Include SHAP results
+                    "used_sample_weights": sample_weights is not None
+                }
                     
             except Exception as e:
                 print(f"Warning: Could not save model: {str(e)}")
-                if is_classification:
-                    return {
-                        "success": True,
-                        "model_type": "classification",
-                        "accuracy": accuracy if 'accuracy' in locals() else None,
-                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
-                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
-                        "model_saved": False,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "used_sample_weights": sample_weights is not None,
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
-                    }
-                else:
-                    return {
-                        "success": True,
-                        "model_type": "regression",
-                        "rmse": rmse if 'rmse' in locals() else None,
-                        "r2": r2 if 'r2' in locals() else None,
-                        "metrics": metrics_result["metrics"] if 'metrics_result' in locals() else None,
-                        "metrics_path": metrics_result["metrics_path"] if 'metrics_result' in locals() else None,
-                        "model_saved": False,
-                        "best_params": best_params,
-                        "best_method": best_method,
-                        "custom_objective": best_method == "weighted",
-                        "shap_analysis": shap_result  # Include SHAP results even if model save failed
-                    }
+                return {
+                    "success": True,
+                    **evaluation_result,  # Include evaluation results even if save failed
+                    "best_params": best_params,
+                    "best_method": best_method,
+                    "best_cv_score": best_score,
+                    "custom_objective": best_method == "weighted",
+                    "model_saved": False,
+                    "shap_analysis": shap_result,  # Include SHAP results even if model save failed
+                    "used_sample_weights": sample_weights is not None
+                }
                 
         except Exception as e:
             import traceback
@@ -3098,7 +3694,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics.
         """
-        try:
+        pass
+        """try:
             # Use default values from constants if not provided
             if param_distributions is None:
                 from config.const import XGBOOST_PARAM_DISTRIBUTIONS
@@ -3857,7 +4454,8 @@ class TrainingPipeline:
         dict
             A summary of the training results, including model performance metrics and coefficients.
         """
-        try:
+        pass
+        """try:
             # Construct file paths for the train and test sets
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
             test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
@@ -4081,7 +4679,7 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }
+            }"""
  
     def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None, y_pred_proba=None):
         """
@@ -4206,6 +4804,94 @@ class TrainingPipeline:
         # Save to CSV
         pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
         print(f"Enhanced model metrics saved to {metrics_path}")
+        
+        return {
+            "metrics": metrics,
+            "metrics_path": metrics_path
+        }
+
+    def extract_and_save_regression_metrics(self, y_test, y_pred, month_id, output_dir=None):
+        """
+        Extract key metrics from regression model evaluation and save them to a CSV file.
+        
+        Parameters:
+        -----------
+        y_test : array-like
+            True target values
+        y_pred : array-like
+            Predicted target values
+        month_id : str
+            Month identifier for file naming
+        output_dir : str, optional
+            Output directory path
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing metrics and file path
+        """
+        # Import required metrics
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        import numpy as np
+        import pandas as pd
+        import os
+        
+        # Create metrics dictionary
+        metrics = {}
+        
+        # Use a default output directory if none provided
+        if output_dir is None:
+            output_dir = self.output_dir
+        
+        # Calculate regression metrics
+        metrics['mse'] = mean_squared_error(y_test, y_pred)
+        metrics['rmse'] = np.sqrt(metrics['mse'])
+        metrics['mae'] = mean_absolute_error(y_test, y_pred)
+        metrics['r2'] = r2_score(y_test, y_pred)
+        
+        # Calculate residual statistics
+        residuals = y_test - y_pred
+        metrics['mean_residual'] = np.mean(residuals)
+        metrics['std_residual'] = np.std(residuals)
+        metrics['median_residual'] = np.median(residuals)
+        
+        # Calculate target and prediction ranges
+        metrics['target_min'] = float(np.min(y_test))
+        metrics['target_max'] = float(np.max(y_test))
+        metrics['target_mean'] = float(np.mean(y_test))
+        metrics['target_std'] = float(np.std(y_test))
+        
+        metrics['pred_min'] = float(np.min(y_pred))
+        metrics['pred_max'] = float(np.max(y_pred))
+        metrics['pred_mean'] = float(np.mean(y_pred))
+        metrics['pred_std'] = float(np.std(y_pred))
+        
+        # Calculate additional useful metrics
+        metrics['explained_variance'] = 1 - (np.var(residuals) / np.var(y_test))
+        metrics['mean_absolute_percentage_error'] = np.mean(np.abs((y_test - y_pred) / np.where(y_test != 0, y_test, 1))) * 100
+        
+        # Add sample size
+        metrics['n_samples'] = len(y_test)
+        
+        # Print key metrics
+        print(f"\nRegression Model Metrics:")
+        print(f"RMSE: {metrics['rmse']:.4f}")
+        print(f"MAE: {metrics['mae']:.4f}")
+        print(f"R²: {metrics['r2']:.4f}")
+        print(f"MSE: {metrics['mse']:.4f}")
+        print(f"Mean Residual: {metrics['mean_residual']:.4f}")
+        print(f"Std Residual: {metrics['std_residual']:.4f}")
+        
+        # Save metrics to a file
+        metrics_filename = f"model_metrics_{month_id}.csv"
+        metrics_path = os.path.join(output_dir, metrics_filename)
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        
+        # Save to CSV
+        pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
+        print(f"Regression model metrics saved to {metrics_path}")
         
         return {
             "metrics": metrics,
@@ -4983,6 +5669,7 @@ class TrainingPipeline:
         return X_train, y_train, smote_applied, resampling_info
 
     def apply_edited_nearest_neighbors_resampling(self, X_train, y_train, target_column, imbalance_threshold, random_state=42, n_neighbors=3):
+
         """
         Apply EditedNearestNeighbors undersampling to training data if class imbalance exceeds threshold.
         
@@ -5105,3 +5792,37 @@ class TrainingPipeline:
             resampling_info["final_distribution"] = resampling_info["original_distribution"]
         
         return X_train, y_train, enn_applied, resampling_info
+
+
+        """
+        Apply class weight parameter to a model class if supported.
+        
+        Parameters:
+        -----------
+        model_class : class
+            The sklearn model class (e.g., DecisionTreeClassifier).
+        base_params : dict
+            Base parameters for the model.
+        class_weight_param : various
+            Class weight parameter to apply.
+            
+        Returns:
+        --------
+        dict
+            Updated parameters including class_weight if supported.
+        """
+        updated_params = base_params.copy()
+        
+        # Check if the model supports class_weight
+        try:
+            # Try creating a dummy instance to check if class_weight is supported
+            dummy_model = model_class()
+            if hasattr(dummy_model, 'class_weight') or 'class_weight' in dummy_model.get_params():
+                updated_params['class_weight'] = class_weight_param
+                print(f"Applied class_weight to {model_class.__name__}")
+            else:
+                print(f"Model {model_class.__name__} does not support class_weight parameter")
+        except Exception as e:
+            print(f"Could not determine class_weight support for {model_class.__name__}: {e}")
+        
+        return updated_params
