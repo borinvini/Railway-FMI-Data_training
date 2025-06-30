@@ -105,7 +105,8 @@ PIPELINE_STAGES = [
     "train_decision_tree_with_randomized_search_cv", 
     "train_random_forest_with_randomized_search_cv",
     "train_xgboost_with_randomized_search_cv",
-    "merge_all_preprocessed_files"
+    "merge_all_preprocessed_files",
+    "train_decision_tree_combined_data"
 ]
 
 
