@@ -488,6 +488,25 @@ class TrainingPipeline:
                             counters["successful_merge"] = counters.get("successful_merge", 0) + 1
 
                         # Move to the next stage
+                        state["current_stage"] = "split_combined_dataset"
+
+                    case "split_combined_dataset":
+                        print(f"Splitting combined dataset...")
+                        split_result = self.split_combined_dataset()
+                        
+                        if not split_result.get("success", False):
+                            print(f"Failed to split combined dataset: {split_result.get('error', 'Unknown error')}")
+                            counters["failed_combined_split"] = counters.get("failed_combined_split", 0) + 1
+                        else:
+                            print(f"Successfully split combined dataset")
+                            print(f"  Data source: {split_result.get('data_source', 'Unknown')}")
+                            print(f"  Total samples: {split_result.get('total_samples', 0):,}")
+                            print(f"  Final train samples: {split_result.get('final_train_size', 0):,}")
+                            print(f"  Test samples: {split_result.get('test_size', 0):,}")
+                            print(f"  Resampling applied: {split_result.get('resampling_applied', False)}")
+                            counters["successful_combined_split"] = counters.get("successful_combined_split", 0) + 1
+
+                        # Move to the next stage
                         state["current_stage"] = "train_decision_tree_combined_data"
 
                     case "train_decision_tree_combined_data":
@@ -5930,49 +5949,30 @@ class TrainingPipeline:
                 "error": str(e)
             }
 
-    def train_decision_tree_combined_data(self, param_distributions=None, n_iter=None, cv=None, random_state=42, test_months=None):
+    def split_combined_dataset(self, test_size=0.3, random_state=42):
         """
-        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV on combined preprocessed data.
-        Uses all merged data from the all_preprocessed folder and splits by month to avoid data leakage.
-        Includes SHAP analysis for enhanced model interpretability.
-        Updated to include sample weights based on delay magnitude.
+        Split the combined preprocessed dataset into training and testing sets and save them separately.
+        Uses simple random train/test split with optional stratification for classification problems.
+        Automatically applies the configured resampling method for severely imbalanced categorical targets.
         
         Parameters:
         -----------
-        param_distributions : dict, optional
-            Dictionary with parameters names as keys and distributions or lists of parameters to try.
-            Defaults to DECISION_TREE_PARAM_DISTRIBUTIONS from constants.
-        n_iter : int, optional
-            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
-        cv : int, optional
-            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        test_size : float, optional
+            Proportion of the dataset to include in the test split. Defaults to 0.3.
         random_state : int, optional
             Random seed for reproducibility. Defaults to 42.
-        test_months : list, optional
-            List of months to use for testing. If None, uses the last 2 months of available data.
             
         Returns:
         --------
         dict
-            A summary of the training results, including model performance metrics.
+            A summary of the split results.
         """
         try:
-            # Use default values from constants if not provided
-            if param_distributions is None:
-                from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
-                param_distributions = DECISION_TREE_PARAM_DISTRIBUTIONS
+            from sklearn.model_selection import train_test_split
             
-            if n_iter is None:
-                from config.const import RANDOM_SEARCH_ITERATIONS
-                n_iter = RANDOM_SEARCH_ITERATIONS
-                
-            if cv is None:
-                from config.const import RANDOM_SEARCH_CV_FOLDS
-                cv = RANDOM_SEARCH_CV_FOLDS
-            
-            print(f"\n{'='*80}")
-            print("TRAINING DECISION TREE ON COMBINED PREPROCESSED DATA")
-            print(f"{'='*80}")
+            print(f"\n{'='*60}")
+            print("SPLITTING COMBINED PREPROCESSED DATASET")
+            print(f"{'='*60}")
             
             # Find the most recent merged file
             all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)
@@ -5998,10 +5998,9 @@ class TrainingPipeline:
             
             # Use the most recent file
             latest_file = max(merged_files, key=os.path.getctime)
-            print(f"Using merged data file: {os.path.basename(latest_file)}")
+            print(f"Loading combined dataset from: {os.path.basename(latest_file)}")
             
             # Load the combined dataset
-            print(f"Loading combined dataset from {latest_file}")
             combined_df = pd.read_csv(latest_file)
             
             if combined_df.empty:
@@ -6012,7 +6011,7 @@ class TrainingPipeline:
                     "error": error_msg
                 }
             
-            print(f"Loaded combined dataset with {len(combined_df)} rows and {len(combined_df.columns)} columns")
+            print(f"Loaded combined dataset with {len(combined_df):,} rows and {len(combined_df.columns)} columns")
             
             # Check if Month column exists
             if 'Month' not in combined_df.columns:
@@ -6048,21 +6047,36 @@ class TrainingPipeline:
             
             print(f"Identified target column: {target_column}")
             
-            # Determine test months if not provided
+            # Show available months for reference
             available_months = sorted(combined_df['Month'].unique())
-            if test_months is None:
-                # Use the last 2 months as test data to avoid temporal data leakage
-                test_months = available_months[-2:] if len(available_months) >= 2 else [available_months[-1]]
-            
             print(f"Available months: {available_months}")
-            print(f"Test months: {test_months}")
-            print(f"Train months: {[m for m in available_months if m not in test_months]}")
             
-            # Split data by month
-            train_df = combined_df[~combined_df['Month'].isin(test_months)].copy()
-            test_df = combined_df[combined_df['Month'].isin(test_months)].copy()
+            # Use simple random train/test split instead of month-based splitting
+            test_size = 0.3  # 30% for test, 70% for training
+            print(f"Using simple random train/test split with test_size={test_size}")
             
-            print(f"\nData split:")
+            # Check if we have classification or regression problem for stratification
+            is_classification_problem = target_column in CATEGORIAL_TARGET_FEATURES
+            
+            if is_classification_problem:
+                # Use stratified split for classification
+                train_df, test_df = train_test_split(
+                    combined_df, 
+                    test_size=test_size, 
+                    stratify=combined_df[target_column], 
+                    random_state=random_state
+                )
+                print(f"Used stratified split for classification target '{target_column}'")
+            else:
+                # Use regular split for regression
+                train_df, test_df = train_test_split(
+                    combined_df, 
+                    test_size=test_size, 
+                    random_state=random_state
+                )
+                print(f"Used random split for regression target '{target_column}'")
+            
+            print(f"\nInitial data split:")
             print(f"  Training data: {len(train_df):,} rows")
             print(f"  Test data: {len(test_df):,} rows")
             print(f"  Train/Test ratio: {len(train_df)/len(test_df):.2f}")
@@ -6075,8 +6089,353 @@ class TrainingPipeline:
                     "error": error_msg
                 }
             
-            # Prepare features and target
+            # Prepare features and target for resampling
             feature_columns = [col for col in combined_df.columns if col not in [target_column, 'Month', 'data_year']]
+            
+            X_train = train_df[feature_columns]
+            y_train = train_df[target_column]
+            X_test = test_df[feature_columns]
+            y_test = test_df[target_column]
+            
+            print(f"Feature columns: {len(feature_columns)}")
+            
+            # Store original training set size for comparison
+            original_train_size = len(y_train)
+            
+            # ========== APPLY CONFIGURED RESAMPLING METHOD ==========
+            print(f"\nApplying resampling method: {RESAMPLING_METHOD}")
+            
+            if RESAMPLING_METHOD == "SMOTE_TOMEK":
+                X_train, y_train, resampling_applied, resampling_info = self.apply_smote_tomek_resampling(
+                    X_train, y_train, target_column, IMBALANCE_THRESHOLD, random_state
+                )
+                resampling_method_used = "SMOTE-Tomek"
+                
+            elif RESAMPLING_METHOD == "EDITED_NEAREST_NEIGHBORS":
+                X_train, y_train, resampling_applied, resampling_info = self.apply_edited_nearest_neighbors_resampling(
+                    X_train, y_train, target_column, IMBALANCE_THRESHOLD, random_state, n_neighbors=ENN_N_NEIGHBORS
+                )
+                resampling_method_used = "EditedNearestNeighbors"
+                
+            elif RESAMPLING_METHOD == "NONE":
+                print("No resampling method configured - using original data")
+                resampling_applied = False
+                resampling_method_used = "None"
+                resampling_info = {
+                    "original_size": original_train_size,
+                    "final_size": original_train_size,
+                    "samples_changed": 0,
+                    "original_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "final_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "threshold_used": IMBALANCE_THRESHOLD,
+                    "method": "none"
+                }
+                
+            else:
+                print(f"Warning: Unknown resampling method '{RESAMPLING_METHOD}'. Using original data.")
+                resampling_applied = False
+                resampling_method_used = "Unknown (fallback to None)"
+                resampling_info = {
+                    "original_size": original_train_size,
+                    "final_size": original_train_size,
+                    "samples_changed": 0,
+                    "original_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "final_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "threshold_used": IMBALANCE_THRESHOLD,
+                    "method": "fallback_none"
+                }
+            
+            # Recombine features and target for saving (keeping Month column for reference)
+            train_df_final = pd.concat([X_train, y_train], axis=1)
+            test_df_final = pd.concat([X_test, y_test], axis=1)
+            
+            # Add Month column back for reference
+            # For training data, we need to reconstruct the Month information
+            if resampling_applied and len(train_df_final) != len(train_df):
+                # If resampling changed the size, we need to handle Month column carefully
+                most_common_month = train_df['Month'].mode()[0] if len(train_df) > 0 else available_months[0]
+                
+                # Create Month column for resampled training data
+                train_months_reconstructed = []
+                original_train_months = train_df['Month'].values
+                
+                # First, add original months for original samples
+                train_months_reconstructed.extend(original_train_months)
+                
+                # For additional samples (if any), use the most common month
+                additional_samples = len(train_df_final) - len(original_train_months)
+                if additional_samples > 0:
+                    train_months_reconstructed.extend([most_common_month] * additional_samples)
+                    print(f"  Added Month {most_common_month} to {additional_samples} resampled training samples")
+                
+                train_df_final['Month'] = train_months_reconstructed[:len(train_df_final)]
+            else:
+                # No resampling or undersampling - use original months
+                train_df_final['Month'] = train_df['Month'].values
+            
+            test_df_final['Month'] = test_df['Month'].values
+            
+            # Create filenames for train and test sets
+            train_filename = f"combined_data_train.csv"
+            test_filename = f"combined_data_test.csv"
+            
+            train_path = os.path.join(all_preprocessed_dir, train_filename)
+            test_path = os.path.join(all_preprocessed_dir, test_filename)
+            
+            # Save the datasets
+            train_df_final.to_csv(train_path, index=False)
+            test_df_final.to_csv(test_path, index=False)
+            
+            print(f"\nDataset split completed:")
+            print(f"  Training set saved to: {train_filename}")
+            print(f"  Test set saved to: {test_filename}")
+            print(f"  Final training set size: {len(train_df_final):,} rows")
+            print(f"  Final test set size: {len(test_df_final):,} rows")
+            
+            # Print and log distribution statistics
+            print("\nFinal Distribution Statistics:")
+            
+            # Use the logging context manager for distribution statistics
+            with self.get_logger("split_combined_dataset_distribution.log", "split_combined_distribution", "combined") as logger:
+                logger.info(f"Combined dataset split completed - Train size: {len(train_df_final)}, Test size: {len(test_df_final)}")
+                logger.info(f"Target column: {target_column}")
+                logger.info(f"Data source: {os.path.basename(latest_file)}")
+                logger.info(f"Available months: {available_months}")
+                logger.info(f"Split method: Random train/test split (test_size=0.3)")
+                logger.info(f"Stratified split: {is_classification_problem}")
+                logger.info(f"Resampling method configured: {RESAMPLING_METHOD}")
+                logger.info(f"Resampling method used: {resampling_method_used}")
+                logger.info(f"Resampling applied: {resampling_applied}")
+                
+                if resampling_applied:
+                    if RESAMPLING_METHOD == "SMOTE_TOMEK":
+                        logger.info(f"Original train size: {original_train_size}, Final train size: {len(train_df_final)}")
+                        logger.info(f"Samples added: {resampling_info.get('samples_added', 0)}")
+                    elif RESAMPLING_METHOD == "EDITED_NEAREST_NEIGHBORS":
+                        logger.info(f"Original train size: {original_train_size}, Final train size: {len(train_df_final)}")
+                        logger.info(f"Samples removed: {resampling_info.get('samples_removed', 0)}")
+                        logger.info(f"N_neighbors used: {resampling_info.get('n_neighbors', ENN_N_NEIGHBORS)}")
+                
+                # For categorical targets, show the distribution in percentages
+                if target_column in CATEGORIAL_TARGET_FEATURES:
+                    print("\nOriginal Combined Distribution (%):")
+                    original_dist = combined_df[target_column].value_counts(normalize=True) * 100
+                    print(original_dist)
+                    
+                    print("\nFinal Training Set Distribution (%):")
+                    train_dist = y_train.value_counts(normalize=True) * 100
+                    print(train_dist)
+                    
+                    print("\nTest Set Distribution (%):")
+                    test_dist = y_test.value_counts(normalize=True) * 100
+                    print(test_dist)
+                    
+                    # Log the categorical distributions
+                    logger.info("=== Categorical Target Distribution Analysis ===")
+                    logger.info("Original Combined Distribution (%):")
+                    for label, percentage in original_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    logger.info("Final Training Set Distribution (%):")
+                    for label, percentage in train_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    logger.info("Test Set Distribution (%):")
+                    for label, percentage in test_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    # Log resampling-specific info
+                    if resampling_applied:
+                        if RESAMPLING_METHOD == "SMOTE_TOMEK":
+                            logger.info("=== SMOTE-Tomek Resampling Applied ===")
+                            logger.info(f"Reason: Minority class below {IMBALANCE_THRESHOLD}% threshold")
+                            logger.info(f"Training samples added: {resampling_info['samples_added']}")
+                        elif RESAMPLING_METHOD == "EDITED_NEAREST_NEIGHBORS":
+                            logger.info("=== EditedNearestNeighbors Undersampling Applied ===")
+                            logger.info(f"Reason: Minority class below {IMBALANCE_THRESHOLD}% threshold")
+                            logger.info(f"Training samples removed: {resampling_info['samples_removed']}")
+                            logger.info(f"N_neighbors parameter: {resampling_info['n_neighbors']}")
+                        
+                        # Log final distribution for any resampling method
+                        for label, percentage in resampling_info["final_distribution"].items():
+                            final_count = (percentage / 100) * len(train_df_final)
+                            logger.info(f"  {label}: {final_count:.0f} samples ({percentage:.2f}%)")
+                    
+                else:
+                    # For continuous targets like differenceInMinutes, show basic stats
+                    original_mean = combined_df[target_column].mean()
+                    original_std = combined_df[target_column].std()
+                    train_mean = y_train.mean()
+                    train_std = y_train.std()
+                    test_mean = y_test.mean()
+                    test_std = y_test.std()
+                    
+                    print("\nOriginal Combined Distribution:")
+                    print(f"Mean: {original_mean:.2f}, Std: {original_std:.2f}")
+                    
+                    print("\nTraining Set Distribution:")
+                    print(f"Mean: {train_mean:.2f}, Std: {train_std:.2f}")
+                    
+                    print("\nTest Set Distribution:")
+                    print(f"Mean: {test_mean:.2f}, Std: {test_std:.2f}")
+                    
+                    # Log the continuous distributions
+                    logger.info("=== Continuous Target Distribution Analysis ===")
+                    logger.info(f"Original Combined Distribution - Mean: {original_mean:.4f}, Std: {original_std:.4f}")
+                    logger.info(f"Training Set Distribution - Mean: {train_mean:.4f}, Std: {train_std:.4f}")
+                    logger.info(f"Test Set Distribution - Mean: {test_mean:.4f}, Std: {test_std:.4f}")
+            
+            print(f"{'='*60}")
+            print("COMBINED DATASET SPLIT COMPLETED SUCCESSFULLY")
+            print(f"{'='*60}")
+            
+            # Return summary
+            return {
+                "success": True,
+                "data_source": os.path.basename(latest_file),
+                "total_samples": len(combined_df),
+                "original_train_size": original_train_size,
+                "final_train_size": len(train_df_final),
+                "test_size": len(test_df_final),
+                "train_path": train_path,
+                "test_path": test_path,
+                "target_column": target_column,
+                "available_months": available_months,
+                "split_method": "random",
+                "test_size_ratio": 0.3,
+                "stratified": is_classification_problem,
+                "resampling_method_configured": RESAMPLING_METHOD,
+                "resampling_method_used": resampling_method_used,
+                "resampling_applied": resampling_applied,
+                "imbalance_threshold": IMBALANCE_THRESHOLD,
+                "resampling_info": resampling_info
+            }
+            
+        except Exception as e:
+            print(f"Error splitting combined dataset: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def train_decision_tree_combined_data(self, param_distributions=None, n_iter=None, cv=None, random_state=42):
+        """
+        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV on combined preprocessed data.
+        Uses pre-split data from the split_combined_dataset method.
+        Includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights based on delay magnitude.
+        
+        Parameters:
+        -----------
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+            Defaults to DECISION_TREE_PARAM_DISTRIBUTIONS from constants.
+        n_iter : int, optional
+            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
+        cv : int, optional
+            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
+                param_distributions = DECISION_TREE_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            print(f"\n{'='*80}")
+            print("TRAINING DECISION TREE ON PRE-SPLIT COMBINED DATA")
+            print(f"{'='*80}")
+            
+            # Load pre-split data from the split_combined_dataset method
+            all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)
+            
+            train_path = os.path.join(all_preprocessed_dir, "combined_data_train.csv")
+            test_path = os.path.join(all_preprocessed_dir, "combined_data_test.csv")
+            
+            # Check if pre-split files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Pre-split combined data files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                print("Make sure split_combined_dataset was called before this method.")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load the pre-split datasets
+            print(f"Loading pre-split training data from: {os.path.basename(train_path)}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading pre-split test data from: {os.path.basename(test_path)}")
+            test_df = pd.read_csv(test_path)
+            
+            if train_df.empty or test_df.empty:
+                error_msg = "Pre-split datasets are empty"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"Loaded pre-split data:")
+            print(f"  Training set: {len(train_df):,} rows")
+            print(f"  Test set: {len(test_df):,} rows")
+            
+            # Show month distribution if Month column exists
+            if 'Month' in train_df.columns and 'Month' in test_df.columns:
+                train_months = sorted(train_df['Month'].unique())
+                test_months = sorted(test_df['Month'].unique())
+                print(f"  Train months: {train_months}")
+                print(f"  Test months: {test_months}")
+                
+                # Show detailed month distribution
+                print("\nMonth distribution in training data:")
+                train_month_counts = train_df['Month'].value_counts().sort_index()
+                for month, count in train_month_counts.items():
+                    print(f"  Month {month:2d}: {count:,} rows")
+                
+                print("\nMonth distribution in test data:")
+                test_month_counts = test_df['Month'].value_counts().sort_index()
+                for month, count in test_month_counts.items():
+                    print(f"  Month {month:2d}: {count:,} rows")
+            
+            # Identify target column
+            target_options = VALID_TARGET_FEATURES
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                error_msg = "No target column found in pre-split datasets"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Prepare features and target
+            feature_columns = [col for col in train_df.columns if col not in [target_column, 'Month', 'data_year']]
             
             X_train = train_df[feature_columns]
             y_train = train_df[target_column]
@@ -6255,19 +6614,19 @@ class TrainingPipeline:
                     feature_importance.to_csv(importance_path, index=False)
                     print(f"Feature importance saved to {importance_path}")
                     
-                    # Save best parameters
-                    params_filename = f"best_params_combined_data.txt"
+                    # Save best parameters and training info
+                    params_filename = f"training_summary_combined_data.txt"
                     params_path = os.path.join(combined_output_dir, params_filename)
                     with open(params_path, 'w') as f:
                         f.write(f"Combined Data Decision Tree Training Summary\n")
                         f.write("="*50 + "\n\n")
-                        f.write(f"Training file: {os.path.basename(latest_file)}\n")
-                        f.write(f"Total samples: {len(combined_df):,}\n")
+                        f.write(f"Training file: {os.path.basename(train_path)}\n")
+                        f.write(f"Test file: {os.path.basename(test_path)}\n")
                         f.write(f"Training samples: {len(train_df):,}\n")
                         f.write(f"Test samples: {len(test_df):,}\n")
-                        f.write(f"Available months: {available_months}\n")
-                        f.write(f"Train months: {[m for m in available_months if m not in test_months]}\n")
-                        f.write(f"Test months: {test_months}\n")
+                        f.write(f"Split method: Random train/test split\n")
+                        if 'Month' in train_df.columns:
+                            f.write(f"Available months in data: {sorted(set(train_df['Month'].unique()) | set(test_df['Month'].unique()))}\n")
                         f.write(f"Target column: {target_column}\n")
                         f.write(f"Number of features: {len(feature_columns)}\n")
                         f.write(f"Used sample weights: {sample_weights is not None}\n\n")
@@ -6293,23 +6652,6 @@ class TrainingPipeline:
                             f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
                         print(f"Sample weights info saved to {weights_path}")
                     
-                    # Save data split information
-                    split_info_filename = f"data_split_info_combined.csv"
-                    split_info_path = os.path.join(combined_output_dir, split_info_filename)
-                    
-                    split_info = []
-                    for month in available_months:
-                        month_data = combined_df[combined_df['Month'] == month]
-                        split_info.append({
-                            'Month': month,
-                            'Total_Samples': len(month_data),
-                            'Split': 'Test' if month in test_months else 'Train',
-                            'Target_Distribution': month_data[target_column].value_counts().to_dict()
-                        })
-                    
-                    pd.DataFrame(split_info).to_csv(split_info_path, index=False)
-                    print(f"Data split information saved to {split_info_path}")
-                    
                     print(f"\n{'='*80}")
                     print("COMBINED DATA DECISION TREE TRAINING COMPLETED SUCCESSFULLY")
                     print(f"{'='*80}")
@@ -6322,13 +6664,12 @@ class TrainingPipeline:
                         "feature_importance_path": importance_path,
                         "shap_analysis": shap_result,
                         "used_sample_weights": sample_weights is not None,
-                        "data_source": os.path.basename(latest_file),
-                        "total_samples": len(combined_df),
+                        "data_source": f"{os.path.basename(train_path)} + {os.path.basename(test_path)}",
+                        "total_samples": len(train_df) + len(test_df),
                         "train_samples": len(train_df),
                         "test_samples": len(test_df),
-                        "train_months": [m for m in available_months if m not in test_months],
-                        "test_months": test_months,
-                        "available_months": available_months
+                        "split_method": "random",
+                        "available_months": sorted(set(train_df['Month'].unique()) | set(test_df['Month'].unique())) if 'Month' in train_df.columns else []
                     }
                     
                 except Exception as e:
@@ -6340,10 +6681,11 @@ class TrainingPipeline:
                         "model_saved": False,
                         "shap_analysis": shap_result,
                         "used_sample_weights": sample_weights is not None,
-                        "data_source": os.path.basename(latest_file),
-                        "total_samples": len(combined_df),
+                        "data_source": f"{os.path.basename(train_path)} + {os.path.basename(test_path)}",
+                        "total_samples": len(train_df) + len(test_df),
                         "train_samples": len(train_df),
-                        "test_samples": len(test_df)
+                        "test_samples": len(test_df),
+                        "split_method": "random"
                     }
             else:
                 # For regression problems we would need a different approach
@@ -6360,5 +6702,4 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }        
-
+            }
