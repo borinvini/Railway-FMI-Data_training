@@ -39,8 +39,10 @@ from config.const import (
     IMBALANCE_THRESHOLD,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
+    METHOD_TO_PIPELINE_STAGE_MAPPING,
     NON_NUMERIC_FEATURES, 
     OUTPUT_FOLDER,
+    PIPELINE_STAGE_TO_METHOD_MAPPING,
     PIPELINE_STAGES,
     PREPROCESSED_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -148,6 +150,14 @@ class TrainingPipeline:
             for handler in logger.handlers[:]:
                 handler.close()
                 logger.removeHandler(handler)
+
+    def get_method_name_for_stage(stage_name):
+        """Get the method name for a given pipeline stage."""
+        return PIPELINE_STAGE_TO_METHOD_MAPPING.get(stage_name)
+
+    def get_stage_name_for_method(method_name):
+        """Get the pipeline stage name for a given method."""
+        return METHOD_TO_PIPELINE_STAGE_MAPPING.get(method_name)
 
 
     def run_pipeline_data_by_month(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
