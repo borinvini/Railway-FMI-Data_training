@@ -3695,7 +3695,7 @@ class TrainingPipeline:
             A summary of the training results, including model performance metrics.
         """
         pass
-        """try:
+        try:
             # Use default values from constants if not provided
             if param_distributions is None:
                 from config.const import XGBOOST_PARAM_DISTRIBUTIONS
@@ -4455,7 +4455,7 @@ class TrainingPipeline:
             A summary of the training results, including model performance metrics and coefficients.
         """
         pass
-        """try:
+        try:
             # Construct file paths for the train and test sets
             train_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_train.csv"
             test_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}_test.csv"
@@ -4679,7 +4679,7 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": str(e)
-            }"""
+            }
  
     def extract_and_save_metrics(self, y_test, y_pred, report, month_id, output_dir=None, y_pred_proba=None):
         """
@@ -5809,7 +5809,7 @@ class TrainingPipeline:
         Returns:
         --------
         dict
-            Updated parameters including class_weight if supported.
+        Updated parameters including class_weight if supported.
         """
         updated_params = base_params.copy()
         

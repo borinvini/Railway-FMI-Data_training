@@ -19,7 +19,7 @@ WEATHER_MISSING_THRESHOLD = 30.0
 BALANCED_RANDOM_FOREST_OUTPUT_FOLDER = "data/output/balanced_random_forest"
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'trainDelayed'  
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
