@@ -33,6 +33,7 @@ from sklearn.metrics import (
             
 
 from config.const import (
+    ALL_PREPROCESSED_OUTPUT_FOLDER,
     CATEGORIAL_TARGET_FEATURES,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DROP_TRAIN_FEATURES,
@@ -40,8 +41,10 @@ from config.const import (
     IMBALANCE_THRESHOLD,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
+    METHOD_TO_PIPELINE_STAGE_MAPPING,
     NON_NUMERIC_FEATURES, 
     OUTPUT_FOLDER,
+    PIPELINE_STAGE_TO_METHOD_MAPPING,
     PIPELINE_STAGES,
     PREPROCESSED_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -81,8 +84,9 @@ class TrainingPipeline:
         self.project_root = os.path.dirname(self.script_dir)
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
+        self.all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)  # NEW LINE
         self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
-        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)  # NEW
+        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
@@ -150,6 +154,14 @@ class TrainingPipeline:
             for handler in logger.handlers[:]:
                 handler.close()
                 logger.removeHandler(handler)
+
+    def get_method_name_for_stage(stage_name):
+        """Get the method name for a given pipeline stage."""
+        return PIPELINE_STAGE_TO_METHOD_MAPPING.get(stage_name)
+
+    def get_stage_name_for_method(method_name):
+        """Get the pipeline stage name for a given method."""
+        return METHOD_TO_PIPELINE_STAGE_MAPPING.get(method_name)
 
 
     def run_pipeline_data_by_month(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
@@ -450,7 +462,7 @@ class TrainingPipeline:
                             counters["successful_randomized_search"] = counters.get("successful_randomized_search", 0) + 1
 
                         # UPDATED: Go directly to XGBoost instead of important features
-                        state["current_stage"] = "train_random_forest_with_randomized_search_cv"
+                        state["current_stage"] = "train_xgboost_with_randomized_search_cv"
 
                     case "train_random_forest_with_randomized_search_cv":
                         print(f"Training Random Forest with RandomizedSearchCV for {month_id}...")
@@ -477,38 +489,61 @@ class TrainingPipeline:
                             print(f"Successfully trained XGBoost with RandomizedSearchCV for {month_id}")
                             counters["successful_xgboost_rs"] = counters.get("successful_xgboost_rs", 0) + 1
 
-                        # Point to the new stage
-                        state["current_stage"] = "train_xgboost_rs_with_important_features"
+                        # Move to the next stage
+                        state["current_stage"] = "merge_all_preprocessed_files"
 
-                    case "train_xgboost_rs_with_important_features":
-                        print(f"Training XGBoost with RandomizedSearchCV on top {TOP_FEATURES_COUNT} features for {month_id}...")
-                        xgb_rs_important_result = self.train_xgboost_rs_with_important_features(month_id)
+                    case "merge_all_preprocessed_files":
+                        print(f"Merging all preprocessed files...")
+                        merge_result = self.merge_all_preprocessed_files()
                         
-                        if not xgb_rs_important_result.get("success", False):
-                            print(f"Failed to train XGBoost with RandomizedSearchCV on top features for {month_id}: {xgb_rs_important_result.get('error', 'Unknown error')}")
-                            counters["failed_xgboost_rs_important"] = counters.get("failed_xgboost_rs_important", 0) + 1
+                        if not merge_result.get("success", False):
+                            print(f"Failed to merge preprocessed files: {merge_result.get('error', 'Unknown error')}")
+                            counters["failed_merge"] = counters.get("failed_merge", 0) + 1
                         else:
-                            print(f"Successfully trained XGBoost with RandomizedSearchCV on top features for {month_id}")
-                            counters["successful_xgboost_rs_important"] = counters.get("successful_xgboost_rs_important", 0) + 1
+                            print(f"Successfully merged all preprocessed files")
+                            print(f"Output: {merge_result.get('output_path', 'Unknown')}")
+                            print(f"Total rows: {merge_result.get('total_rows', 0):,}")
+                            counters["successful_merge"] = counters.get("successful_merge", 0) + 1
 
-                        # New pipeline stage added here. 
-                        state["current_stage"] = "train_balanced_random_forest"
+                        # Move to the next stage
+                        state["current_stage"] = "split_combined_dataset"
+
+                    case "split_combined_dataset":
+                        print(f"Splitting combined dataset...")
+                        split_result = self.split_combined_dataset()
                         
-                        # Clear the dataframe from memory if it exists
-                        if "df" in state and state["df"] is not None:
-                            del state["df"]
-                    
-                    case "train_balanced_random_forest":
-                        print(f"Training Balanced Random Forest for {month_id}...")
-                        brf_result = self.train_balanced_random_forest(month_id)
-
-                        if not brf_result.get("success", False):
-                            print(f"Failed to train Balanced Random Forest for {month_id}: {brf_result.get('error', 'Unknown error')}")
-                            counters["failed_balanced_rf"] = counters.get("failed_balanced_rf", 0) + 1
+                        if not split_result.get("success", False):
+                            print(f"Failed to split combined dataset: {split_result.get('error', 'Unknown error')}")
+                            counters["failed_combined_split"] = counters.get("failed_combined_split", 0) + 1
                         else:
-                            print(f"Successfully trained Balanced Random Forest for {month_id}")
-                            counters["successful_balanced_rf"] = counters.get("successful_balanced_rf", 0) + 1
+                            print(f"Successfully split combined dataset")
+                            print(f"  Data source: {split_result.get('data_source', 'Unknown')}")
+                            print(f"  Total samples: {split_result.get('total_samples', 0):,}")
+                            print(f"  Final train samples: {split_result.get('final_train_size', 0):,}")
+                            print(f"  Test samples: {split_result.get('test_size', 0):,}")
+                            print(f"  Resampling applied: {split_result.get('resampling_applied', False)}")
+                            counters["successful_combined_split"] = counters.get("successful_combined_split", 0) + 1
 
+                        # Move to the next stage
+                        state["current_stage"] = "train_decision_tree_combined_data"
+
+                    case "train_decision_tree_combined_data":
+                        print(f"Training Decision Tree on combined data...")
+                        combined_dt_result = self.train_decision_tree_combined_data()
+                        
+                        if not combined_dt_result.get("success", False):
+                            print(f"Failed to train Decision Tree on combined data: {combined_dt_result.get('error', 'Unknown error')}")
+                            counters["failed_combined_decision_tree"] = counters.get("failed_combined_decision_tree", 0) + 1
+                        else:
+                            print(f"Successfully trained Decision Tree on combined data")
+                            print(f"  Data source: {combined_dt_result.get('data_source', 'Unknown')}")
+                            print(f"  Total samples: {combined_dt_result.get('total_samples', 0):,}")
+                            print(f"  Train samples: {combined_dt_result.get('train_samples', 0):,}")
+                            print(f"  Test samples: {combined_dt_result.get('test_samples', 0):,}")
+                            print(f"  Test {combined_dt_result.get('optimized_metric_name', 'accuracy')}: {combined_dt_result.get('optimized_metric', 0):.4f}")
+                            counters["successful_combined_decision_tree"] = counters.get("successful_combined_decision_tree", 0) + 1
+
+                        # This is the final stage
                         state["current_stage"] = None
                                             
                         # Clear the dataframe from memory if it exists
@@ -543,17 +578,19 @@ class TrainingPipeline:
         print(f"Successfully split into train/test sets: {summary['successful_splits']}")
         print(f"Successfully trained regularized regression models: {summary.get('successful_regularized_regression', 0)}")
         print(f"Successfully trained decision tree models with RandomizedSearchCV: {summary.get('successful_randomized_search', 0)}")
-        print(f"Successfully trained Random Forest models with RandomizedSearchCV: {summary.get('successful_random_forest', 0)}")  # NEW
+        print(f"Successfully trained Random Forest models with RandomizedSearchCV: {summary.get('successful_random_forest', 0)}")
         print(f"Successfully trained XGBoost models with RandomizedSearchCV: {summary.get('successful_xgboost_rs', 0)}")
-        print(f"Successfully trained XGBoost models with RandomizedSearchCV on top features: {summary.get('successful_xgboost_rs_important', 0)}")
-        print(f"Successfully trained Balanced Random Forest models: {summary.get('successful_balanced_rf', 0)}")
+        print(f"Successfully merged all preprocessed files: {summary.get('successful_merge', 0)}")  # NEW LINE
         print(f"Failed to train regularized regression models: {summary.get('failed_regularized_regression', 0)}")
         print(f"Failed to train decision tree models with RandomizedSearchCV: {summary.get('failed_randomized_search', 0)}")
-        print(f"Failed to train Random Forest models with RandomizedSearchCV: {summary.get('failed_random_forest', 0)}")  # NEW
+        print(f"Failed to train Random Forest models with RandomizedSearchCV: {summary.get('failed_random_forest', 0)}")
         print(f"Failed to train XGBoost models with RandomizedSearchCV: {summary.get('failed_xgboost_rs', 0)}")
-        print(f"Failed to train XGBoost models with RandomizedSearchCV on top features: {summary.get('failed_xgboost_rs_important', 0)}")
-        print(f"Failed to train Balanced Random Forest models: {summary.get('failed_balanced_rf', 0)}")
+        print(f"Failed to merge preprocessed files: {summary.get('failed_merge', 0)}")  # NEW LINE
         print(f"Failed to process: {summary['failed_files']}")
+
+        print(f"Successfully trained Decision Tree on combined data: {summary.get('successful_combined_decision_tree', 0)}")
+        print(f"Failed to train Decision Tree on combined data: {summary.get('failed_combined_decision_tree', 0)}")
+
         print("="*50)
         training_end_time = dt.datetime.now() # end time of the training
         print(f"Total training time: {training_end_time -  training_start_time}")
@@ -5826,3 +5863,958 @@ class TrainingPipeline:
             print(f"Could not determine class_weight support for {model_class.__name__}: {e}")
         
         return updated_params
+    
+    def merge_all_preprocessed_files(self):
+
+        """
+        Merge all preprocessed CSV files into a single file with a Month column.
+        
+        This method:
+        1. Finds all preprocessed CSV files in the preprocessed output directory
+        2. Extracts the month number from each filename
+        3. Reads each file and adds a Month column with the extracted month number
+        4. Merges all files into one DataFrame
+        5. Saves the merged file to the all_preprocessed directory
+        
+        Returns:
+        --------
+        dict
+            A summary of the merge operation results.
+        """
+        try:
+            print(f"\nMerging all preprocessed files...")
+            
+            # Create output directory
+            all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)
+            os.makedirs(all_preprocessed_dir, exist_ok=True)
+            
+            # Find all preprocessed CSV files
+            preprocessed_pattern = os.path.join(self.preprocessed_dir, f"{DATA_FILE_PREFIX_FOR_TRAINING}*.csv")
+            preprocessed_files = glob.glob(preprocessed_pattern)
+            
+            if not preprocessed_files:
+                print("No preprocessed files found to merge.")
+                return {
+                    "success": False,
+                    "error": "No preprocessed files found"
+                }
+            
+            print(f"Found {len(preprocessed_files)} preprocessed files to merge:")
+            for file_path in preprocessed_files:
+                print(f"  - {os.path.basename(file_path)}")
+            
+            # Initialize list to store DataFrames
+            all_dataframes = []
+            file_info = []
+            
+            # Process each file
+            for file_path in preprocessed_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"\nProcessing {filename}...")
+                    
+                    # Extract month number from filename using regex
+                    # Pattern matches: preprocessed_data_YYYY-YYYY_MM.csv or preprocessed_data_YYYY_MM.csv
+                    month_match = re.search(r'(\d{2})\.csv$', filename)
+                    
+                    if not month_match:
+                        print(f"Warning: Could not extract month from filename {filename}. Skipping.")
+                        continue
+                    
+                    month_number = int(month_match.group(1))
+                    print(f"  Extracted month: {month_number}")
+                    
+                    # Read the CSV file
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"  Warning: File {filename} is empty. Skipping.")
+                        continue
+                    
+                    # Add Month column
+                    df['Month'] = month_number
+                    
+                    # Add to list
+                    all_dataframes.append(df)
+                    file_info.append({
+                        "filename": filename,
+                        "month": month_number,
+                        "rows": len(df),
+                        "columns": len(df.columns)
+                    })
+                    
+                    print(f"  Added {len(df)} rows with {len(df.columns)} columns")
+                    
+                except Exception as e:
+                    print(f"Error processing file {filename}: {str(e)}")
+                    continue
+            
+            if not all_dataframes:
+                print("No valid files were processed.")
+                return {
+                    "success": False,
+                    "error": "No valid files were processed"
+                }
+            
+            # Merge all DataFrames
+            print(f"\nMerging {len(all_dataframes)} DataFrames...")
+            merged_df = pd.concat(all_dataframes, ignore_index=True)
+            
+            # Reorder columns to put Month first (after target columns if they exist)
+            columns = list(merged_df.columns)
+            
+            # Remove Month from its current position
+            columns.remove('Month')
+            
+            # Find target columns and insert Month after them
+            target_cols = [col for col in ['differenceInMinutes', 'differenceInMinutes_offset', 'trainDelayed', 'cancelled'] 
+                        if col in columns]
+            
+            if target_cols:
+                # Insert Month after the last target column
+                last_target_idx = max([columns.index(col) for col in target_cols])
+                columns.insert(last_target_idx + 1, 'Month')
+            else:
+                # Insert Month at the beginning if no target columns found
+                columns.insert(0, 'Month')
+            
+            # Reorder the DataFrame
+            merged_df = merged_df[columns]
+            
+            # Generate output filename with current timestamp
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"all_preprocessed_data_{timestamp}.csv"
+            output_path = os.path.join(all_preprocessed_dir, output_filename)
+            
+            # Save merged file
+            merged_df.to_csv(output_path, index=False)
+            
+            # Print summary
+            print(f"\n{'='*60}")
+            print("MERGE OPERATION COMPLETED SUCCESSFULLY")
+            print(f"{'='*60}")
+            print(f"Output file: {output_path}")
+            print(f"Total rows: {len(merged_df):,}")
+            print(f"Total columns: {len(merged_df.columns)}")
+            print(f"Files merged: {len(all_dataframes)}")
+            
+            # Show month distribution
+            month_distribution = merged_df['Month'].value_counts().sort_index()
+            print(f"\nMonth distribution:")
+            for month, count in month_distribution.items():
+                print(f"  Month {month:2d}: {count:,} rows")
+            
+            # Show file details
+            print(f"\nFile details:")
+            for info in file_info:
+                print(f"  {info['filename']}: Month {info['month']}, {info['rows']:,} rows")
+            
+            print(f"\nColumn order:")
+            for i, col in enumerate(merged_df.columns, 1):
+                print(f"  {i:2d}. {col}")
+            
+            # Also save a summary file
+            summary_filename = f"merge_summary_{timestamp}.txt"
+            summary_path = os.path.join(all_preprocessed_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write(f"Preprocessed Files Merge Summary\n")
+                f.write("="*40 + "\n\n")
+                f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Output file: {output_filename}\n")
+                f.write(f"Total rows: {len(merged_df):,}\n")
+                f.write(f"Total columns: {len(merged_df.columns)}\n")
+                f.write(f"Files merged: {len(all_dataframes)}\n\n")
+                
+                f.write("Month Distribution:\n")
+                f.write("-" * 20 + "\n")
+                for month, count in month_distribution.items():
+                    f.write(f"Month {month:2d}: {count:,} rows\n")
+                
+                f.write("\nFile Details:\n")
+                f.write("-" * 20 + "\n")
+                for info in file_info:
+                    f.write(f"{info['filename']}: Month {info['month']}, {info['rows']:,} rows\n")
+                
+                f.write("\nColumn Order:\n")
+                f.write("-" * 20 + "\n")
+                for i, col in enumerate(merged_df.columns, 1):
+                    f.write(f"{i:2d}. {col}\n")
+            
+            print(f"Merge summary saved to: {summary_path}")
+            
+            return {
+                "success": True,
+                "output_path": output_path,
+                "summary_path": summary_path,
+                "total_rows": len(merged_df),
+                "total_columns": len(merged_df.columns),
+                "files_merged": len(all_dataframes),
+                "month_distribution": month_distribution.to_dict(),
+                "file_details": file_info
+            }
+            
+        except Exception as e:
+            print(f"Error merging preprocessed files: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def split_combined_dataset(self, test_size=0.3, random_state=42):
+        """
+        Split the combined preprocessed dataset into training and testing sets and save them separately.
+        Uses simple random train/test split with optional stratification for classification problems.
+        Automatically applies the configured resampling method for severely imbalanced categorical targets.
+        
+        Parameters:
+        -----------
+        test_size : float, optional
+            Proportion of the dataset to include in the test split. Defaults to 0.3.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        dict
+            A summary of the split results.
+        """
+        try:
+            from sklearn.model_selection import train_test_split
+            
+            print(f"\n{'='*60}")
+            print("SPLITTING COMBINED PREPROCESSED DATASET")
+            print(f"{'='*60}")
+            
+            # Find the most recent merged file
+            all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)
+            
+            if not os.path.exists(all_preprocessed_dir):
+                error_msg = f"All preprocessed directory not found: {all_preprocessed_dir}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Find all merged files
+            merged_files = glob.glob(os.path.join(all_preprocessed_dir, "all_preprocessed_data_*.csv"))
+            
+            if not merged_files:
+                error_msg = f"No merged preprocessed files found in {all_preprocessed_dir}"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Use the most recent file
+            latest_file = max(merged_files, key=os.path.getctime)
+            print(f"Loading combined dataset from: {os.path.basename(latest_file)}")
+            
+            # Load the combined dataset
+            combined_df = pd.read_csv(latest_file)
+            
+            if combined_df.empty:
+                error_msg = "Combined dataset is empty"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"Loaded combined dataset with {len(combined_df):,} rows and {len(combined_df.columns)} columns")
+            
+            # Check if Month column exists
+            if 'Month' not in combined_df.columns:
+                error_msg = "Month column not found in combined dataset"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Show month distribution
+            month_counts = combined_df['Month'].value_counts().sort_index()
+            print(f"\nMonth distribution in combined data:")
+            for month, count in month_counts.items():
+                print(f"  Month {month:2d}: {count:,} rows")
+            
+            # Identify target column
+            target_options = VALID_TARGET_FEATURES
+            target_column = None
+            
+            for option in target_options:
+                if option in combined_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                error_msg = "No target column found in combined dataset"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Show available months for reference
+            available_months = sorted(combined_df['Month'].unique())
+            print(f"Available months: {available_months}")
+            
+            # Use simple random train/test split instead of month-based splitting
+            test_size = 0.3  # 30% for test, 70% for training
+            print(f"Using simple random train/test split with test_size={test_size}")
+            
+            # Check if we have classification or regression problem for stratification
+            is_classification_problem = target_column in CATEGORIAL_TARGET_FEATURES
+            
+            if is_classification_problem:
+                # Use stratified split for classification
+                train_df, test_df = train_test_split(
+                    combined_df, 
+                    test_size=test_size, 
+                    stratify=combined_df[target_column], 
+                    random_state=random_state
+                )
+                print(f"Used stratified split for classification target '{target_column}'")
+            else:
+                # Use regular split for regression
+                train_df, test_df = train_test_split(
+                    combined_df, 
+                    test_size=test_size, 
+                    random_state=random_state
+                )
+                print(f"Used random split for regression target '{target_column}'")
+            
+            print(f"\nInitial data split:")
+            print(f"  Training data: {len(train_df):,} rows")
+            print(f"  Test data: {len(test_df):,} rows")
+            print(f"  Train/Test ratio: {len(train_df)/len(test_df):.2f}")
+            
+            if len(train_df) == 0 or len(test_df) == 0:
+                error_msg = "Invalid data split - train or test set is empty"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Prepare features and target for resampling
+            feature_columns = [col for col in combined_df.columns if col not in [target_column, 'Month', 'data_year']]
+            
+            X_train = train_df[feature_columns]
+            y_train = train_df[target_column]
+            X_test = test_df[feature_columns]
+            y_test = test_df[target_column]
+            
+            print(f"Feature columns: {len(feature_columns)}")
+            
+            # Store original training set size for comparison
+            original_train_size = len(y_train)
+            
+            # ========== APPLY CONFIGURED RESAMPLING METHOD ==========
+            print(f"\nApplying resampling method: {RESAMPLING_METHOD}")
+            
+            if RESAMPLING_METHOD == "SMOTE_TOMEK":
+                X_train, y_train, resampling_applied, resampling_info = self.apply_smote_tomek_resampling(
+                    X_train, y_train, target_column, IMBALANCE_THRESHOLD, random_state
+                )
+                resampling_method_used = "SMOTE-Tomek"
+                
+            elif RESAMPLING_METHOD == "EDITED_NEAREST_NEIGHBORS":
+                X_train, y_train, resampling_applied, resampling_info = self.apply_edited_nearest_neighbors_resampling(
+                    X_train, y_train, target_column, IMBALANCE_THRESHOLD, random_state, n_neighbors=ENN_N_NEIGHBORS
+                )
+                resampling_method_used = "EditedNearestNeighbors"
+                
+            elif RESAMPLING_METHOD == "NONE":
+                print("No resampling method configured - using original data")
+                resampling_applied = False
+                resampling_method_used = "None"
+                resampling_info = {
+                    "original_size": original_train_size,
+                    "final_size": original_train_size,
+                    "samples_changed": 0,
+                    "original_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "final_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "threshold_used": IMBALANCE_THRESHOLD,
+                    "method": "none"
+                }
+                
+            else:
+                print(f"Warning: Unknown resampling method '{RESAMPLING_METHOD}'. Using original data.")
+                resampling_applied = False
+                resampling_method_used = "Unknown (fallback to None)"
+                resampling_info = {
+                    "original_size": original_train_size,
+                    "final_size": original_train_size,
+                    "samples_changed": 0,
+                    "original_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "final_distribution": (y_train.value_counts(normalize=True) * 100).to_dict() if target_column in CATEGORIAL_TARGET_FEATURES else {},
+                    "threshold_used": IMBALANCE_THRESHOLD,
+                    "method": "fallback_none"
+                }
+            
+            # Recombine features and target for saving (keeping Month column for reference)
+            train_df_final = pd.concat([X_train, y_train], axis=1)
+            test_df_final = pd.concat([X_test, y_test], axis=1)
+            
+            # Add Month column back for reference
+            # For training data, we need to reconstruct the Month information
+            if resampling_applied and len(train_df_final) != len(train_df):
+                # If resampling changed the size, we need to handle Month column carefully
+                most_common_month = train_df['Month'].mode()[0] if len(train_df) > 0 else available_months[0]
+                
+                # Create Month column for resampled training data
+                train_months_reconstructed = []
+                original_train_months = train_df['Month'].values
+                
+                # First, add original months for original samples
+                train_months_reconstructed.extend(original_train_months)
+                
+                # For additional samples (if any), use the most common month
+                additional_samples = len(train_df_final) - len(original_train_months)
+                if additional_samples > 0:
+                    train_months_reconstructed.extend([most_common_month] * additional_samples)
+                    print(f"  Added Month {most_common_month} to {additional_samples} resampled training samples")
+                
+                train_df_final['Month'] = train_months_reconstructed[:len(train_df_final)]
+            else:
+                # No resampling or undersampling - use original months
+                train_df_final['Month'] = train_df['Month'].values
+            
+            test_df_final['Month'] = test_df['Month'].values
+            
+            # Create filenames for train and test sets
+            train_filename = f"combined_data_train.csv"
+            test_filename = f"combined_data_test.csv"
+            
+            train_path = os.path.join(all_preprocessed_dir, train_filename)
+            test_path = os.path.join(all_preprocessed_dir, test_filename)
+            
+            # Save the datasets
+            train_df_final.to_csv(train_path, index=False)
+            test_df_final.to_csv(test_path, index=False)
+            
+            print(f"\nDataset split completed:")
+            print(f"  Training set saved to: {train_filename}")
+            print(f"  Test set saved to: {test_filename}")
+            print(f"  Final training set size: {len(train_df_final):,} rows")
+            print(f"  Final test set size: {len(test_df_final):,} rows")
+            
+            # Print and log distribution statistics
+            print("\nFinal Distribution Statistics:")
+            
+            # Use the logging context manager for distribution statistics
+            with self.get_logger("split_combined_dataset_distribution.log", "split_combined_distribution", "combined") as logger:
+                logger.info(f"Combined dataset split completed - Train size: {len(train_df_final)}, Test size: {len(test_df_final)}")
+                logger.info(f"Target column: {target_column}")
+                logger.info(f"Data source: {os.path.basename(latest_file)}")
+                logger.info(f"Available months: {available_months}")
+                logger.info(f"Split method: Random train/test split (test_size=0.3)")
+                logger.info(f"Stratified split: {is_classification_problem}")
+                logger.info(f"Resampling method configured: {RESAMPLING_METHOD}")
+                logger.info(f"Resampling method used: {resampling_method_used}")
+                logger.info(f"Resampling applied: {resampling_applied}")
+                
+                if resampling_applied:
+                    if RESAMPLING_METHOD == "SMOTE_TOMEK":
+                        logger.info(f"Original train size: {original_train_size}, Final train size: {len(train_df_final)}")
+                        logger.info(f"Samples added: {resampling_info.get('samples_added', 0)}")
+                    elif RESAMPLING_METHOD == "EDITED_NEAREST_NEIGHBORS":
+                        logger.info(f"Original train size: {original_train_size}, Final train size: {len(train_df_final)}")
+                        logger.info(f"Samples removed: {resampling_info.get('samples_removed', 0)}")
+                        logger.info(f"N_neighbors used: {resampling_info.get('n_neighbors', ENN_N_NEIGHBORS)}")
+                
+                # For categorical targets, show the distribution in percentages
+                if target_column in CATEGORIAL_TARGET_FEATURES:
+                    print("\nOriginal Combined Distribution (%):")
+                    original_dist = combined_df[target_column].value_counts(normalize=True) * 100
+                    print(original_dist)
+                    
+                    print("\nFinal Training Set Distribution (%):")
+                    train_dist = y_train.value_counts(normalize=True) * 100
+                    print(train_dist)
+                    
+                    print("\nTest Set Distribution (%):")
+                    test_dist = y_test.value_counts(normalize=True) * 100
+                    print(test_dist)
+                    
+                    # Log the categorical distributions
+                    logger.info("=== Categorical Target Distribution Analysis ===")
+                    logger.info("Original Combined Distribution (%):")
+                    for label, percentage in original_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    logger.info("Final Training Set Distribution (%):")
+                    for label, percentage in train_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    logger.info("Test Set Distribution (%):")
+                    for label, percentage in test_dist.items():
+                        logger.info(f"  {label}: {percentage:.2f}%")
+                    
+                    # Log resampling-specific info
+                    if resampling_applied:
+                        if RESAMPLING_METHOD == "SMOTE_TOMEK":
+                            logger.info("=== SMOTE-Tomek Resampling Applied ===")
+                            logger.info(f"Reason: Minority class below {IMBALANCE_THRESHOLD}% threshold")
+                            logger.info(f"Training samples added: {resampling_info['samples_added']}")
+                        elif RESAMPLING_METHOD == "EDITED_NEAREST_NEIGHBORS":
+                            logger.info("=== EditedNearestNeighbors Undersampling Applied ===")
+                            logger.info(f"Reason: Minority class below {IMBALANCE_THRESHOLD}% threshold")
+                            logger.info(f"Training samples removed: {resampling_info['samples_removed']}")
+                            logger.info(f"N_neighbors parameter: {resampling_info['n_neighbors']}")
+                        
+                        # Log final distribution for any resampling method
+                        for label, percentage in resampling_info["final_distribution"].items():
+                            final_count = (percentage / 100) * len(train_df_final)
+                            logger.info(f"  {label}: {final_count:.0f} samples ({percentage:.2f}%)")
+                    
+                else:
+                    # For continuous targets like differenceInMinutes, show basic stats
+                    original_mean = combined_df[target_column].mean()
+                    original_std = combined_df[target_column].std()
+                    train_mean = y_train.mean()
+                    train_std = y_train.std()
+                    test_mean = y_test.mean()
+                    test_std = y_test.std()
+                    
+                    print("\nOriginal Combined Distribution:")
+                    print(f"Mean: {original_mean:.2f}, Std: {original_std:.2f}")
+                    
+                    print("\nTraining Set Distribution:")
+                    print(f"Mean: {train_mean:.2f}, Std: {train_std:.2f}")
+                    
+                    print("\nTest Set Distribution:")
+                    print(f"Mean: {test_mean:.2f}, Std: {test_std:.2f}")
+                    
+                    # Log the continuous distributions
+                    logger.info("=== Continuous Target Distribution Analysis ===")
+                    logger.info(f"Original Combined Distribution - Mean: {original_mean:.4f}, Std: {original_std:.4f}")
+                    logger.info(f"Training Set Distribution - Mean: {train_mean:.4f}, Std: {train_std:.4f}")
+                    logger.info(f"Test Set Distribution - Mean: {test_mean:.4f}, Std: {test_std:.4f}")
+            
+            print(f"{'='*60}")
+            print("COMBINED DATASET SPLIT COMPLETED SUCCESSFULLY")
+            print(f"{'='*60}")
+            
+            # Return summary
+            return {
+                "success": True,
+                "data_source": os.path.basename(latest_file),
+                "total_samples": len(combined_df),
+                "original_train_size": original_train_size,
+                "final_train_size": len(train_df_final),
+                "test_size": len(test_df_final),
+                "train_path": train_path,
+                "test_path": test_path,
+                "target_column": target_column,
+                "available_months": available_months,
+                "split_method": "random",
+                "test_size_ratio": 0.3,
+                "stratified": is_classification_problem,
+                "resampling_method_configured": RESAMPLING_METHOD,
+                "resampling_method_used": resampling_method_used,
+                "resampling_applied": resampling_applied,
+                "imbalance_threshold": IMBALANCE_THRESHOLD,
+                "resampling_info": resampling_info
+            }
+            
+        except Exception as e:
+            print(f"Error splitting combined dataset: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def train_decision_tree_combined_data(self, param_distributions=None, n_iter=None, cv=None, random_state=42):
+        """
+        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV on combined preprocessed data.
+        Uses pre-split data from the split_combined_dataset method.
+        Includes SHAP analysis for enhanced model interpretability.
+        Updated to include sample weights based on delay magnitude.
+        
+        Parameters:
+        -----------
+        param_distributions : dict, optional
+            Dictionary with parameters names as keys and distributions or lists of parameters to try.
+            Defaults to DECISION_TREE_PARAM_DISTRIBUTIONS from constants.
+        n_iter : int, optional
+            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
+        cv : int, optional
+            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+            
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            # Use default values from constants if not provided
+            if param_distributions is None:
+                from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
+                param_distributions = DECISION_TREE_PARAM_DISTRIBUTIONS
+            
+            if n_iter is None:
+                from config.const import RANDOM_SEARCH_ITERATIONS
+                n_iter = RANDOM_SEARCH_ITERATIONS
+                
+            if cv is None:
+                from config.const import RANDOM_SEARCH_CV_FOLDS
+                cv = RANDOM_SEARCH_CV_FOLDS
+            
+            print(f"\n{'='*80}")
+            print("TRAINING DECISION TREE ON PRE-SPLIT COMBINED DATA")
+            print(f"{'='*80}")
+            
+            # Load pre-split data from the split_combined_dataset method
+            all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)
+            
+            train_path = os.path.join(all_preprocessed_dir, "combined_data_train.csv")
+            test_path = os.path.join(all_preprocessed_dir, "combined_data_test.csv")
+            
+            # Check if pre-split files exist
+            if not os.path.exists(train_path) or not os.path.exists(test_path):
+                error_msg = f"Pre-split combined data files not found: {train_path} or {test_path}"
+                print(f"Error: {error_msg}")
+                print("Make sure split_combined_dataset was called before this method.")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load the pre-split datasets
+            print(f"Loading pre-split training data from: {os.path.basename(train_path)}")
+            train_df = pd.read_csv(train_path)
+            
+            print(f"Loading pre-split test data from: {os.path.basename(test_path)}")
+            test_df = pd.read_csv(test_path)
+            
+            if train_df.empty or test_df.empty:
+                error_msg = "Pre-split datasets are empty"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"Loaded pre-split data:")
+            print(f"  Training set: {len(train_df):,} rows")
+            print(f"  Test set: {len(test_df):,} rows")
+            
+            # Show month distribution if Month column exists
+            if 'Month' in train_df.columns and 'Month' in test_df.columns:
+                train_months = sorted(train_df['Month'].unique())
+                test_months = sorted(test_df['Month'].unique())
+                print(f"  Train months: {train_months}")
+                print(f"  Test months: {test_months}")
+                
+                # Show detailed month distribution
+                print("\nMonth distribution in training data:")
+                train_month_counts = train_df['Month'].value_counts().sort_index()
+                for month, count in train_month_counts.items():
+                    print(f"  Month {month:2d}: {count:,} rows")
+                
+                print("\nMonth distribution in test data:")
+                test_month_counts = test_df['Month'].value_counts().sort_index()
+                for month, count in test_month_counts.items():
+                    print(f"  Month {month:2d}: {count:,} rows")
+            
+            # Identify target column
+            target_options = VALID_TARGET_FEATURES
+            target_column = None
+            
+            for option in target_options:
+                if option in train_df.columns:
+                    target_column = option
+                    break
+            
+            if not target_column:
+                error_msg = "No target column found in pre-split datasets"
+                print(f"Error: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"Identified target column: {target_column}")
+            
+            # Prepare features and target
+            feature_columns = [col for col in train_df.columns if col not in [target_column, 'Month', 'data_year']]
+            
+            X_train = train_df[feature_columns]
+            y_train = train_df[target_column]
+            X_test = test_df[feature_columns]
+            y_test = test_df[target_column]
+            
+            print(f"Feature columns: {len(feature_columns)}")
+            print(f"Features: {feature_columns[:10]}..." if len(feature_columns) > 10 else f"Features: {feature_columns}")
+            
+            # Check if we have classification or regression problem
+            is_classification = True
+            if target_column in REGRESSION_PROBLEM:
+                is_classification = False
+                print(f"Target '{target_column}' indicates a regression problem")
+            else:
+                print(f"Target '{target_column}' indicates a classification problem")
+            
+            if is_classification:
+                # Create sample weights for classification if delay info is available
+                sample_weights = None
+                if WEIGHT_DELAY_COLUMN in train_df.columns:
+                    print("Using weighted samples based on delay magnitude for randomized search")
+                    # Create sample weights based on delay magnitude
+                    delay_col = WEIGHT_DELAY_COLUMN
+                    sample_weights = np.ones(len(y_train))
+                    
+                    # Get delay values for each training sample
+                    delays = train_df[delay_col].values
+                    
+                    # Apply weights - higher delays get higher weights
+                    delayed_idx = (delays > TRAIN_DELAY_MINUTES)
+                    if np.any(delayed_idx):
+                        # Normalize delay values by mean positive delay
+                        mean_delay = delays[delayed_idx].mean()
+                        # Use configured maximum weight
+                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
+                    
+                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                
+                # Create proper CV strategy for classification
+                cv_strategy = StratifiedKFold(
+                    n_splits=cv,       
+                    shuffle=True,
+                    random_state=random_state
+                )
+
+                # Initialize base classifier
+                dt = DecisionTreeClassifier(random_state=random_state)
+                
+                print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
+            
+                # Run RandomizedSearchCV
+                random_search = RandomizedSearchCV(
+                    dt, param_distributions, n_iter=n_iter, cv=cv_strategy, 
+                    scoring=SCORE_METRIC, random_state=random_state, n_jobs=-1
+                )
+                
+                # Fit RandomizedSearchCV with sample weights if available
+                if sample_weights is not None:
+                    print("Training RandomizedSearchCV with sample weights")
+                    random_search.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    random_search.fit(X_train, y_train)
+                
+                best_params = random_search.best_params_
+                print(f"Best Hyperparameters: {best_params}")
+                
+                # Train model with best parameters
+                best_dt = DecisionTreeClassifier(**best_params, random_state=random_state)
+                
+                # Fit the final model with sample weights if available
+                if sample_weights is not None:
+                    print("Training final model with sample weights")
+                    best_dt.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    best_dt.fit(X_train, y_train)
+                
+                # Create output directory for combined data results
+                combined_output_dir = os.path.join(self.project_root, "data/output/decision_tree_combined_data")
+                os.makedirs(combined_output_dir, exist_ok=True)
+                
+                # === COMPREHENSIVE EVALUATION ===
+                evaluation_result = self.evaluate_model_comprehensive(
+                    model=best_dt,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_name="Decision Tree with RandomizedSearchCV (Combined Data)",
+                    month_id="combined",
+                    output_dir=combined_output_dir,
+                    target_column=target_column,
+                    random_search_obj=random_search,
+                    is_classification=is_classification
+                )
+                
+                if not evaluation_result["success"]:
+                    return {
+                        "success": False,
+                        "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
+                    }
+                
+                # Feature importance
+                feature_importance = pd.DataFrame({
+                    'Feature': X_train.columns,
+                    'Importance': best_dt.feature_importances_
+                }).sort_values(by='Importance', ascending=False)
+                
+                print("\nFeature Importance (top 10):")
+                print(feature_importance.head(10))
+                
+                # ========== SHAP ANALYSIS ==========
+                print("\nPerforming SHAP analysis on the Combined Data Decision Tree model...")
+                
+                shap_result = self.analyze_model_with_shap(
+                    model=best_dt,
+                    X_test=X_test,
+                    y_test=y_test,
+                    model_type='classification',
+                    month_id="combined",
+                    output_dir=combined_output_dir,
+                    target_column=target_column,
+                    max_samples=1000,
+                    random_state=random_state,
+                    model_name="decision_tree_combined_data",
+                    baseline_data=train_df
+                )
+                
+                if shap_result.get("success", False):
+                    print("SHAP analysis completed successfully for Combined Data Decision Tree model!")
+                    
+                    # Compare with standard importance if SHAP was successful
+                    if "shap_importance_path" in shap_result:
+                        print("\n" + "-"*60)
+                        print("COMPARISON: Standard vs SHAP Feature Importance (Combined Data Decision Tree)")
+                        print("-"*60)
+                        
+                        try:
+                            # Load SHAP importance for comparison
+                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
+                            
+                            # Merge the two importance measures
+                            comparison = feature_importance.merge(
+                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
+                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
+                                on='Feature', how='left'
+                            )
+                            
+                            print("Top 10 features by Standard Importance vs SHAP Importance:")
+                            for _, row in comparison.head(10).iterrows():
+                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
+                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
+                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
+                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
+                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
+                                    f"({rel_contrib:>4.1f}% of impact)")
+                        except Exception as e:
+                            print(f"Could not perform comparison: {e}")
+                    
+                else:
+                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
+                
+                print("="*60)
+                
+                # Save the model and related files
+                try:
+                    import joblib
+                    
+                    # Save the model
+                    model_filename = f"decision_tree_combined_data.joblib"
+                    model_path = os.path.join(combined_output_dir, model_filename)
+                    joblib.dump(best_dt, model_path)
+                    print(f"Model saved to {model_path}")
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_combined_data.csv"
+                    importance_path = os.path.join(combined_output_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    print(f"Feature importance saved to {importance_path}")
+                    
+                    # Save best parameters and training info
+                    params_filename = f"training_summary_combined_data.txt"
+                    params_path = os.path.join(combined_output_dir, params_filename)
+                    with open(params_path, 'w') as f:
+                        f.write(f"Combined Data Decision Tree Training Summary\n")
+                        f.write("="*50 + "\n\n")
+                        f.write(f"Training file: {os.path.basename(train_path)}\n")
+                        f.write(f"Test file: {os.path.basename(test_path)}\n")
+                        f.write(f"Training samples: {len(train_df):,}\n")
+                        f.write(f"Test samples: {len(test_df):,}\n")
+                        f.write(f"Split method: Random train/test split\n")
+                        if 'Month' in train_df.columns:
+                            f.write(f"Available months in data: {sorted(set(train_df['Month'].unique()) | set(test_df['Month'].unique()))}\n")
+                        f.write(f"Target column: {target_column}\n")
+                        f.write(f"Number of features: {len(feature_columns)}\n")
+                        f.write(f"Used sample weights: {sample_weights is not None}\n\n")
+                        f.write("Best Hyperparameters:\n")
+                        for param, value in best_params.items():
+                            f.write(f"{param}: {value}\n")
+                        f.write(f"\nBest CV Score ({SCORE_METRIC}): {random_search.best_score_:.4f}\n")
+                        f.write(f"Test {evaluation_result.get('optimized_metric_name', 'accuracy')}: {evaluation_result.get('optimized_metric', 0):.4f}\n")
+                    print(f"Training summary saved to {params_path}")
+                    
+                    # Save sample weights information if used
+                    if sample_weights is not None:
+                        weights_filename = f"sample_weights_info_combined.txt"
+                        weights_path = os.path.join(combined_output_dir, weights_filename)
+                        with open(weights_path, 'w') as f:
+                            f.write(f"Sample Weights Information - Combined Data\n")
+                            f.write("="*40 + "\n")
+                            f.write(f"Used sample weights: Yes\n")
+                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
+                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
+                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
+                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
+                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
+                        print(f"Sample weights info saved to {weights_path}")
+                    
+                    print(f"\n{'='*80}")
+                    print("COMBINED DATA DECISION TREE TRAINING COMPLETED SUCCESSFULLY")
+                    print(f"{'='*80}")
+                    
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include all evaluation results
+                        "best_params": best_params,
+                        "model_path": model_path,
+                        "feature_importance_path": importance_path,
+                        "shap_analysis": shap_result,
+                        "used_sample_weights": sample_weights is not None,
+                        "data_source": f"{os.path.basename(train_path)} + {os.path.basename(test_path)}",
+                        "total_samples": len(train_df) + len(test_df),
+                        "train_samples": len(train_df),
+                        "test_samples": len(test_df),
+                        "split_method": "random",
+                        "available_months": sorted(set(train_df['Month'].unique()) | set(test_df['Month'].unique())) if 'Month' in train_df.columns else []
+                    }
+                    
+                except Exception as e:
+                    print(f"Warning: Could not save model: {str(e)}")
+                    return {
+                        "success": True,
+                        **evaluation_result,  # Include evaluation results even if save failed
+                        "best_params": best_params,
+                        "model_saved": False,
+                        "shap_analysis": shap_result,
+                        "used_sample_weights": sample_weights is not None,
+                        "data_source": f"{os.path.basename(train_path)} + {os.path.basename(test_path)}",
+                        "total_samples": len(train_df) + len(test_df),
+                        "train_samples": len(train_df),
+                        "test_samples": len(test_df),
+                        "split_method": "random"
+                    }
+            else:
+                # For regression problems we would need a different approach
+                print(f"Regression with Decision Trees on combined data not implemented for target {target_column}")
+                return {
+                    "success": False,
+                    "error": f"Regression with Decision Trees on combined data not implemented for target {target_column}"
+                }
+        
+        except Exception as e:
+            print(f"Error in Combined Data Decision Tree training: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": str(e)
+            }

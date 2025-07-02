@@ -6,6 +6,7 @@ FOLDER_NAME = "data"
 INPUT_FOLDER = "data/input"
 OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/preprocessed"
+ALL_PREPROCESSED_OUTPUT_FOLDER = "data/output/all_preprocessed"
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
 DATA_FILE_PREFIX = "matched_data_"
@@ -107,6 +108,38 @@ PIPELINE_STAGES = [
     "train_xgboost_with_randomized_search_cv"
     "train_balanced_random_forest"
 ]
+
+# Dictionary mapping pipeline stage names to their corresponding method names
+PIPELINE_STAGE_TO_METHOD_MAPPING = {
+    # Data preprocessing stages
+    "merge_weather_columns": "merge_weather_columns",
+    "clean_missing_values": "handle_missing_values", 
+    "remove_duplicates": "remove_duplicates",
+    "scale_numeric": "scale_numeric_columns",
+    "add_train_delayed": "add_train_delayed_feature",
+    "select_target": "select_target_feature",
+    
+    # Data saving and splitting stages
+    "save_csv": "save_month_df_to_csv",
+    "split_dataset": "split_month_dataset",
+    
+    # Model training stages
+    "train_regularized_regression": "train_regularized_regression",
+    "train_decision_tree_with_randomized_search_cv": "train_decision_tree_with_randomized_search_cv",
+    "train_random_forest_with_randomized_search_cv": "train_random_forest_with_randomized_search_cv", 
+    "train_xgboost_with_randomized_search_cv": "train_xgboost_with_randomized_search_cv",
+    
+    # Combined data processing stages
+    "merge_all_preprocessed_files": "merge_all_preprocessed_files",
+    "split_combined_dataset": "split_combined_dataset",
+    "train_decision_tree_combined_data": "train_decision_tree_combined_data"
+}
+
+# Reverse mapping: method names to stage names
+METHOD_TO_PIPELINE_STAGE_MAPPING = {
+    method: stage for stage, method in PIPELINE_STAGE_TO_METHOD_MAPPING.items()
+}
+
 
 
 # Parameter distributions for RandomizedSearchCV
