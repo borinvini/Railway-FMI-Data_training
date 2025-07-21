@@ -3,13 +3,84 @@ import glob
 import re
 
 import pandas as pd
-from config.const import DATA_FILE_PREFIX, DATA_FILE_PREFIX_FOR_TRAINING, FOLDER_NAME, INPUT_FOLDER, OUTPUT_FOLDER
+from config.const import (
+    DATA_FILE_PREFIX, 
+    DATA_FILE_PREFIX_FOR_TRAINING, 
+    FOLDER_NAME, 
+    INPUT_FOLDER, 
+    OUTPUT_FOLDER,
+    PREPROCESSED_OUTPUT_FOLDER,
+    ALL_PREPROCESSED_OUTPUT_FOLDER,
+    RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
+    RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    REGULARIZED_REGRESSION_OUTPUT_FOLDER
+)
+
+
+def ensure_folder_structure():
+    """
+    Explicitly create the basic folder structure required by the application.
+    
+    This function guarantees that all necessary directories exist before
+    the main processing begins, preventing any file operation errors.
+    
+    Returns:
+    --------
+    dict
+        Summary of the folder creation operation with created/existing directories
+    """
+    print("Ensuring basic folder structure exists...")
+    
+    # List of all directories that need to be created
+    required_directories = [
+        FOLDER_NAME,                                    # data/
+        INPUT_FOLDER,                                   # data/input/
+        OUTPUT_FOLDER,                                  # data/output/
+        os.path.join(FOLDER_NAME, "output", "log")      # data/output/log/
+    ]
+    
+    created_dirs = []
+    already_existed = []
+    
+    for directory in required_directories:
+        if not os.path.exists(directory):
+            try:
+                os.makedirs(directory, exist_ok=True)
+                created_dirs.append(directory)
+                print(f"  ✓ Created directory: {directory}")
+            except Exception as e:
+                print(f"  ✗ Failed to create directory {directory}: {e}")
+                raise
+        else:
+            already_existed.append(directory)
+            print(f"  ✓ Directory already exists: {directory}")
+    
+    # Summary
+    print(f"\nFolder structure verification complete:")
+    print(f"  - Created: {len(created_dirs)} new directories")
+    print(f"  - Existing: {len(already_existed)} directories")
+    print(f"  - Total verified: {len(required_directories)} directories")
+    
+    if created_dirs:
+        print(f"\nNewly created directories:")
+        for dir_path in created_dirs:
+            print(f"  - {dir_path}")
+    
+    return {
+        "created": created_dirs,
+        "existed": already_existed,
+        "total_verified": len(required_directories)
+    }
 
 
 def check_csv_files():
     """
     Check if there are CSV files in the data/input folder and print their names.
     Returns a list of CSV file paths found.
+    
+    Note: The input folder is guaranteed to exist by the main initialization process.
     """
     # Using only Approach 1: Based on the script's location
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,11 +96,17 @@ def check_csv_files():
     
     # Report findings
     if csv_files:
-        print(f"\nSuccess! Found {len(csv_files)} CSV files in the input folder:")
+        print(f"\n✓ Success! Found {len(csv_files)} CSV files in the input folder:")
         for file in csv_files:
-            print(f"- {os.path.basename(file)}")
+            file_size = os.path.getsize(file) / (1024 * 1024)  # Size in MB
+            print(f"  - {os.path.basename(file)} ({file_size:.1f} MB)")
     else:
-        print("\nNo CSV files found in the input folder.")
+        print(f"\n⚠️  No CSV files found in the input folder.")
+        print(f"\nTo get started:")
+        print(f"  1. Place your CSV files in: {input_folder}")
+        print(f"  2. Expected file format: {DATA_FILE_PREFIX}YYYY_MM.csv")
+        print(f"  3. Example: {DATA_FILE_PREFIX}2023_12.csv")
+        print(f"  4. Then run: python main.py --target trainDelayed")
     
     return csv_files
 
@@ -83,6 +160,8 @@ def load_and_preview_csv(csv_filename):
         
     Returns:
         pandas.DataFrame: Loaded data or None if file couldn't be loaded
+        
+    Note: The input folder is guaranteed to exist by the main initialization process.
     """
     # Construct the full path to the CSV file
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -126,6 +205,9 @@ def generate_output_path(input_file_path):
     --------
     tuple
         (output_file_path, dataframe) - The generated output path and the loaded dataframe.
+        
+    Note: Basic folder structure is guaranteed to exist by the main initialization process,
+          but we still ensure specific output directories exist for safety.
     """
     # Get just the filename without the path
     basename = os.path.basename(input_file_path)
@@ -142,9 +224,8 @@ def generate_output_path(input_file_path):
         output_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}processed.csv"
         print(f"Warning: Could not extract date from filename. Using default: {output_filename}")
     
-    # Create data directories if they don't exist
-    os.makedirs(FOLDER_NAME, exist_ok=True)
-    os.makedirs(INPUT_FOLDER, exist_ok=True)
+    # Ensure specific output directories exist (basic structure guaranteed by main initialization)
+    # We still check these for safety in case this function is called independently
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     
     # Join the output directory path with the output filename
@@ -157,3 +238,60 @@ def generate_output_path(input_file_path):
     print(f"Successfully loaded CSV with {len(df)} rows and {len(df.columns)} columns")
     
     return output_file_path, df
+
+
+def verify_folder_structure():
+    """
+    Verify that the basic folder structure exists and provide a status report.
+    
+    This function can be called independently to check if the required directories exist.
+    
+    Returns:
+    --------
+    dict
+        Status report of folder structure verification
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    
+    # List of critical directories to check
+    critical_directories = [
+        (FOLDER_NAME, "Main data directory"),
+        (INPUT_FOLDER, "Input CSV files directory"),
+        (OUTPUT_FOLDER, "Output results directory")
+    ]
+    
+    verification_results = {
+        "all_exist": True,
+        "missing_directories": [],
+        "existing_directories": [],
+        "details": {}
+    }
+    
+    print("Verifying folder structure:")
+    
+    for dir_path, description in critical_directories:
+        full_path = os.path.join(project_root, dir_path)
+        exists = os.path.exists(full_path)
+        
+        verification_results["details"][dir_path] = {
+            "exists": exists,
+            "full_path": full_path,
+            "description": description
+        }
+        
+        if exists:
+            verification_results["existing_directories"].append(dir_path)
+            print(f"  ✓ {description}: {dir_path}")
+        else:
+            verification_results["all_exist"] = False
+            verification_results["missing_directories"].append(dir_path)
+            print(f"  ✗ {description}: {dir_path} (MISSING)")
+    
+    if verification_results["all_exist"]:
+        print("✓ All critical directories exist!")
+    else:
+        print(f"⚠️  Missing {len(verification_results['missing_directories'])} critical directories!")
+        print("Run the main script to auto-create missing directories.")
+    
+    return verification_results
