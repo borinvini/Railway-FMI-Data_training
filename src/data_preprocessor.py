@@ -162,10 +162,10 @@ class TrainingPipeline:
 
     def run_pipeline(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
         """
-        Run pipeline
+        Run pipeline - processes each CSV file individually and saves as separate preprocessed files.
         
-        This method simply calls preprocess_csv_file for each input file,
-        groups files by month, combines them, and saves the results.
+        This method processes each input file separately instead of combining files by month,
+        resulting in individual preprocessed files for each YYYY-MM period.
         
         Parameters:
         -----------
@@ -185,103 +185,197 @@ class TrainingPipeline:
                 "failed_files": 0
             }
         
-        print(f"\nStarting basic preprocessing for {len(csv_files)} CSV files, grouped by month.")
-        
-        # Group files by month
-        files_by_month = {}
-        pattern = r'(\d{4})_(\d{2})\.csv$'
-        
-        for input_file_path in csv_files:
-            filename = os.path.basename(input_file_path)
-            match = re.search(pattern, filename)
-            
-            if match:
-                year, month = match.groups()
-                if month not in files_by_month:
-                    files_by_month[month] = []
-                files_by_month[month].append((year, input_file_path))
-        
-        print(f"Found data for {len(files_by_month)} distinct months: {sorted(files_by_month.keys())}")
+        print(f"\nStarting basic preprocessing for {len(csv_files)} CSV files (individual processing).")
         
         # Initialize counters
         successful_preprocessing = 0
         failed_files = 0
+        processed_files_info = []
         
-        # Process each month's data
-        for i, (month_num, file_info) in enumerate(sorted(files_by_month.items())):
-            years = [year for year, _ in file_info]
-            file_paths = [path for _, path in file_info]
+        # Process each file individually
+        for i, input_file_path in enumerate(csv_files):
+            filename = os.path.basename(input_file_path)
             
-            print(f"\n[{i+1}/{len(files_by_month)}] Processing month: {month_num} (Years: {', '.join(sorted(years))})")
+            # Extract year and month from filename
+            match = re.search(r'(\d{4})_(\d{2})\.csv$', filename)
             
-            # Load and combine data from all files for this month
-            combined_df = None
-            for file_path in file_paths:
-                try:
-                    # Simply call preprocess_csv_file
-                    processed_df = self.preprocess_csv_file(file_path)
-                    
-                    if processed_df is not None:
-                        # Extract year from filename for tracking
-                        filename = os.path.basename(file_path)
-                        year_match = re.search(r'(\d{4})_', filename)
-                        if year_match:
-                            year = year_match.group(1)
-                            processed_df['data_year'] = year
-                        
-                        # Combine with existing data
-                        if combined_df is None:
-                            combined_df = processed_df
-                        else:
-                            combined_df = pd.concat([combined_df, processed_df], ignore_index=True)
-                        
-                        print(f"Added data from {filename} ({len(processed_df)} rows)")
-                    else:
-                        print(f"Warning: Failed to preprocess {file_path}")
-                
-                except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
-            
-            if combined_df is None or combined_df.empty:
-                print(f"No valid data was loaded for month {month_num}")
+            if not match:
+                print(f"\n[{i+1}/{len(csv_files)}] Warning: Could not extract date from filename {filename}. Skipping.")
                 failed_files += 1
                 continue
             
-            print(f"Combined data for month {month_num} has {len(combined_df)} rows and {len(combined_df.columns)} columns")
+            year, month = match.groups()
+            file_id = f"{year}_{month}"
             
-            # Sort years for consistent naming
-            years.sort()
-            year_range = f"{years[0]}-{years[-1]}" if len(years) > 1 else years[0]
-            month_id = f"{year_range}_{month_num}"
+            print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename} (Year: {year}, Month: {month})")
             
-            # Save the combined preprocessed data
-            save_success = self.save_month_df_to_csv(month_id, combined_df)
-            
-            if save_success:
-                print(f"Successfully saved preprocessed data for {month_id}")
-                successful_preprocessing += 1
-            else:
-                print(f"Failed to save data for {month_id}")
+            try:
+                # Process the individual file
+                processed_df = self.extract_nested_data(input_file_path)
+                
+                if processed_df is not None and not processed_df.empty:
+                    # Add year information for reference
+                    processed_df['data_year'] = year
+                    
+                    print(f"Successfully processed {filename}: {len(processed_df)} rows, {len(processed_df.columns)} columns")
+                    
+                    # Save the individual preprocessed file
+                    save_success = self.save_month_df_to_csv(file_id, processed_df)
+                    
+                    if save_success:
+                        print(f"Successfully saved preprocessed data for {file_id}")
+                        successful_preprocessing += 1
+                        processed_files_info.append({
+                            "original_file": filename,
+                            "year": year,
+                            "month": month,
+                            "file_id": file_id,
+                            "rows": len(processed_df),
+                            "columns": len(processed_df.columns)
+                        })
+                    else:
+                        print(f"Failed to save data for {file_id}")
+                        failed_files += 1
+                else:
+                    print(f"Warning: Failed to preprocess {filename} - empty result")
+                    failed_files += 1
+                    
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
                 failed_files += 1
         
         # Generate summary
         summary = {
-            "total_months": len(files_by_month),
             "total_files": len(csv_files),
             "successful_preprocessing": successful_preprocessing,
-            "failed_files": failed_files
+            "failed_files": failed_files,
+            "processed_files_info": processed_files_info
         }
         
         # Print summary
         print("\n" + "="*50)
         print("BASIC PREPROCESSING SUMMARY:")
-        print(f"Total months processed: {summary['total_months']}")
         print(f"Total files processed: {summary['total_files']}")
         print(f"Successfully processed and saved: {summary['successful_preprocessing']}")
         print(f"Failed to process: {summary['failed_files']}")
+        
+        if processed_files_info:
+            print(f"\nSuccessfully processed files:")
+            for info in processed_files_info:
+                print(f"  {info['original_file']} -> preprocessed_data_{info['file_id']}.csv ({info['rows']:,} rows)")
+        
         print("="*50)
         
         return summary
+
+    def extract_nested_data(self, input_file_path):
+        """
+        Preprocess a CSV file by extracting nested data from timeTableRows,
+        keeping only essential columns and expanding weather conditions.
+        
+        Parameters:
+        -----------
+        input_file_path : str
+            Path to the input CSV file.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The processed DataFrame.
+        """
+        try:
+            # Load the dataframe from the input file path
+            _, df = generate_output_path(input_file_path)
+            
+            # Dictionary to store stops by train
+            train_stops = {}
+            
+            # Extract nested data from the "timeTableRows" column
+            for index, row in df.iterrows():
+                ttr = row.get("timeTableRows", None)
+                if ttr is None or pd.isnull(ttr):
+                    continue  # Skip empty values
+                
+                # Get train identifier (use trainNumber if available, otherwise use row index)
+                train_id = row.get("trainNumber", f"train_{index}")
+                
+                # If the value is a string, attempt to convert it
+                if isinstance(ttr, str):
+                    try:
+                        # Replace unquoted 'nan' with 'None' so ast.literal_eval can parse it
+                        ttr_fixed = ttr.replace("nan", "None")
+                        stops = ast.literal_eval(ttr_fixed)
+                    except Exception as e:
+                        print(f"Error parsing timeTableRows in row {index}: {e}")
+                        continue
+                else:
+                    stops = ttr  # Assume it's already a Python object
+                
+                # Ensure stops is a list; if not, wrap it in a list
+                if not isinstance(stops, list):
+                    stops = [stops]
+                
+                # Store stops with train_id
+                for stop in stops:
+                    # Add train_id to each stop record
+                    stop['train_id'] = train_id
+                    
+                    # If train_id not in dictionary, initialize with empty list
+                    if train_id not in train_stops:
+                        train_stops[train_id] = []
+                    
+                    # Add stop to the train's stops list
+                    train_stops[train_id].append(stop)
+            
+            print(f"Extracted stops for {len(train_stops)} different trains")
+            
+            # Process each train's stops
+            cross_records = []
+            
+            for train_id, stops in train_stops.items():
+                # Add all stops to final records
+                cross_records.extend(stops)
+            
+            print(f"Processed a total of {len(cross_records)} stops")
+            # Create DataFrame from processed records
+            cross_df = pd.DataFrame(cross_records)
+            
+            # Rename 'weather_observations' to 'weather_conditions' if it exists
+            if "weather_observations" in cross_df.columns:
+                cross_df = cross_df.rename(columns={"weather_observations": "weather_conditions"})
+                print("Renamed 'weather_observations' to 'weather_conditions'")
+            
+            # Expand the 'weather_conditions' dictionaries into separate columns
+            if "weather_conditions" in cross_df.columns:
+                weather_df = cross_df["weather_conditions"].apply(pd.Series)
+                
+                # Drop unwanted keys if they exist
+                weather_df = weather_df.drop(columns=["closest_ems", "Present weather (auto)"], errors="ignore")
+                
+                # Join the expanded weather conditions back to the main DataFrame
+                cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
+                print("Expanded weather_conditions into separate columns")
+            
+            for col in NON_NUMERIC_FEATURES:
+                if col in cross_df.columns:
+                    # Fill NaN values with 0 before converting to integer
+                    nulls = cross_df[col].isna().sum()
+                    if nulls > 0:
+                        print(f"Filling {nulls} NaN values in {col} with 0 before conversion")
+                    cross_df[col] = cross_df[col].fillna(0)
+                    # Convert boolean values to integers (False -> 0, True -> 1)
+                    cross_df[col] = cross_df[col].astype(int)
+                    print(f"Converted {col} to numeric (0/1)")
+
+            # Return the processed DataFrame
+            return cross_df
+            
+        except Exception as e:
+            print(f"Error processing file {input_file_path}: {e}")
+            import traceback
+            traceback.print_exc()  # Print full traceback for debugging
+            return None
+
 
     def run_pipeline_data_by_month(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
         """
