@@ -160,6 +160,129 @@ class TrainingPipeline:
         return METHOD_TO_PIPELINE_STAGE_MAPPING.get(method_name)
 
 
+    def run_pipeline(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
+        """
+        Run pipeline
+        
+        This method simply calls preprocess_csv_file for each input file,
+        groups files by month, combines them, and saves the results.
+        
+        Parameters:
+        -----------
+        csv_files : list
+            List of CSV file paths to process.
+            
+        Returns:
+        --------
+        dict
+            Summary of the preprocessing results.
+        """
+        if not csv_files:
+            print("\nNo CSV files to process.")
+            return {
+                "total_files": 0,
+                "successful_preprocessing": 0,
+                "failed_files": 0
+            }
+        
+        print(f"\nStarting basic preprocessing for {len(csv_files)} CSV files, grouped by month.")
+        
+        # Group files by month
+        files_by_month = {}
+        pattern = r'(\d{4})_(\d{2})\.csv$'
+        
+        for input_file_path in csv_files:
+            filename = os.path.basename(input_file_path)
+            match = re.search(pattern, filename)
+            
+            if match:
+                year, month = match.groups()
+                if month not in files_by_month:
+                    files_by_month[month] = []
+                files_by_month[month].append((year, input_file_path))
+        
+        print(f"Found data for {len(files_by_month)} distinct months: {sorted(files_by_month.keys())}")
+        
+        # Initialize counters
+        successful_preprocessing = 0
+        failed_files = 0
+        
+        # Process each month's data
+        for i, (month_num, file_info) in enumerate(sorted(files_by_month.items())):
+            years = [year for year, _ in file_info]
+            file_paths = [path for _, path in file_info]
+            
+            print(f"\n[{i+1}/{len(files_by_month)}] Processing month: {month_num} (Years: {', '.join(sorted(years))})")
+            
+            # Load and combine data from all files for this month
+            combined_df = None
+            for file_path in file_paths:
+                try:
+                    # Simply call preprocess_csv_file
+                    processed_df = self.preprocess_csv_file(file_path)
+                    
+                    if processed_df is not None:
+                        # Extract year from filename for tracking
+                        filename = os.path.basename(file_path)
+                        year_match = re.search(r'(\d{4})_', filename)
+                        if year_match:
+                            year = year_match.group(1)
+                            processed_df['data_year'] = year
+                        
+                        # Combine with existing data
+                        if combined_df is None:
+                            combined_df = processed_df
+                        else:
+                            combined_df = pd.concat([combined_df, processed_df], ignore_index=True)
+                        
+                        print(f"Added data from {filename} ({len(processed_df)} rows)")
+                    else:
+                        print(f"Warning: Failed to preprocess {file_path}")
+                
+                except Exception as e:
+                    print(f"Error processing {file_path}: {e}")
+            
+            if combined_df is None or combined_df.empty:
+                print(f"No valid data was loaded for month {month_num}")
+                failed_files += 1
+                continue
+            
+            print(f"Combined data for month {month_num} has {len(combined_df)} rows and {len(combined_df.columns)} columns")
+            
+            # Sort years for consistent naming
+            years.sort()
+            year_range = f"{years[0]}-{years[-1]}" if len(years) > 1 else years[0]
+            month_id = f"{year_range}_{month_num}"
+            
+            # Save the combined preprocessed data
+            save_success = self.save_month_df_to_csv(month_id, combined_df)
+            
+            if save_success:
+                print(f"Successfully saved preprocessed data for {month_id}")
+                successful_preprocessing += 1
+            else:
+                print(f"Failed to save data for {month_id}")
+                failed_files += 1
+        
+        # Generate summary
+        summary = {
+            "total_months": len(files_by_month),
+            "total_files": len(csv_files),
+            "successful_preprocessing": successful_preprocessing,
+            "failed_files": failed_files
+        }
+        
+        # Print summary
+        print("\n" + "="*50)
+        print("BASIC PREPROCESSING SUMMARY:")
+        print(f"Total months processed: {summary['total_months']}")
+        print(f"Total files processed: {summary['total_files']}")
+        print(f"Successfully processed and saved: {summary['successful_preprocessing']}")
+        print(f"Failed to process: {summary['failed_files']}")
+        print("="*50)
+        
+        return summary
+
     def run_pipeline_data_by_month(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
         """
         Run the full processing pipeline on the provided CSV files, grouping by month across years.

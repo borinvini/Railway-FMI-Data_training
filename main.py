@@ -68,7 +68,7 @@ def main():
     print(f"Starting pipeline execution with target feature: '{DEFAULT_TARGET_FEATURE}'")
     
     # Run the full pipeline on all CSV files with the default target feature
-    results = pipeline.run_pipeline_data_by_month(
+    results = pipeline.run_pipeline(
         csv_files, 
         target_feature=DEFAULT_TARGET_FEATURE
     )
