@@ -1,5 +1,4 @@
 import os
-import argparse
 from src.file_utils import check_csv_files, extract_date_range, load_and_preview_csv, ensure_folder_structure
 from src.data_preprocessor import TrainingPipeline  # Import the class
 from config.const import (
@@ -28,22 +27,13 @@ def main():
         print("Cannot proceed without proper folder structure. Please check permissions and try again.")
         return
     
-    # STEP 2: Parse command line arguments
-    parser = argparse.ArgumentParser(description='Process railway data and train models.')
-    parser.add_argument('--target', 
-                    choices=['differenceInMinutes', 'trainDelayed', 'cancelled', 'differenceInMinutes_offset'], 
-                    default=DEFAULT_TARGET_FEATURE, 
-                    help='Target feature to predict')
-    parser.add_argument('--feature-importance-threshold', type=float, default=IMPORTANCE_THRESHOLD,
-                        help='Threshold for selecting important features')
-    parser.add_argument('--skip-important-features', action='store_true',
-                        help='Skip training with important features')
-    
-    args = parser.parse_args()
-    
+    # STEP 2: Display configuration information
     print("\n" + "="*60)
     print("STARTING RAILWAY FMI DATA CHECK AND PROCESSING")
     print("="*60)
+    
+    print(f"Using target feature: '{DEFAULT_TARGET_FEATURE}'")
+    print(f"Feature importance threshold: {IMPORTANCE_THRESHOLD}")
 
     # STEP 3: Display configuration warnings if applicable
     if FILTER_TRAINS_BY_STATIONS:
@@ -68,19 +58,19 @@ def main():
         print(f"  1. Add your CSV files to: {INPUT_FOLDER}")
         print(f"  2. Expected format: matched_data_YYYY_MM.csv")
         print(f"  3. Example: matched_data_2023_12.csv")
-        print(f"  4. Then run: python main.py --target trainDelayed")
+        print(f"  4. Then run: python main.py")
         return
     
     # STEP 6: Initialize and run the training pipeline
     print(f"\nInitializing Training Pipeline...")
     pipeline = TrainingPipeline()
     
-    print(f"Starting pipeline execution with target feature: '{args.target}'")
+    print(f"Starting pipeline execution with target feature: '{DEFAULT_TARGET_FEATURE}'")
     
-    # Run the full pipeline on all CSV files with the specified target feature
+    # Run the full pipeline on all CSV files with the default target feature
     results = pipeline.run_pipeline_data_by_month(
         csv_files, 
-        target_feature=args.target
+        target_feature=DEFAULT_TARGET_FEATURE
     )
     
     print("\n" + "="*60)
