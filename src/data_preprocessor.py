@@ -486,6 +486,34 @@ class TrainingPipeline:
                 result["errors"].append("filter_columns skipped - no data available")
         else:
             print(f"    ⊝ filter_columns (disabled)")
+
+        if state_machine.get("convert_boolean_to_numeric", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_boolean_to_numeric")
+                    numeric_df = self.convert_boolean_to_numeric(dataframe=result["data"], month_id=file_id)
+                    
+                    if numeric_df is not None:
+                        result["data"] = numeric_df
+                        result["steps_executed"].append("convert_boolean_to_numeric")
+                        result["file_info"]["rows"] = len(numeric_df)
+                        result["file_info"]["columns"] = len(numeric_df.columns)
+                        print(f"      ✓ Converted boolean columns to numeric for {len(numeric_df)} rows")
+                    else:
+                        result["errors"].append("convert_boolean_to_numeric failed")
+                        print(f"      ✗ Failed to convert boolean columns to numeric")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"convert_boolean_to_numeric failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_boolean_to_numeric (no data available)")
+                result["errors"].append("convert_boolean_to_numeric skipped - no data available")
+        else:
+            print(f"    ⊝ convert_boolean_to_numeric (disabled)")
+
         
         if state_machine.get("save_month_df_to_csv", False):
             if result["data"] is not None:
@@ -603,17 +631,6 @@ class TrainingPipeline:
                 cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
                 print("Expanded weather_conditions into separate columns")
             
-            for col in NON_NUMERIC_FEATURES:
-                if col in cross_df.columns:
-                    # Fill NaN values with 0 before converting to integer
-                    nulls = cross_df[col].isna().sum()
-                    if nulls > 0:
-                        print(f"Filling {nulls} NaN values in {col} with 0 before conversion")
-                    cross_df[col] = cross_df[col].fillna(0)
-                    # Convert boolean values to integers (False -> 0, True -> 1)
-                    cross_df[col] = cross_df[col].astype(int)
-                    print(f"Converted {col} to numeric (0/1)")
-
             # Return the processed DataFrame
             return cross_df
             
@@ -1296,6 +1313,99 @@ class TrainingPipeline:
                 traceback_str = traceback.format_exc()
                 logger.error(f"Traceback: {traceback_str}")
                 return dataframe  # Return original dataframe on error
+
+    def convert_boolean_to_numeric(self, dataframe=None, month_id=None):
+            """
+            Convert boolean columns to numeric values (0/1).
+            
+            This method processes columns specified in NON_NUMERIC_FEATURES:
+            - Fills NaN values with 0 before conversion
+            - Converts boolean values to integers (False -> 0, True -> 1)
+            
+            Parameters:
+            -----------
+            dataframe : pandas.DataFrame
+                The dataframe to process.
+            month_id : str, optional
+                Month identifier for logging purposes.
+                
+            Returns:
+            --------
+            pandas.DataFrame
+                The dataframe with boolean columns converted to numeric.
+            """
+            # Check if dataframe is provided
+            if dataframe is None:
+                print("Error: Dataframe must be provided")
+                return None
+                
+            df = dataframe.copy()
+            print(f"Converting boolean columns to numeric in dataframe with {len(df)} rows")
+            
+            if df.empty:
+                print("Warning: Empty dataframe")
+                return df
+            
+            # Use the logging method for detailed logging
+            with self.get_logger("convert_boolean_to_numeric.log", "convert_boolean", month_id) as logger:
+                try:
+                    logger.info(f"Starting boolean to numeric conversion for {len(NON_NUMERIC_FEATURES)} columns")
+                    logger.info(f"Columns to process: {NON_NUMERIC_FEATURES}")
+                    
+                    columns_processed = 0
+                    columns_not_found = 0
+                    total_nulls_filled = 0
+                    
+                    for col in NON_NUMERIC_FEATURES:
+                        if col in df.columns:
+                            # Count NaN values before processing
+                            nulls = df[col].isna().sum()
+                            if nulls > 0:
+                                print(f"Filling {nulls} NaN values in '{col}' with 0 before conversion")
+                                logger.info(f"Filling {nulls} NaN values in '{col}' with 0")
+                                total_nulls_filled += nulls
+                            
+                            # Fill NaN values with 0 before converting to integer
+                            df[col] = df[col].fillna(0)
+                            
+                            # Convert boolean values to integers (False -> 0, True -> 1)
+                            df[col] = df[col].astype(int)
+                            
+                            print(f"Converted '{col}' to numeric (0/1)")
+                            logger.info(f"Converted '{col}' to numeric (0/1)")
+                            columns_processed += 1
+                            
+                            # Log value distribution after conversion
+                            value_counts = df[col].value_counts().sort_index()
+                            logger.info(f"'{col}' value distribution: {dict(value_counts)}")
+                            
+                        else:
+                            print(f"Column '{col}' not found in dataframe. Skipping.")
+                            logger.warning(f"Column '{col}' not found in dataframe")
+                            columns_not_found += 1
+                    
+                    # Summary
+                    print(f"\nBoolean to numeric conversion completed:")
+                    print(f"- Columns processed: {columns_processed}")
+                    print(f"- Columns not found: {columns_not_found}")
+                    print(f"- Total NaN values filled: {total_nulls_filled}")
+                    
+                    logger.info(f"Boolean to numeric conversion completed")
+                    logger.info(f"Columns processed: {columns_processed}")
+                    logger.info(f"Columns not found: {columns_not_found}")
+                    logger.info(f"Total NaN values filled: {total_nulls_filled}")
+                    logger.info(f"Final dataframe shape: {df.shape}")
+                    
+                    return df
+                    
+                except Exception as e:
+                    error_msg = f"Error converting boolean columns to numeric: {str(e)}"
+                    print(error_msg)
+                    logger.error(error_msg)
+                    import traceback
+                    traceback_str = traceback.format_exc()
+                    logger.error(f"Traceback: {traceback_str}")
+                    return dataframe  # Return original dataframe on error
 
     def save_month_df_to_csv(self, month_id, dataframe):
         """

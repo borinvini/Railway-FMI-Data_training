@@ -25,6 +25,7 @@ PREPROCESSING_STATE_MACHINE = {
     "merge_weather_columns": True,
     "process_actual_time_column": True,
     "filter_columns": True,
+    "convert_boolean_to_numeric": True,
     "save_month_df_to_csv": True
 }
 
