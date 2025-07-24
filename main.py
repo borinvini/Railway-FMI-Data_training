@@ -79,7 +79,7 @@ def main():
     
     # Display final summary
     if results:
-        success_rate = (results.get('successful_preprocessing', 0) / results.get('total_months', 1)) * 100
+        success_rate = (results.get('successful_preprocessing', 0) / results.get('total_files', 1)) * 100
         print(f"Overall success rate: {success_rate:.1f}%")
         
         if results.get('failed_files', 0) > 0:

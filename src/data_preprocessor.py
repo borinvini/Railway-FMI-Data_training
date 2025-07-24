@@ -39,11 +39,9 @@ from config.const import (
     IMBALANCE_THRESHOLD,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
-    METHOD_TO_PIPELINE_STAGE_MAPPING,
     NON_NUMERIC_FEATURES, 
     OUTPUT_FOLDER,
-    PIPELINE_STAGE_TO_METHOD_MAPPING,
-    PIPELINE_STAGES,
+    PREPROCESSING_STATE_MACHINE,
     PREPROCESSED_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
@@ -151,26 +149,19 @@ class TrainingPipeline:
                 handler.close()
                 logger.removeHandler(handler)
 
-    def get_method_name_for_stage(stage_name):
-        """Get the method name for a given pipeline stage."""
-        return PIPELINE_STAGE_TO_METHOD_MAPPING.get(stage_name)
-
-    def get_stage_name_for_method(method_name):
-        """Get the pipeline stage name for a given method."""
-        return METHOD_TO_PIPELINE_STAGE_MAPPING.get(method_name)
-
-
     def run_pipeline(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
         """
-        Run pipeline - processes each CSV file individually and saves as separate preprocessed files.
+        Run pipeline - processes each CSV file individually based on state machine configuration.
         
-        This method processes each input file separately instead of combining files by month,
+        This method processes each input file through the configured pipeline steps,
         resulting in individual preprocessed files for each YYYY-MM period.
         
         Parameters:
         -----------
         csv_files : list
             List of CSV file paths to process.
+        target_feature : str, optional
+            The target feature (currently used for compatibility, may be used in future steps).
             
         Returns:
         --------
@@ -182,15 +173,31 @@ class TrainingPipeline:
             return {
                 "total_files": 0,
                 "successful_preprocessing": 0,
-                "failed_files": 0
+                "failed_files": 0,
+                "state_machine_used": PREPROCESSING_STATE_MACHINE
             }
         
-        print(f"\nStarting basic preprocessing for {len(csv_files)} CSV files (individual processing).")
+        # Check if any pipeline steps are enabled
+        enabled_steps = [step for step, enabled in PREPROCESSING_STATE_MACHINE.items() if enabled]
+        if not enabled_steps:
+            print("Warning: No pipeline steps are enabled in the state machine.")
+            return {
+                "total_files": len(csv_files),
+                "successful_preprocessing": 0,
+                "failed_files": len(csv_files),
+                "state_machine_used": PREPROCESSING_STATE_MACHINE,
+                "error": "No pipeline steps enabled"
+            }
+        
+        print(f"\nStarting pipeline processing for {len(csv_files)} CSV files")
+        print(f"State machine configuration: {PREPROCESSING_STATE_MACHINE}")
+        print(f"Enabled pipeline steps: {enabled_steps}")
         
         # Initialize counters
         successful_preprocessing = 0
         failed_files = 0
         processed_files_info = []
+        pipeline_execution_details = []
         
         # Process each file individually
         for i, input_file_path in enumerate(csv_files):
@@ -202,6 +209,12 @@ class TrainingPipeline:
             if not match:
                 print(f"\n[{i+1}/{len(csv_files)}] Warning: Could not extract date from filename {filename}. Skipping.")
                 failed_files += 1
+                pipeline_execution_details.append({
+                    "filename": filename,
+                    "success": False,
+                    "error": "Could not extract date from filename",
+                    "steps_executed": []
+                })
                 continue
             
             year, month = match.groups()
@@ -210,51 +223,75 @@ class TrainingPipeline:
             print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename} (Year: {year}, Month: {month})")
             
             try:
-                # Process the individual file
-                processed_df = self.extract_nested_data(input_file_path)
+                # Execute pipeline steps using the state machine
+                pipeline_result = self.execute_pipeline_steps(
+                    input_file_path=input_file_path,
+                    file_id=file_id,
+                    year=year,
+                    state_machine=PREPROCESSING_STATE_MACHINE
+                )
                 
-                if processed_df is not None and not processed_df.empty:
-                    # Add year information for reference
-                    processed_df['data_year'] = year
+                # Record pipeline execution details
+                execution_detail = {
+                    "filename": filename,
+                    "file_id": file_id,
+                    "year": year,
+                    "month": month,
+                    "success": pipeline_result["success"],
+                    "steps_executed": pipeline_result["steps_executed"],
+                    "errors": pipeline_result["errors"]
+                }
+                
+                if pipeline_result["success"]:
+                    print(f"✓ Successfully processed {filename}")
+                    successful_preprocessing += 1
                     
-                    print(f"Successfully processed {filename}: {len(processed_df)} rows, {len(processed_df.columns)} columns")
+                    # Add file info to results
+                    processed_files_info.append({
+                        "original_file": filename,
+                        "year": year,
+                        "month": month,
+                        "file_id": file_id,
+                        "rows": pipeline_result["file_info"]["rows"],
+                        "columns": pipeline_result["file_info"]["columns"],
+                        "steps_executed": pipeline_result["steps_executed"]
+                    })
                     
-                    # Save the individual preprocessed file
-                    save_success = self.save_month_df_to_csv(file_id, processed_df)
-                    
-                    if save_success:
-                        print(f"Successfully saved preprocessed data for {file_id}")
-                        successful_preprocessing += 1
-                        processed_files_info.append({
-                            "original_file": filename,
-                            "year": year,
-                            "month": month,
-                            "file_id": file_id,
-                            "rows": len(processed_df),
-                            "columns": len(processed_df.columns)
-                        })
-                    else:
-                        print(f"Failed to save data for {file_id}")
-                        failed_files += 1
+                    execution_detail.update(pipeline_result["file_info"])
                 else:
-                    print(f"Warning: Failed to preprocess {filename} - empty result")
+                    print(f"✗ Failed to process {filename}")
+                    print(f"  Errors: {'; '.join(pipeline_result['errors'])}")
                     failed_files += 1
+                
+                pipeline_execution_details.append(execution_detail)
                     
             except Exception as e:
-                print(f"Error processing {filename}: {e}")
+                print(f"✗ Error processing {filename}: {e}")
                 failed_files += 1
+                pipeline_execution_details.append({
+                    "filename": filename,
+                    "success": False,
+                    "error": f"Unexpected error: {str(e)}",
+                    "steps_executed": []
+                })
         
         # Generate summary
         summary = {
             "total_files": len(csv_files),
             "successful_preprocessing": successful_preprocessing,
             "failed_files": failed_files,
-            "processed_files_info": processed_files_info
+            "processed_files_info": processed_files_info,
+            "state_machine_used": PREPROCESSING_STATE_MACHINE,
+            "enabled_steps": enabled_steps,
+            "pipeline_execution_details": pipeline_execution_details
         }
         
         # Print summary
-        print("\n" + "="*50)
-        print("BASIC PREPROCESSING SUMMARY:")
+        print("\n" + "="*60)
+        print("PIPELINE PROCESSING SUMMARY:")
+        print("="*60)
+        print(f"State machine configuration: {PREPROCESSING_STATE_MACHINE}")
+        print(f"Enabled steps: {enabled_steps}")
         print(f"Total files processed: {summary['total_files']}")
         print(f"Successfully processed and saved: {summary['successful_preprocessing']}")
         print(f"Failed to process: {summary['failed_files']}")
@@ -262,11 +299,116 @@ class TrainingPipeline:
         if processed_files_info:
             print(f"\nSuccessfully processed files:")
             for info in processed_files_info:
-                print(f"  {info['original_file']} -> preprocessed_data_{info['file_id']}.csv ({info['rows']:,} rows)")
+                steps_str = " → ".join(info['steps_executed'])
+                print(f"  {info['original_file']} -> preprocessed_data_{info['file_id']}.csv")
+                print(f"    ({info['rows']:,} rows, {len(info['steps_executed'])} steps: {steps_str})")
         
-        print("="*50)
+        if failed_files > 0:
+            print(f"\nFailed files:")
+            for detail in pipeline_execution_details:
+                if not detail["success"]:
+                    error_msg = detail.get("error", "Unknown error")
+                    print(f"  {detail['filename']}: {error_msg}")
+        
+        # Calculate and display success rate
+        success_rate = (successful_preprocessing / len(csv_files) * 100) if csv_files else 0
+        print(f"\nSuccess rate: {success_rate:.1f}%")
+        print("="*60)
         
         return summary
+
+    def execute_pipeline_steps(self, input_file_path, file_id, year, state_machine):
+        """
+        Execute pipeline steps based on the state machine configuration.
+        
+        This helper method processes a single file through the configured pipeline steps,
+        maintaining data flow between steps and handling errors gracefully.
+        
+        Parameters:
+        -----------
+        input_file_path : str
+            Path to the input CSV file
+        file_id : str
+            File identifier (e.g., "2023_12")
+        year : str
+            Year extracted from filename for reference
+        state_machine : dict
+            State machine configuration defining which steps to execute
+            
+        Returns:
+        --------
+        dict
+            Results of pipeline execution including success status, data, and metadata
+        """
+        result = {
+            "success": False,
+            "data": None,
+            "steps_executed": [],
+            "errors": [],
+            "file_info": {
+                "file_id": file_id,
+                "year": year,
+                "rows": 0,
+                "columns": 0
+            }
+        }
+        
+        print(f"  Executing pipeline steps based on state machine configuration...")
+        
+        # Step 1: Extract nested data if enabled
+        if state_machine.get("extract_nested_data", False):
+            try:
+                print(f"    → extract_nested_data")
+                processed_df = self.extract_nested_data(input_file_path)
+                
+                if processed_df is not None and not processed_df.empty:
+                    # Add year information for reference
+                    processed_df['data_year'] = year
+                    result["data"] = processed_df
+                    result["steps_executed"].append("extract_nested_data")
+                    result["file_info"]["rows"] = len(processed_df)
+                    result["file_info"]["columns"] = len(processed_df.columns)
+                    print(f"      ✓ Extracted {len(processed_df)} rows, {len(processed_df.columns)} columns")
+                else:
+                    result["errors"].append("extract_nested_data returned empty data")
+                    print(f"      ✗ Failed - empty result")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"extract_nested_data failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ extract_nested_data (disabled)")
+        
+        # Step 2: Save to CSV if enabled and we have data
+        if state_machine.get("save_month_df_to_csv", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → save_month_df_to_csv")
+                    save_success = self.save_month_df_to_csv(file_id, result["data"])
+                    
+                    if save_success:
+                        result["steps_executed"].append("save_month_df_to_csv")
+                        print(f"      ✓ Saved preprocessed data for {file_id}")
+                    else:
+                        result["errors"].append("save_month_df_to_csv failed")
+                        print(f"      ✗ Failed to save data for {file_id}")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"save_month_df_to_csv failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ save_month_df_to_csv (no data available)")
+                result["errors"].append("save_month_df_to_csv skipped - no data available")
+        else:
+            print(f"    ⊝ save_month_df_to_csv (disabled)")
+        
+        # Mark as successful if no errors occurred
+        result["success"] = len(result["errors"]) == 0
+        return result
 
     def extract_nested_data(self, input_file_path):
         """

@@ -15,6 +15,15 @@ IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 
+# Pipeline State Machine Configuration
+# Dictionary containing method names in execution order with enable/disable flags
+PREPROCESSING_STATE_MACHINE = {
+    # Data extraction and preprocessing methods
+    "extract_nested_data": True,
+    "save_month_df_to_csv": True
+}
+
+
 # Weather column missing value threshold (drop columns with more missing values than this %)
 WEATHER_MISSING_THRESHOLD = 30.0
 
@@ -90,55 +99,6 @@ TOP_FEATURES_COUNT = 5
 WEIGHT_DELAY_COLUMN = 'differenceInMinutes_eachStation_offset' # Put 'NONE' to disable the weights
 MAX_SAMPLE_WEIGHT_CLASSIFICATION = 5.0  # Put 1 to disable the weights for classification
 MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Put 1 to disable the weights for regression
-
-# Pipeline stages configuration
-PIPELINE_STAGES = [
-    "merge_weather_columns",
-    "clean_missing_values",
-    "remove_duplicates", 
-    "scale_numeric",
-    "add_train_delayed",
-    "select_target",
-    "save_csv",
-    "split_dataset",
-    "train_regularized_regression", 
-    "train_decision_tree_with_randomized_search_cv", 
-    "train_random_forest_with_randomized_search_cv",
-    "train_xgboost_with_randomized_search_cv"
-]
-
-# Dictionary mapping pipeline stage names to their corresponding method names
-PIPELINE_STAGE_TO_METHOD_MAPPING = {
-    # Data preprocessing stages
-    "merge_weather_columns": "merge_weather_columns",
-    "clean_missing_values": "handle_missing_values", 
-    "remove_duplicates": "remove_duplicates",
-    "scale_numeric": "scale_numeric_columns",
-    "add_train_delayed": "add_train_delayed_feature",
-    "select_target": "select_target_feature",
-    
-    # Data saving and splitting stages
-    "save_csv": "save_month_df_to_csv",
-    "split_dataset": "split_month_dataset",
-    
-    # Model training stages
-    "train_regularized_regression": "train_regularized_regression",
-    "train_decision_tree_with_randomized_search_cv": "train_decision_tree_with_randomized_search_cv",
-    "train_random_forest_with_randomized_search_cv": "train_random_forest_with_randomized_search_cv", 
-    "train_xgboost_with_randomized_search_cv": "train_xgboost_with_randomized_search_cv",
-    
-    # Combined data processing stages
-    "merge_all_preprocessed_files": "merge_all_preprocessed_files",
-    "split_combined_dataset": "split_combined_dataset",
-    "train_decision_tree_combined_data": "train_decision_tree_combined_data"
-}
-
-# Reverse mapping: method names to stage names
-METHOD_TO_PIPELINE_STAGE_MAPPING = {
-    method: stage for stage, method in PIPELINE_STAGE_TO_METHOD_MAPPING.items()
-}
-
-
 
 # Parameter distributions for RandomizedSearchCV
 DECISION_TREE_PARAM_DISTRIBUTIONS = {
