@@ -20,6 +20,7 @@ REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
+    "add_train_delayed_feature": False,
     "save_month_df_to_csv": True
 }
 
