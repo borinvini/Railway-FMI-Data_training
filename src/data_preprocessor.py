@@ -432,6 +432,34 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ merge_weather_columns (disabled)")
 
+
+        if state_machine.get("process_actual_time_column", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → process_actual_time_column")
+                    time_df = self.process_actual_time_column(dataframe=result["data"], month_id=file_id)
+                    
+                    if time_df is not None:
+                        result["data"] = time_df
+                        result["steps_executed"].append("process_actual_time_column")
+                        result["file_info"]["rows"] = len(time_df)
+                        result["file_info"]["columns"] = len(time_df.columns)
+                        print(f"      ✓ Extracted temporal features for {len(time_df)} rows")
+                    else:
+                        result["errors"].append("process_actual_time_column failed")
+                        print(f"      ✗ Failed to process actualTime column")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"process_actual_time_column failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ process_actual_time_column (no data available)")
+                result["errors"].append("process_actual_time_column skipped - no data available")
+        else:
+            print(f"    ⊝ process_actual_time_column (disabled)")
+
         if state_machine.get("filter_columns", False):
             if result["data"] is not None:
                 try:
@@ -982,6 +1010,156 @@ class TrainingPipeline:
             except Exception as e:
                 print(f"Error merging weather columns: {e}")
                 logger.error(f"Error merging weather columns: {str(e)}")
+                return dataframe  # Return original dataframe on error
+
+    def process_actual_time_column(self, dataframe=None, month_id=None):
+        """
+        Process the 'actualTime' column to extract temporal features.
+        
+        From the 'actualTime' column (format: "2023-11-01T03:15:46.000Z"), extract:
+        - month: Month number (1-12)
+        - hour: Hour and minute in HH:MM format (e.g., "03:15", "14:30")
+        - day_of_week: Day of week (1-7, where 1=Sunday, 7=Saturday)
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with added temporal feature columns.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Processing 'actualTime' column in dataframe with {len(df)} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Check if 'actualTime' column exists
+        if 'actualTime' not in df.columns:
+            print("Warning: 'actualTime' column not found in dataframe. Skipping actualTime processing.")
+            print(f"Available columns: {list(df.columns)}")
+            return df
+        
+        # Use the logging method for detailed logging
+        with self.get_logger("process_actual_time.log", "process_actual_time", month_id) as logger:
+            try:
+                logger.info(f"Starting actualTime processing for {len(df)} rows")
+                
+                print(f"Found 'actualTime' column with {len(df)} rows to process")
+                
+                # Debug: Check sample values
+                print("\n--- DEBUGGING ACTUALTIME COLUMN ---")
+                sample_values = df['actualTime'].dropna().head(5).tolist()
+                print(f"Sample values (first 5 non-null): {sample_values}")
+                
+                # Check for missing values
+                missing_count = df['actualTime'].isna().sum()
+                valid_count = len(df) - missing_count
+                print(f"Valid actualTime values: {valid_count}")
+                print(f"Missing actualTime values: {missing_count}")
+                
+                if valid_count == 0:
+                    print("Warning: All actualTime values are missing. Cannot extract temporal features.")
+                    logger.warning("All actualTime values are missing")
+                    return df
+                
+                print("--- END DEBUGGING ---\n")
+                
+                # Convert actualTime to datetime
+                print("Converting actualTime to datetime...")
+                df['actualTime_parsed'] = pd.to_datetime(df['actualTime'], errors='coerce')
+                
+                # Check how many successfully parsed
+                parsed_count = df['actualTime_parsed'].notna().sum()
+                failed_count = len(df) - missing_count - parsed_count
+                
+                print(f"Successfully parsed datetime: {parsed_count}")
+                if failed_count > 0:
+                    print(f"Failed to parse datetime: {failed_count}")
+                    logger.warning(f"Failed to parse {failed_count} datetime values")
+                
+                # Extract temporal features only for successfully parsed dates
+                mask = df['actualTime_parsed'].notna()
+                
+                # Extract month (1-12)
+                df.loc[mask, 'month'] = df.loc[mask, 'actualTime_parsed'].dt.month
+                
+                # Extract hour and minute in HH:MM format
+                hour_values = df.loc[mask, 'actualTime_parsed'].dt.hour
+                minute_values = df.loc[mask, 'actualTime_parsed'].dt.minute
+                df.loc[mask, 'hour'] = hour_values.astype(str).str.zfill(2) + ':' + minute_values.astype(str).str.zfill(2)
+                
+                # Extract day of week (1-7, where 1=Sunday, 7=Saturday)
+                pandas_dayofweek = df.loc[mask, 'actualTime_parsed'].dt.dayofweek
+                df.loc[mask, 'day_of_week'] = np.where(pandas_dayofweek == 6, 1, pandas_dayofweek + 2)
+                
+                # Drop the temporary parsed column
+                df = df.drop('actualTime_parsed', axis=1)
+                
+                # Convert new columns to appropriate data types
+                for col in ['month', 'day_of_week']:
+                    if col in df.columns:
+                        # Fill NaN values with 0 for rows that couldn't be parsed, then convert to int
+                        df[col] = df[col].fillna(0).astype(int)
+                
+                # For hour column, fill NaN values with "00:00" for rows that couldn't be parsed
+                if 'hour' in df.columns:
+                    df['hour'] = df['hour'].fillna("00:00")
+                
+                # Print summary statistics
+                print(f"\nTemporal feature extraction completed:")
+                
+                if parsed_count > 0:
+                    print(f"Month values range: {df['month'].min()} - {df['month'].max()}")
+                    print(f"Hour format: HH:MM (e.g., {df[df['hour'] != '00:00']['hour'].iloc[0] if (df['hour'] != '00:00').any() else '00:00'})")
+                    print(f"Day of week values range: {df['day_of_week'].min()} - {df['day_of_week'].max()}")
+                    
+                    # Show distribution
+                    print(f"\nMonth distribution:")
+                    month_counts = df[df['month'] > 0]['month'].value_counts().sort_index()
+                    for month, count in month_counts.items():
+                        print(f"  Month {month:2d}: {count:,} records")
+                    
+                    print(f"\nHour distribution (showing top 5 most frequent times):")
+                    hour_counts = df[df['hour'] != '00:00']['hour'].value_counts().head(5)
+                    for hour_time, count in hour_counts.items():
+                        print(f"  {hour_time}: {count:,} records")
+                    
+                    print(f"\nDay of week distribution:")
+                    day_names = {1: 'Sunday', 2: 'Monday', 3: 'Tuesday', 4: 'Wednesday', 
+                               5: 'Thursday', 6: 'Friday', 7: 'Saturday'}
+                    dow_counts = df[df['day_of_week'] > 0]['day_of_week'].value_counts().sort_index()
+                    for day_num, count in dow_counts.items():
+                        day_name = day_names.get(day_num, f'Unknown({day_num})')
+                        print(f"  {day_num} ({day_name}): {count:,} records")
+                
+                # Log summary
+                logger.info(f"Temporal feature extraction completed")
+                logger.info(f"Successfully processed: {parsed_count} records")
+                logger.info(f"Failed to parse: {failed_count} records") 
+                logger.info(f"Missing actualTime: {missing_count} records")
+                logger.info(f"Added columns: month, hour, day_of_week")
+                
+                return df
+                
+            except Exception as e:
+                error_msg = f"Error processing actualTime column: {str(e)}"
+                print(error_msg)
+                logger.error(error_msg)
+                import traceback
+                traceback_str = traceback.format_exc()
+                logger.error(f"Traceback: {traceback_str}")
                 return dataframe  # Return original dataframe on error
 
     def filter_columns(self, dataframe=None, month_id=None):

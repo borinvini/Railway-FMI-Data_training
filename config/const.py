@@ -23,7 +23,8 @@ PREPROCESSING_STATE_MACHINE = {
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
-    "filter_columns": False,
+    "process_actual_time_column": True,
+    "filter_columns": True,
     "save_month_df_to_csv": True
 }
 
@@ -49,7 +50,7 @@ REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'diff
 
 
 # Valid prediction features (non-target features used for training)
-VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop"]
+VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week"]
 
 # Target features that are categoricals for classification problems
 CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
