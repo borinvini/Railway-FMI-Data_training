@@ -20,7 +20,9 @@ REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
-    "add_train_delayed_feature": False,
+    "process_causes_column": True,
+    "add_train_delayed_feature": True,
+    "merge_weather_columns": True,
     "save_month_df_to_csv": True
 }
 
@@ -46,7 +48,7 @@ REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'diff
 
 
 # Valid prediction features (non-target features used for training)
-VALID_PREDICTION_FEATURES = ["weather_conditions", "trainStopping", "commercialStop"]
+VALID_PREDICTION_FEATURES = ["trainStopping", "commercialStop"]
 
 # Target features that are categoricals for classification problems
 CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']

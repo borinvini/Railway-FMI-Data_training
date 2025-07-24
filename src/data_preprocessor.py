@@ -29,6 +29,7 @@ from config.const import (
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     VALID_TARGET_FEATURES,
+    WEATHER_COLS_TO_MERGE,
     WEIGHT_DELAY_COLUMN,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
@@ -323,7 +324,6 @@ class TrainingPipeline:
         
         print(f"  Executing pipeline steps based on state machine configuration...")
         
-        # Step 1: Extract nested data if enabled
         if state_machine.get("extract_nested_data", False):
             try:
                 print(f"    → extract_nested_data")
@@ -348,8 +348,34 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ extract_nested_data (disabled)")
+
+        if state_machine.get("process_causes_column", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → process_causes_column")
+                    causes_df = self.process_causes_column(dataframe=result["data"])
+                    
+                    if causes_df is not None:
+                        result["data"] = causes_df
+                        result["steps_executed"].append("process_causes_column")
+                        result["file_info"]["rows"] = len(causes_df)
+                        result["file_info"]["columns"] = len(causes_df.columns)
+                        print(f"      ✓ Processed causes column for {len(causes_df)} rows")
+                    else:
+                        result["errors"].append("process_causes_column failed")
+                        print(f"      ✗ Failed to process causes column")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"process_causes_column failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ process_causes_column (no data available)")
+                result["errors"].append("process_causes_column skipped - no data available")
+        else:
+            print(f"    ⊝ process_causes_column (disabled)")
         
-        # Step 2: Add train delayed feature if enabled and we have data
         if state_machine.get("add_train_delayed_feature", False):
             if result["data"] is not None:
                 try:
@@ -376,8 +402,35 @@ class TrainingPipeline:
                 result["errors"].append("add_train_delayed_feature skipped - no data available")
         else:
             print(f"    ⊝ add_train_delayed_feature (disabled)")
+
+        if state_machine.get("merge_weather_columns", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → merge_weather_columns")
+                    merged_df = self.merge_weather_columns(dataframe=result["data"], month_id=file_id)
+                    
+                    if merged_df is not None:
+                        result["data"] = merged_df
+                        result["steps_executed"].append("merge_weather_columns")
+                        result["file_info"]["rows"] = len(merged_df)
+                        result["file_info"]["columns"] = len(merged_df.columns)
+                        print(f"      ✓ Merged weather columns for {len(merged_df)} rows")
+                    else:
+                        result["errors"].append("merge_weather_columns failed")
+                        print(f"      ✗ Failed to merge weather columns")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"merge_weather_columns failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ merge_weather_columns (no data available)")
+                result["errors"].append("merge_weather_columns skipped - no data available")
+        else:
+            print(f"    ⊝ merge_weather_columns (disabled)")
+
         
-        # Step 3: Save to CSV if enabled and we have data
         if state_machine.get("save_month_df_to_csv", False):
             if result["data"] is not None:
                 try:
@@ -514,6 +567,178 @@ class TrainingPipeline:
             traceback.print_exc()  # Print full traceback for debugging
             return None
 
+    def process_causes_column(self, dataframe=None):
+        """
+        Process the 'causes' column to extract only the categoryCode from complex nested data.
+        
+        This method handles the 'causes' column which may contain:
+        - Empty values (NaN, None, empty string, empty list)
+        - Complex nested data like: "[{'categoryCode': 'L', 'detailedCategoryCode': 'L2', ...}]"
+        
+        From the complex data, only the 'categoryCode' is extracted and kept.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with the processed 'causes' column containing only categoryCode values.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Processing 'causes' column in dataframe with {len(df)} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Check if 'causes' column exists
+        if 'causes' not in df.columns:
+            print("Warning: 'causes' column not found in dataframe. Skipping causes processing.")
+            print(f"Available columns: {list(df.columns)}")
+            return df
+        
+        try:
+            print(f"Found 'causes' column with {len(df)} rows to process")
+            
+            # Debug: Check what types of values we have
+            print("\n--- DEBUGGING CAUSES COLUMN ---")
+            sample_values = df['causes'].head(10).tolist()
+            print(f"Sample values (first 10): {sample_values}")
+            
+            # Check value types and counts
+            value_types = {}
+            empty_count = 0
+            non_empty_count = 0
+            
+            for idx, val in enumerate(df['causes']):
+                val_type = type(val).__name__
+                if val_type not in value_types:
+                    value_types[val_type] = 0
+                value_types[val_type] += 1
+                
+                # Check if value is empty
+                is_empty = (
+                    pd.isna(val) or 
+                    val is None or 
+                    val == "" or 
+                    val == "[]" or
+                    (isinstance(val, list) and len(val) == 0) or
+                    (isinstance(val, str) and val.strip() == "")
+                )
+                
+                if is_empty:
+                    empty_count += 1
+                else:
+                    non_empty_count += 1
+                    # Show first few non-empty values for debugging
+                    if non_empty_count <= 5:
+                        print(f"Non-empty value {non_empty_count}: {repr(val)} (type: {val_type})")
+            
+            print(f"Value types found: {value_types}")
+            print(f"Empty values: {empty_count}")
+            print(f"Non-empty values: {non_empty_count}")
+            print("--- END DEBUGGING ---\n")
+            
+            # Process each row in the causes column
+            processed_values = []
+            successful_extractions = 0
+            failed_extractions = 0
+            
+            for index, cause_value in df['causes'].items():
+                # Check if value is empty (using comprehensive check)
+                is_empty = (
+                    pd.isna(cause_value) or 
+                    cause_value is None or 
+                    cause_value == "" or 
+                    cause_value == "[]" or
+                    (isinstance(cause_value, list) and len(cause_value) == 0) or
+                    (isinstance(cause_value, str) and cause_value.strip() == "")
+                )
+                
+                if is_empty:
+                    # Keep empty values as None
+                    processed_values.append(None)
+                else:
+                    try:
+                        # Process non-empty values
+                        if isinstance(cause_value, str):
+                            # Replace unquoted 'nan' with 'None' for parsing compatibility
+                            cause_fixed = cause_value.replace("nan", "None")
+                            parsed_causes = ast.literal_eval(cause_fixed)
+                        else:
+                            # Assume it's already a Python object (list, dict, etc.)
+                            parsed_causes = cause_value
+                        
+                        # Extract categoryCode from the parsed data
+                        category_code = None
+                        
+                        if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
+                            # List format: get first item
+                            first_cause = parsed_causes[0]
+                            if isinstance(first_cause, dict) and 'categoryCode' in first_cause:
+                                category_code = first_cause['categoryCode']
+                        elif isinstance(parsed_causes, dict) and 'categoryCode' in parsed_causes:
+                            # Direct dictionary format
+                            category_code = parsed_causes['categoryCode']
+                        
+                        if category_code is not None:
+                            processed_values.append(category_code)
+                            successful_extractions += 1
+                        else:
+                            processed_values.append(None)
+                            failed_extractions += 1
+                            # Show first few failed cases
+                            if failed_extractions <= 3:
+                                print(f"Warning: No categoryCode found in row {index}, value: {repr(cause_value)}")
+                            
+                    except Exception as e:
+                        # Parsing failed, set to None
+                        processed_values.append(None)
+                        failed_extractions += 1
+                        if failed_extractions <= 3:  # Only print first few errors to avoid spam
+                            print(f"Warning: Failed to parse causes in row {index}: {e}, value: {repr(cause_value)}")
+            
+            # Replace the causes column with processed values
+            df['causes'] = processed_values
+            
+            # Count final state
+            final_none_count = sum(1 for val in processed_values if val is None)
+            final_category_count = len(processed_values) - final_none_count
+            
+            # Get unique category codes
+            unique_categories = set()
+            for val in processed_values:
+                if val is not None:
+                    unique_categories.add(val)
+            
+            print(f"\nCauses column processing completed:")
+            print(f"  Original empty values: {empty_count}")
+            print(f"  Original non-empty values: {non_empty_count}")
+            print(f"  Successful categoryCode extractions: {successful_extractions}")
+            print(f"  Failed extractions: {failed_extractions}")
+            print(f"  Final state: {final_none_count} None values, {final_category_count} categoryCode values")
+            
+            if unique_categories:
+                print(f"  Unique category codes found: {sorted(unique_categories)}")
+            else:
+                print(f"  No category codes were successfully extracted")
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error processing causes column: {e}")
+            import traceback
+            traceback.print_exc()
+            return dataframe  # Return original dataframe on error
+
     def add_train_delayed_feature(self, dataframe=None):
         """
         Add a binary column 'trainDelayed' based on the configured target column.
@@ -583,6 +808,154 @@ class TrainingPipeline:
             print(f"Error adding 'trainDelayed' column: {e}")
             return dataframe  # Return original dataframe on error
         
+    def merge_weather_columns(self, dataframe=None, month_id=None):
+        """
+        Merge weather feature columns that have 'Other' variants into their main columns.
+        
+        For each weather feature in WEATHER_COLS_TO_MERGE:
+        - If main column (e.g., 'Snow depth') is missing, use value from 'Other' variant
+        - Drop the 'Other' and 'Other Distance' columns after merging
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with merged weather columns and unwanted columns removed.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Merging weather columns in dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Use the new logging method
+        with self.get_logger("merge_weather_columns.log", "merge_weather", month_id) as logger:
+            try:
+                logger.info(f"Starting weather column merging for {len(WEATHER_COLS_TO_MERGE)} weather features")
+                
+                total_merges = 0
+                total_drops = 0
+                
+                # Process each weather feature in the list
+                for weather_feature in WEATHER_COLS_TO_MERGE:
+                    main_col = weather_feature
+                    other_col = f"{weather_feature} Other"
+                    other_distance_col = f"{weather_feature} Other Distance"
+                    
+                    # Check which columns exist for this weather feature
+                    has_main = main_col in df.columns
+                    has_other = other_col in df.columns
+                    has_other_distance = other_distance_col in df.columns
+                    
+                    print(f"\nProcessing '{weather_feature}':")
+                    print(f"- Main column '{main_col}': {has_main}")
+                    print(f"- Other column '{other_col}': {has_other}")
+                    print(f"- Other Distance column '{other_distance_col}': {has_other_distance}")
+                    
+                    # Initialize merge statistics for this feature
+                    initial_main_missing = 0
+                    initial_other_missing = 0
+                    values_merged = 0
+                    final_main_missing = 0
+                    
+                    # Handle merging logic
+                    if not has_main and not has_other:
+                        print(f"  No columns found for '{weather_feature}'. Skipping.")
+                        logger.info(f"{weather_feature}: No columns found")
+                        
+                    elif not has_main and has_other:
+                        print(f"  Only 'Other' column found. Renaming '{other_col}' to '{main_col}'.")
+                        initial_other_missing = df[other_col].isna().sum()
+                        df = df.rename(columns={other_col: main_col})
+                        final_main_missing = df[main_col].isna().sum()
+                        has_main = True
+                        has_other = False
+                        logger.info(f"{weather_feature}: Renamed Other column to main - Missing: {final_main_missing}")
+                        
+                    elif has_main and not has_other:
+                        print(f"  Only main column found. No merging needed.")
+                        initial_main_missing = df[main_col].isna().sum()
+                        final_main_missing = initial_main_missing
+                        logger.info(f"{weather_feature}: Only main column - Missing: {final_main_missing}")
+                        
+                    else:
+                        # Both columns exist - proceed with merging logic
+                        print(f"  Both columns found. Proceeding with merge logic.")
+                        
+                        # Count initial missing values in each column
+                        initial_main_missing = df[main_col].isna().sum()
+                        initial_other_missing = df[other_col].isna().sum()
+                        
+                        print(f"  Before merge:")
+                        print(f"  - '{main_col}' missing values: {initial_main_missing}")
+                        print(f"  - '{other_col}' missing values: {initial_other_missing}")
+                        
+                        # Create a mask for rows where main column is missing but other column is not
+                        merge_mask = df[main_col].isna() & df[other_col].notna()
+                        merge_count = merge_mask.sum()
+                        
+                        if merge_count > 0:
+                            print(f"  Merging {merge_count} values from '{other_col}' to '{main_col}'")
+                            # Fill missing main column values with other column values
+                            df.loc[merge_mask, main_col] = df.loc[merge_mask, other_col]
+                            values_merged = merge_count
+                            total_merges += merge_count
+                        else:
+                            print(f"  No values to merge (no rows where {main_col} is missing but {other_col} has values)")
+                            values_merged = 0
+                        
+                        # Count final missing values
+                        final_main_missing = df[main_col].isna().sum()
+                        
+                        print(f"  After merge:")
+                        print(f"  - '{main_col}' missing values: {final_main_missing}")
+                        print(f"  - Values successfully merged: {values_merged}")
+                    
+                    # Log the merge results for this feature
+                    logger.info(f"{weather_feature} - Main missing: {initial_main_missing}, Other missing: {initial_other_missing}, Values merged: {values_merged}, Final missing: {final_main_missing}")
+                    
+                    # Drop unwanted columns for this feature
+                    columns_to_drop = []
+                    if has_other:
+                        columns_to_drop.append(other_col)
+                    if has_other_distance:
+                        columns_to_drop.append(other_distance_col)
+                    
+                    if columns_to_drop:
+                        df = df.drop(columns=columns_to_drop)
+                        total_drops += len(columns_to_drop)
+                        print(f"  Dropped columns: {columns_to_drop}")
+                    else:
+                        print(f"  No columns to drop for '{weather_feature}'")
+                
+                # Summary logging
+                print(f"\nWeather column merging summary:")
+                print(f"- Total features processed: {len(WEATHER_COLS_TO_MERGE)}")
+                print(f"- Total values merged: {total_merges}")
+                print(f"- Total columns dropped: {total_drops}")
+                
+                logger.info(f"Weather column merging completed - Features processed: {len(WEATHER_COLS_TO_MERGE)}, Total merges: {total_merges}, Columns dropped: {total_drops}")
+                logger.info(f"Final dataframe shape: {df.shape}")
+                
+                return df
+                
+            except Exception as e:
+                print(f"Error merging weather columns: {e}")
+                logger.error(f"Error merging weather columns: {str(e)}")
+                return dataframe  # Return original dataframe on error
+
     def save_month_df_to_csv(self, month_id, dataframe):
         """
         Save a processed month's dataframe to a CSV file.
