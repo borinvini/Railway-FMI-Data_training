@@ -23,6 +23,7 @@ PREPROCESSING_STATE_MACHINE = {
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
+    "filter_columns": False,
     "save_month_df_to_csv": True
 }
 
@@ -48,7 +49,7 @@ REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'diff
 
 
 # Valid prediction features (non-target features used for training)
-VALID_PREDICTION_FEATURES = ["trainStopping", "commercialStop"]
+VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop"]
 
 # Target features that are categoricals for classification problems
 CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
@@ -66,6 +67,22 @@ delay = True
 # Long-distance trains: 5 min
 # Short trains: 2-3 min
 TRAIN_DELAY_MINUTES = 5
+
+# Important weather conditions to check for missing value handling
+ALL_WEATHER_FEATURES = [
+    'Air temperature', 
+    'Wind speed', 
+    'Gust speed', 
+    'Wind direction', 
+    'Relative humidity', 
+    'Dew-point temperature',
+    'Precipitation amount',
+    'Precipitation intensity',
+    'Snow depth',
+    'Pressure (msl)',
+    'Horizontal visibility',
+    'Cloud amount'
+]
 
 # Important weather conditions to check for missing value handling
 IMPORTANT_WEATHER_CONDITIONS = [

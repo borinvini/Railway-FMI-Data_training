@@ -14,6 +14,7 @@ from sklearn.model_selection import StratifiedKFold
 
 from config.const import (
     ALL_PREPROCESSED_OUTPUT_FOLDER,
+    ALL_WEATHER_FEATURES,
     DATA_FILE_PREFIX_FOR_TRAINING,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
@@ -29,6 +30,7 @@ from config.const import (
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     VALID_TARGET_FEATURES,
+    VALID_TRAIN_PREDICTION_FEATURES,
     WEATHER_COLS_TO_MERGE,
     WEIGHT_DELAY_COLUMN,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -430,6 +432,32 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ merge_weather_columns (disabled)")
 
+        if state_machine.get("filter_columns", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → filter_columns")
+                    filtered_df = self.filter_columns(dataframe=result["data"], month_id=file_id)
+                    
+                    if filtered_df is not None:
+                        result["data"] = filtered_df
+                        result["steps_executed"].append("filter_columns")
+                        result["file_info"]["rows"] = len(filtered_df)
+                        result["file_info"]["columns"] = len(filtered_df.columns)
+                        print(f"      ✓ Filtered columns for {len(filtered_df)} rows, {len(filtered_df.columns)} columns")
+                    else:
+                        result["errors"].append("filter_columns failed")
+                        print(f"      ✗ Failed to filter columns")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"filter_columns failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ filter_columns (no data available)")
+                result["errors"].append("filter_columns skipped - no data available")
+        else:
+            print(f"    ⊝ filter_columns (disabled)")
         
         if state_machine.get("save_month_df_to_csv", False):
             if result["data"] is not None:
@@ -954,6 +982,141 @@ class TrainingPipeline:
             except Exception as e:
                 print(f"Error merging weather columns: {e}")
                 logger.error(f"Error merging weather columns: {str(e)}")
+                return dataframe  # Return original dataframe on error
+
+    def filter_columns(self, dataframe=None, month_id=None):
+        """
+        Filter dataframe to keep only specified columns from the constants.
+        
+        This method keeps only the columns defined in:
+        - VALID_TARGET_FEATURES: Target variables for prediction
+        - VALID_TRAIN_PREDICTION_FEATURES: Train-specific features
+        - ALL_WEATHER_FEATURES: Weather-related features
+        - Additional utility columns: 'data_year', 'train_id', 'causes' (if they exist)
+        
+        All other columns are dropped to focus the dataset on relevant features only.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to filter.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The filtered dataframe with only specified columns.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Filtering columns in dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Use the logging method for detailed logging
+        with self.get_logger("filter_columns.log", "filter_columns", month_id) as logger:
+            try:
+                logger.info(f"Starting column filtering for dataframe with {len(df.columns)} columns")
+                logger.info(f"Original columns: {list(df.columns)}")
+                
+                # Define all columns we want to keep
+                columns_to_keep = []
+                
+                # Add target features that exist in the dataframe
+                target_cols_found = [col for col in VALID_TARGET_FEATURES if col in df.columns]
+                columns_to_keep.extend(target_cols_found)
+                print(f"Target columns found: {target_cols_found}")
+                logger.info(f"Target columns found: {target_cols_found}")
+                
+                # Add train prediction features that exist in the dataframe
+                train_cols_found = [col for col in VALID_TRAIN_PREDICTION_FEATURES if col in df.columns]
+                columns_to_keep.extend(train_cols_found)
+                print(f"Train prediction columns found: {train_cols_found}")
+                logger.info(f"Train prediction columns found: {train_cols_found}")
+                
+                # Add weather features that exist in the dataframe
+                weather_cols_found = [col for col in ALL_WEATHER_FEATURES if col in df.columns]
+                columns_to_keep.extend(weather_cols_found)
+                print(f"Weather columns found: {weather_cols_found}")
+                logger.info(f"Weather columns found: {weather_cols_found}")
+                
+                # Add utility columns if they exist
+                #utility_columns = ['data_year', 'train_id', 'causes']
+                #utility_cols_found = [col for col in utility_columns if col in df.columns]
+                #columns_to_keep.extend(utility_cols_found)
+                #print(f"Utility columns found: {utility_cols_found}")
+                #logger.info(f"Utility columns found: {utility_cols_found}")
+                
+                # Remove duplicates while preserving order
+                columns_to_keep = list(dict.fromkeys(columns_to_keep))
+                
+                # Check if we have any columns to keep
+                if not columns_to_keep:
+                    error_msg = "No specified columns found in dataframe"
+                    print(f"Error: {error_msg}")
+                    logger.error(error_msg)
+                    logger.error(f"Available columns: {list(df.columns)}")
+                    logger.error(f"Expected target columns: {VALID_TARGET_FEATURES}")
+                    logger.error(f"Expected train columns: {VALID_TRAIN_PREDICTION_FEATURES}")
+                    logger.error(f"Expected weather columns: {ALL_WEATHER_FEATURES}")
+                    return None
+                
+                # Identify columns that will be dropped
+                original_columns = set(df.columns)
+                columns_to_keep_set = set(columns_to_keep)
+                columns_to_drop = original_columns - columns_to_keep_set
+                
+                print(f"\nColumn filtering summary:")
+                print(f"- Original columns: {len(original_columns)}")
+                print(f"- Columns to keep: {len(columns_to_keep)}")
+                print(f"- Columns to drop: {len(columns_to_drop)}")
+                
+                logger.info(f"Column filtering summary:")
+                logger.info(f"Original columns: {len(original_columns)}")
+                logger.info(f"Columns to keep: {len(columns_to_keep)}")
+                logger.info(f"Columns to drop: {len(columns_to_drop)}")
+                
+                if columns_to_drop:
+                    print(f"\nColumns being dropped:")
+                    dropped_list = sorted(list(columns_to_drop))
+                    for col in dropped_list:
+                        print(f"  - {col}")
+                    logger.info(f"Dropped columns: {dropped_list}")
+                
+                print(f"\nColumns being kept:")
+                for i, col in enumerate(columns_to_keep, 1):
+                    print(f"  {i:2d}. {col}")
+                
+                logger.info(f"Kept columns: {columns_to_keep}")
+                
+                # Filter the dataframe to keep only specified columns
+                filtered_df = df[columns_to_keep]
+                
+                # Verify the filtering worked
+                print(f"\nFiltering completed:")
+                print(f"- Final dataframe shape: {filtered_df.shape}")
+                print(f"- Columns retained: {len(filtered_df.columns)}")
+                
+                logger.info(f"Column filtering completed successfully")
+                logger.info(f"Final dataframe shape: {filtered_df.shape}")
+                logger.info(f"Final columns: {list(filtered_df.columns)}")
+                
+                return filtered_df
+                
+            except Exception as e:
+                error_msg = f"Error filtering columns: {str(e)}"
+                print(error_msg)
+                logger.error(error_msg)
+                import traceback
+                traceback_str = traceback.format_exc()
+                logger.error(f"Traceback: {traceback_str}")
                 return dataframe  # Return original dataframe on error
 
     def save_month_df_to_csv(self, month_id, dataframe):
