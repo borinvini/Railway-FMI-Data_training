@@ -2059,9 +2059,8 @@ class TrainingPipeline:
         - Drop rows where all remaining weather condition columns have missing values
         - Drop rows where differenceInMinutes or cancelled are None
         - Fill missing values in trainStopping and commercialStop with False
-        - Use variable-specific imputation for weather columns:
-        - Zero for precipitation and snow metrics
-        - Median for all other columns that still have missing values
+        - Use month-specific median imputation for all weather columns
+        - Use global median for all other columns that still have missing values
         
         Parameters:
         -----------
@@ -2136,13 +2135,13 @@ class TrainingPipeline:
             
             print("--- END COMPLETENESS ANALYSIS ---\n")
             logger.info("=== End Completeness Analysis ===")
-            # END NEW COMPLETENESS ANALYSIS
             
             # Count rows before cleaning
             original_row_count = len(df)
             original_col_count = len(df.columns)
             
             # Fill missing values in non numeric features
+            from config.const import CATEGORICAL_FEATURES, BOOLEAN_FEATURES
             for col in CATEGORICAL_FEATURES or BOOLEAN_FEATURES:
                 if col in df.columns:
                     nulls = df[col].isna().sum()
@@ -2157,6 +2156,7 @@ class TrainingPipeline:
                         logger.info(f"Filled {nulls} missing values in '{col}' with 0")
 
             # Check required columns
+            from config.const import VALID_TARGET_FEATURES
             required_cols = [col for col in VALID_TARGET_FEATURES if col in df.columns]
             
             if required_cols:
@@ -2179,6 +2179,9 @@ class TrainingPipeline:
             # Step 3: Handle weather condition columns
             print(f"\n--- WEATHER COLUMN FILTERING ---")
             logger.info("=== Weather Column Filtering ===")
+            
+            # Drop weather columns that exceed the missing value threshold
+            from config.const import WEATHER_MISSING_THRESHOLD
             
             # Identify all weather-related columns (not just important ones)
             all_weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in self.important_conditions)]
@@ -2250,37 +2253,93 @@ class TrainingPipeline:
             else:
                 logger.info(f"Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
             
-            # ===== ENHANCED MISSING VALUE HANDLING (WITHOUT INDICATORS) =====
+            # ===== ENHANCED MISSING VALUE HANDLING - WEATHER FEATURES WITH MONTH-SPECIFIC MEDIAN =====
             
-            # Group weather variables by appropriate imputation method
-            zero_fill_cols = ['Precipitation amount', 'Precipitation intensity', 'Snow depth']
+            # Identify all weather-related columns (after filtering)
+            weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in ALL_WEATHER_FEATURES)]
+        
             
-            # 1. Zero imputation for precipitation and snow metrics
-            for col in zero_fill_cols:
-                if col in df.columns:
+            if weather_cols:
+                print(f"\n--- WEATHER FEATURES IMPUTATION WITH MONTH-SPECIFIC MEDIANS ---")
+                logger.info("=== Weather Features Imputation with Month-Specific Medians ===")
+                
+                # Check if month column exists
+                if 'month' not in df.columns:
+                    print("Warning: 'month' column not found. Cannot perform month-specific imputation.")
+                    logger.warning("'month' column not found. Cannot perform month-specific imputation.")
+                    
+                    # Fallback to global median for weather features
+                    for col in weather_cols:
+                        nulls = df[col].isna().sum()
+                        if nulls > 0:
+                            percentage = (nulls / len(df)) * 100
+                            median_value = df[col].median()
+                            df[col] = df[col].fillna(median_value)
+                            print(f"- Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
+                            logger.info(f"Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
+                else:
+                    print(f"Found {len(weather_cols)} weather-related columns for month-specific median imputation:")
+                    for col in weather_cols:
+                        print(f"  - {col}")
+                    logger.info(f"Found {len(weather_cols)} weather-related columns: {weather_cols}")
+                    
+                    # Perform month-specific median imputation for each weather column
+                    for col in weather_cols:
+                        nulls_before = df[col].isna().sum()
+                        if nulls_before > 0:
+                            percentage = (nulls_before / len(df)) * 100
+                            
+                            # Calculate median for each month
+                            monthly_medians = df.groupby('month')[col].median()
+                            
+                            # Show monthly medians for this column
+                            print(f"\n  Processing '{col}' ({nulls_before} missing values, {percentage:.2f}%):")
+                            print(f"    Monthly medians:")
+                            for month, median_val in monthly_medians.items():
+                                month_count = df[df['month'] == month][col].isna().sum()
+                                if month_count > 0:
+                                    print(f"      Month {month}: {median_val:.2f} (filling {month_count} values)")
+                                else:
+                                    print(f"      Month {month}: {median_val:.2f} (no missing values)")
+                            
+                            # Fill missing values with month-specific medians
+                            def fill_with_month_median(row):
+                                if pd.isna(row[col]):
+                                    return monthly_medians[row['month']]
+                                return row[col]
+                            
+                            df[col] = df.apply(fill_with_month_median, axis=1)
+                            
+                            # Verify the imputation worked
+                            nulls_after = df[col].isna().sum()
+                            filled_count = nulls_before - nulls_after
+                            
+                            print(f"    Result: Filled {filled_count} missing values using month-specific medians")
+                            logger.info(f"Filled {filled_count} missing values in '{col}' using month-specific medians ({percentage:.2f}%)")
+                            
+                            if nulls_after > 0:
+                                print(f"    Warning: {nulls_after} values still missing (possibly months with no data)")
+                                logger.warning(f"{nulls_after} values still missing in '{col}' after month-specific imputation")
+                        else:
+                            print(f"  '{col}': No missing values")
+
+            # Handle any remaining non-weather columns with missing values using global median
+            remaining_cols_with_na = [col for col in df.columns 
+                                    if df[col].isna().sum() > 0 
+                                    and not any(weather_condition in col for weather_condition in self.important_conditions)]
+
+            if remaining_cols_with_na:
+                print(f"\n--- NON-WEATHER FEATURES IMPUTATION WITH GLOBAL MEDIAN ---")
+                logger.info("=== Non-Weather Features Imputation with Global Median ===")
+                
+                for col in remaining_cols_with_na:
                     nulls = df[col].isna().sum()
                     if nulls > 0:
-                        # Calculate percentage of missing values
                         percentage = (nulls / len(df)) * 100
-                        # Apply zero imputation
-                        df[col] = df[col].fillna(0)
-                        print(f"- Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
-                        logger.info(f"Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
-            
-            # 2. Median imputation for all remaining columns with missing values
-            # Find all columns that still have missing values after zero imputation
-            remaining_cols_with_na = [col for col in df.columns if df[col].isna().sum() > 0]
-            
-            for col in remaining_cols_with_na:
-                nulls = df[col].isna().sum()
-                if nulls > 0:
-                    # Calculate percentage of missing values
-                    percentage = (nulls / len(df)) * 100
-                    # Apply median imputation to all remaining columns
-                    median_value = df[col].median()
-                    df[col] = df[col].fillna(median_value)
-                    print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
-                    logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+                        median_value = df[col].median()
+                        df[col] = df[col].fillna(median_value)
+                        print(f"- Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
             
             # Count total rows and columns dropped
             total_rows_dropped = original_row_count - len(df)
@@ -2310,27 +2369,19 @@ class TrainingPipeline:
                 retention_percentage = (len(df) / original_row_count) * 100
                 print(f"- Data retention: {retention_percentage:.2f}%")
                 logger.info(f"Data retention: {retention_percentage:.2f}%")
-                
-            # Additional statistics on the remaining important columns
-            for col in available_important_cols:
-                non_null_count = df[col].count()
-                null_count = len(df) - non_null_count
-                null_percentage = (null_count / len(df) * 100) if len(df) > 0 else 0
-                print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
-                logger.info(f"{col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
             
-            # Additional statistics for trainStopping and commercialStop if they exist
-            boolean_cols = ['trainStopping', 'commercialStop']
-            available_boolean_cols = [col for col in boolean_cols if col in df.columns]
-            
-            if available_boolean_cols:
-                print("\nBoolean columns statistics:")
-                logger.info("Boolean columns statistics:")
-                for col in available_boolean_cols:
-                    true_count = df[col].sum()
-                    true_percentage = (true_count / len(df) * 100) if len(df) > 0 else 0
-                    print(f"  - {col}: {true_count} True values ({true_percentage:.2f}% True)")
-                    logger.info(f"{col}: {true_count} True values ({true_percentage:.2f}% True)")
+            # Additional validation: check for any remaining missing values
+            final_missing = df.isna().sum().sum()
+            if final_missing > 0:
+                print(f"\nWarning: {final_missing} missing values still remain after imputation")
+                logger.warning(f"{final_missing} missing values still remain after imputation")
+                # Show which columns still have missing values
+                remaining_missing_cols = df.columns[df.isna().any()].tolist()
+                print(f"Columns with remaining missing values: {remaining_missing_cols}")
+                logger.warning(f"Columns with remaining missing values: {remaining_missing_cols}")
+            else:
+                print(f"\n✓ All missing values successfully handled")
+                logger.info("All missing values successfully handled")
             
             return df
 
