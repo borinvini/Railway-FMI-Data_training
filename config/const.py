@@ -26,6 +26,7 @@ PREPROCESSING_STATE_MACHINE = {
     "process_actual_time_column": True,
     "filter_columns": True,
     "convert_boolean_to_numeric": True,
+    "handle_missing_values": True,
     "save_month_df_to_csv": True
 }
 
@@ -51,13 +52,16 @@ REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'diff
 
 
 # Valid prediction features (non-target features used for training)
-VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week"]
+VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week", "causes_related_to_weather"]
 
 # Target features that are categoricals for classification problems
 CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
 
 # Boolean features that need to be converted to numeric
-NON_NUMERIC_FEATURES = ['trainStopping', 'commercialStop']
+BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']
+
+# Multi category features
+CATEGORICAL_FEATURES = ["month","hour","day_of_week","causes", "causes_related_to_weather"]
 
 # Set to True to drop trainStopping and commercialStop from training
 DROP_TRAIN_FEATURES = True
@@ -108,9 +112,22 @@ WEATHER_COLS_TO_MERGE = [
     "Gust speed"
 ]
 
+
+
 # Train filtering configuration
 FILTER_TRAINS_BY_STATIONS = False  # Set to True to filter trains by required stations
 REQUIRED_STATIONS = ['HKI', 'OL', 'ROI']  # Trains must pass through ALL of these stations
+
+
+# Weather Indicator Categories for Causes Analysis
+# Strong weather delay indicators (score: 3)
+STRONG_INDICATORS = {'I1', 'I2'}
+
+# Possible weather delay indicators (score: 2)  
+POSSIBLE_INDICATORS = {'A1', 'K1', 'O1', 'P1', 'S1', 'S2', 'T2', 'T3', 'V3'}
+
+
+
 
 # Model training parameters
 IMPORTANCE_THRESHOLD = 0.05

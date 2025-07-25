@@ -18,8 +18,10 @@ from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
-    NON_NUMERIC_FEATURES, 
+    BOOLEAN_FEATURES, 
+    CATEGORICAL_FEATURES,
     OUTPUT_FOLDER,
+    POSSIBLE_INDICATORS,
     PREPROCESSING_STATE_MACHINE,
     PREPROCESSED_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -27,6 +29,7 @@ from config.const import (
     REGRESSION_PROBLEM,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     SCORE_METRIC,
+    STRONG_INDICATORS,
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     VALID_TARGET_FEATURES,
@@ -514,7 +517,551 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ convert_boolean_to_numeric (disabled)")
 
+
+from contextlib import contextmanager
+import os
+import pandas as pd
+import re
+import ast
+import joblib
+import logging
+import numpy as np
+from sklearn.tree import DecisionTreeClassifier
+from src.file_utils import generate_output_path
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import StratifiedKFold
+            
+
+from config.const import (
+    ALL_PREPROCESSED_OUTPUT_FOLDER,
+    ALL_WEATHER_FEATURES,
+    DATA_FILE_PREFIX_FOR_TRAINING,
+    IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    IMPORTANT_WEATHER_CONDITIONS,
+    BOOLEAN_FEATURES, 
+    OUTPUT_FOLDER,
+    PREPROCESSING_STATE_MACHINE,
+    PREPROCESSED_OUTPUT_FOLDER,
+    RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
+    REGRESSION_PROBLEM,
+    REGULARIZED_REGRESSION_OUTPUT_FOLDER,
+    SCORE_METRIC,
+    TRAIN_DELAY_MINUTES,
+    TRAIN_DELAYED_TARGET_COLUMN,
+    VALID_TARGET_FEATURES,
+    VALID_TRAIN_PREDICTION_FEATURES,
+    WEATHER_COLS_TO_MERGE,
+    WEATHER_MISSING_THRESHOLD,
+    WEIGHT_DELAY_COLUMN,
+    XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    DEFAULT_TARGET_FEATURE,
+    MAX_SAMPLE_WEIGHT_CLASSIFICATION,
+)
+
+
+class TrainingPipeline:
+    def __init__(self):
+        """
+        Initialize the TrainingPipeline class with default values.
+        """
+        # Get script directory and project root for file operations
+        self.script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.project_root = os.path.dirname(self.script_dir)
+        self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
+        self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
+        self.all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)  # NEW LINE
+        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
+        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+        self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+        self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+        self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
+
+
+        # Create log directory
+        self.log_dir = os.path.join(self.project_root, "data", "output", "log")
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        # Add this line to make the constant available as an instance attribute
+        self.DATA_FILE_PREFIX_FOR_TRAINING = DATA_FILE_PREFIX_FOR_TRAINING
+
+        # Use the imported constant instead of defining it here
+        self.important_conditions = IMPORTANT_WEATHER_CONDITIONS
+
+    @contextmanager
+    def get_logger(self, log_filename, logger_name=None, month_id=None):
+        """
+        Context manager for creating and managing loggers with automatic cleanup.
         
+        Parameters:
+        -----------
+        log_filename : str
+            Name of the log file (e.g., "merge_snow_depth.log")
+        logger_name : str, optional
+            Name of the logger. If None, uses log_filename without extension.
+        month_id : str, optional
+            Month identifier (e.g., "2023-2024_12") to log at the beginning of the file.
+            
+        Yields:
+        -------
+        logging.Logger
+            Configured logger instance
+        """
+        # Create log file path
+        log_file_path = os.path.join(self.log_dir, log_filename)
+        
+        # Create logger name if not provided
+        if logger_name is None:
+            logger_name = os.path.splitext(log_filename)[0]
+        
+        # Create a logger specifically for this operation
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.INFO)
+        
+        # Remove existing handlers to avoid duplicates
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+        
+        # Add file handler
+        file_handler = logging.FileHandler(log_file_path, mode='a')
+        file_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+        
+        # Log the month_id at the beginning if provided
+        if month_id:
+            logger.info(f"=== Processing Month: {month_id} ===")
+        
+        try:
+            yield logger
+        finally:
+            # Clean up logger handlers
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
+
+    def run_pipeline(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
+        """
+        Run pipeline - processes each CSV file individually based on state machine configuration.
+        
+        This method processes each input file through the configured pipeline steps,
+        resulting in individual preprocessed files for each YYYY-MM period.
+        
+        Parameters:
+        -----------
+        csv_files : list
+            List of CSV file paths to process.
+        target_feature : str, optional
+            The target feature (currently used for compatibility, may be used in future steps).
+            
+        Returns:
+        --------
+        dict
+            Summary of the preprocessing results.
+        """
+        if not csv_files:
+            print("\nNo CSV files to process.")
+            return {
+                "total_files": 0,
+                "successful_preprocessing": 0,
+                "failed_files": 0,
+                "state_machine_used": PREPROCESSING_STATE_MACHINE
+            }
+        
+        # Check if any pipeline steps are enabled
+        enabled_steps = [step for step, enabled in PREPROCESSING_STATE_MACHINE.items() if enabled]
+        if not enabled_steps:
+            print("Warning: No pipeline steps are enabled in the state machine.")
+            return {
+                "total_files": len(csv_files),
+                "successful_preprocessing": 0,
+                "failed_files": len(csv_files),
+                "state_machine_used": PREPROCESSING_STATE_MACHINE,
+                "error": "No pipeline steps enabled"
+            }
+        
+        print(f"\nStarting pipeline processing for {len(csv_files)} CSV files")
+        print(f"State machine configuration: {PREPROCESSING_STATE_MACHINE}")
+        print(f"Enabled pipeline steps: {enabled_steps}")
+        
+        # Initialize counters
+        successful_preprocessing = 0
+        failed_files = 0
+        processed_files_info = []
+        pipeline_execution_details = []
+        
+        # Process each file individually
+        for i, input_file_path in enumerate(csv_files):
+            filename = os.path.basename(input_file_path)
+            
+            # Extract year and month from filename
+            match = re.search(r'(\d{4})_(\d{2})\.csv$', filename)
+            
+            if not match:
+                print(f"\n[{i+1}/{len(csv_files)}] Warning: Could not extract date from filename {filename}. Skipping.")
+                failed_files += 1
+                pipeline_execution_details.append({
+                    "filename": filename,
+                    "success": False,
+                    "error": "Could not extract date from filename",
+                    "steps_executed": []
+                })
+                continue
+            
+            year, month = match.groups()
+            file_id = f"{year}_{month}"
+            
+            print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename} (Year: {year}, Month: {month})")
+            
+            try:
+                # Execute pipeline steps using the state machine
+                pipeline_result = self.execute_pipeline_steps(
+                    input_file_path=input_file_path,
+                    file_id=file_id,
+                    year=year,
+                    state_machine=PREPROCESSING_STATE_MACHINE
+                )
+                
+                # Record pipeline execution details
+                execution_detail = {
+                    "filename": filename,
+                    "file_id": file_id,
+                    "year": year,
+                    "month": month,
+                    "success": pipeline_result["success"],
+                    "steps_executed": pipeline_result["steps_executed"],
+                    "errors": pipeline_result["errors"]
+                }
+                
+                if pipeline_result["success"]:
+                    print(f"✓ Successfully processed {filename}")
+                    successful_preprocessing += 1
+                    
+                    # Add file info to results
+                    processed_files_info.append({
+                        "original_file": filename,
+                        "year": year,
+                        "month": month,
+                        "file_id": file_id,
+                        "rows": pipeline_result["file_info"]["rows"],
+                        "columns": pipeline_result["file_info"]["columns"],
+                        "steps_executed": pipeline_result["steps_executed"]
+                    })
+                    
+                    execution_detail.update(pipeline_result["file_info"])
+                else:
+                    print(f"✗ Failed to process {filename}")
+                    print(f"  Errors: {'; '.join(pipeline_result['errors'])}")
+                    failed_files += 1
+                
+                pipeline_execution_details.append(execution_detail)
+                    
+            except Exception as e:
+                print(f"✗ Error processing {filename}: {e}")
+                failed_files += 1
+                pipeline_execution_details.append({
+                    "filename": filename,
+                    "success": False,
+                    "error": f"Unexpected error: {str(e)}",
+                    "steps_executed": []
+                })
+        
+        # Generate summary
+        summary = {
+            "total_files": len(csv_files),
+            "successful_preprocessing": successful_preprocessing,
+            "failed_files": failed_files,
+            "processed_files_info": processed_files_info,
+            "state_machine_used": PREPROCESSING_STATE_MACHINE,
+            "enabled_steps": enabled_steps,
+            "pipeline_execution_details": pipeline_execution_details
+        }
+        
+        # Print summary
+        print("\n" + "="*60)
+        print("PIPELINE PROCESSING SUMMARY:")
+        print("="*60)
+        print(f"State machine configuration: {PREPROCESSING_STATE_MACHINE}")
+        print(f"Enabled steps: {enabled_steps}")
+        print(f"Total files processed: {summary['total_files']}")
+        print(f"Successfully processed and saved: {summary['successful_preprocessing']}")
+        print(f"Failed to process: {summary['failed_files']}")
+        
+        if processed_files_info:
+            print(f"\nSuccessfully processed files:")
+            for info in processed_files_info:
+                steps_str = " → ".join(info['steps_executed'])
+                print(f"  {info['original_file']} -> preprocessed_data_{info['file_id']}.csv")
+                print(f"    ({info['rows']:,} rows, {len(info['steps_executed'])} steps: {steps_str})")
+        
+        if failed_files > 0:
+            print(f"\nFailed files:")
+            for detail in pipeline_execution_details:
+                if not detail["success"]:
+                    error_msg = detail.get("error", "Unknown error")
+                    print(f"  {detail['filename']}: {error_msg}")
+        
+        # Calculate and display success rate
+        success_rate = (successful_preprocessing / len(csv_files) * 100) if csv_files else 0
+        print(f"\nSuccess rate: {success_rate:.1f}%")
+        print("="*60)
+        
+        return summary
+
+    def execute_pipeline_steps(self, input_file_path, file_id, year, state_machine):
+        """
+        Execute pipeline steps based on the state machine configuration.
+        
+        This helper method processes a single file through the configured pipeline steps,
+        maintaining data flow between steps and handling errors gracefully.
+        
+        Parameters:
+        -----------
+        input_file_path : str
+            Path to the input CSV file
+        file_id : str
+            File identifier (e.g., "2023_12")
+        year : str
+            Year extracted from filename for reference
+        state_machine : dict
+            State machine configuration defining which steps to execute
+            
+        Returns:
+        --------
+        dict
+            Results of pipeline execution including success status, data, and metadata
+        """
+        result = {
+            "success": False,
+            "data": None,
+            "steps_executed": [],
+            "errors": [],
+            "file_info": {
+                "file_id": file_id,
+                "year": year,
+                "rows": 0,
+                "columns": 0
+            }
+        }
+        
+        print(f"  Executing pipeline steps based on state machine configuration...")
+        
+        if state_machine.get("extract_nested_data", False):
+            try:
+                print(f"    → extract_nested_data")
+                processed_df = self.extract_nested_data(input_file_path)
+                
+                if processed_df is not None and not processed_df.empty:
+                    # Add year information for reference
+                    processed_df['data_year'] = year
+                    result["data"] = processed_df
+                    result["steps_executed"].append("extract_nested_data")
+                    result["file_info"]["rows"] = len(processed_df)
+                    result["file_info"]["columns"] = len(processed_df.columns)
+                    print(f"      ✓ Extracted {len(processed_df)} rows, {len(processed_df.columns)} columns")
+                else:
+                    result["errors"].append("extract_nested_data returned empty data")
+                    print(f"      ✗ Failed - empty result")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"extract_nested_data failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ extract_nested_data (disabled)")
+
+        if state_machine.get("process_causes_column", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → process_causes_column")
+                    causes_df = self.process_causes_column(dataframe=result["data"])
+                    
+                    if causes_df is not None:
+                        result["data"] = causes_df
+                        result["steps_executed"].append("process_causes_column")
+                        result["file_info"]["rows"] = len(causes_df)
+                        result["file_info"]["columns"] = len(causes_df.columns)
+                        print(f"      ✓ Processed causes column for {len(causes_df)} rows")
+                    else:
+                        result["errors"].append("process_causes_column failed")
+                        print(f"      ✗ Failed to process causes column")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"process_causes_column failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ process_causes_column (no data available)")
+                result["errors"].append("process_causes_column skipped - no data available")
+        else:
+            print(f"    ⊝ process_causes_column (disabled)")
+        
+        if state_machine.get("add_train_delayed_feature", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → add_train_delayed_feature")
+                    delayed_df = self.add_train_delayed_feature(dataframe=result["data"])
+                    
+                    if delayed_df is not None:
+                        result["data"] = delayed_df
+                        result["steps_executed"].append("add_train_delayed_feature")
+                        result["file_info"]["rows"] = len(delayed_df)
+                        result["file_info"]["columns"] = len(delayed_df.columns)
+                        print(f"      ✓ Added trainDelayed feature to {len(delayed_df)} rows")
+                    else:
+                        result["errors"].append("add_train_delayed_feature failed")
+                        print(f"      ✗ Failed to add trainDelayed feature")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"add_train_delayed_feature failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ add_train_delayed_feature (no data available)")
+                result["errors"].append("add_train_delayed_feature skipped - no data available")
+        else:
+            print(f"    ⊝ add_train_delayed_feature (disabled)")
+
+        if state_machine.get("merge_weather_columns", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → merge_weather_columns")
+                    merged_df = self.merge_weather_columns(dataframe=result["data"], month_id=file_id)
+                    
+                    if merged_df is not None:
+                        result["data"] = merged_df
+                        result["steps_executed"].append("merge_weather_columns")
+                        result["file_info"]["rows"] = len(merged_df)
+                        result["file_info"]["columns"] = len(merged_df.columns)
+                        print(f"      ✓ Merged weather columns for {len(merged_df)} rows")
+                    else:
+                        result["errors"].append("merge_weather_columns failed")
+                        print(f"      ✗ Failed to merge weather columns")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"merge_weather_columns failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ merge_weather_columns (no data available)")
+                result["errors"].append("merge_weather_columns skipped - no data available")
+        else:
+            print(f"    ⊝ merge_weather_columns (disabled)")
+
+
+        if state_machine.get("process_actual_time_column", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → process_actual_time_column")
+                    time_df = self.process_actual_time_column(dataframe=result["data"], month_id=file_id)
+                    
+                    if time_df is not None:
+                        result["data"] = time_df
+                        result["steps_executed"].append("process_actual_time_column")
+                        result["file_info"]["rows"] = len(time_df)
+                        result["file_info"]["columns"] = len(time_df.columns)
+                        print(f"      ✓ Extracted temporal features for {len(time_df)} rows")
+                    else:
+                        result["errors"].append("process_actual_time_column failed")
+                        print(f"      ✗ Failed to process actualTime column")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"process_actual_time_column failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ process_actual_time_column (no data available)")
+                result["errors"].append("process_actual_time_column skipped - no data available")
+        else:
+            print(f"    ⊝ process_actual_time_column (disabled)")
+
+        if state_machine.get("filter_columns", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → filter_columns")
+                    filtered_df = self.filter_columns(dataframe=result["data"], month_id=file_id)
+                    
+                    if filtered_df is not None:
+                        result["data"] = filtered_df
+                        result["steps_executed"].append("filter_columns")
+                        result["file_info"]["rows"] = len(filtered_df)
+                        result["file_info"]["columns"] = len(filtered_df.columns)
+                        print(f"      ✓ Filtered columns for {len(filtered_df)} rows, {len(filtered_df.columns)} columns")
+                    else:
+                        result["errors"].append("filter_columns failed")
+                        print(f"      ✗ Failed to filter columns")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"filter_columns failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ filter_columns (no data available)")
+                result["errors"].append("filter_columns skipped - no data available")
+        else:
+            print(f"    ⊝ filter_columns (disabled)")
+
+        if state_machine.get("convert_boolean_to_numeric", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_boolean_to_numeric")
+                    numeric_df = self.convert_boolean_to_numeric(dataframe=result["data"], month_id=file_id)
+                    
+                    if numeric_df is not None:
+                        result["data"] = numeric_df
+                        result["steps_executed"].append("convert_boolean_to_numeric")
+                        result["file_info"]["rows"] = len(numeric_df)
+                        result["file_info"]["columns"] = len(numeric_df.columns)
+                        print(f"      ✓ Converted boolean columns to numeric for {len(numeric_df)} rows")
+                    else:
+                        result["errors"].append("convert_boolean_to_numeric failed")
+                        print(f"      ✗ Failed to convert boolean columns to numeric")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"convert_boolean_to_numeric failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_boolean_to_numeric (no data available)")
+                result["errors"].append("convert_boolean_to_numeric skipped - no data available")
+        else:
+            print(f"    ⊝ convert_boolean_to_numeric (disabled)")
+
+        if state_machine.get("handle_missing_values", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → handle_missing_values")
+                    cleaned_df = self.handle_missing_values(dataframe=result["data"], month_id=file_id)
+                    
+                    if cleaned_df is not None:
+                        result["data"] = cleaned_df
+                        result["steps_executed"].append("handle_missing_values")
+                        result["file_info"]["rows"] = len(cleaned_df)
+                        result["file_info"]["columns"] = len(cleaned_df.columns)
+                        print(f"      ✓ Handled missing values for {len(cleaned_df)} rows")
+                    else:
+                        result["errors"].append("handle_missing_values failed")
+                        print(f"      ✗ Failed to handle missing values")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"handle_missing_values failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ handle_missing_values (no data available)")
+                result["errors"].append("handle_missing_values skipped - no data available")
+        else:
+            print(f"    ⊝ handle_missing_values (disabled)")
+
         if state_machine.get("save_month_df_to_csv", False):
             if result["data"] is not None:
                 try:
@@ -642,13 +1189,18 @@ class TrainingPipeline:
 
     def process_causes_column(self, dataframe=None):
         """
-        Process the 'causes' column to extract only the categoryCode from complex nested data.
+        Process the 'causes' column to extract detailedCategoryCode and create weather-related indicator.
         
         This method handles the 'causes' column which may contain:
         - Empty values (NaN, None, empty string, empty list)
         - Complex nested data like: "[{'categoryCode': 'L', 'detailedCategoryCode': 'L2', ...}]"
         
-        From the complex data, only the 'categoryCode' is extracted and kept.
+        From the complex data, only the 'detailedCategoryCode' is extracted and kept.
+        Additionally, creates a 'causes_related_to_weather' column based on detailedCategoryCode values:
+        - 3: Strong weather indicator ('I1', 'I2')
+        - 2: Possible weather indicator ('A1', 'K1', 'O1', 'P1', 'S1', 'S2', 'T2', 'T3', 'V3')
+        - 1: Weak weather indicator (other non-empty categories)
+        - 0: No indicator (empty/None values)
         
         Parameters:
         -----------
@@ -658,7 +1210,7 @@ class TrainingPipeline:
         Returns:
         --------
         pandas.DataFrame
-            The dataframe with the processed 'causes' column containing only categoryCode values.
+            The dataframe with processed 'causes' column and new 'causes_related_to_weather' column.
         """
         # Check if dataframe is provided
         if dataframe is None:
@@ -681,128 +1233,133 @@ class TrainingPipeline:
         try:
             print(f"Found 'causes' column with {len(df)} rows to process")
             
-            # Debug: Check what types of values we have
-            print("\n--- DEBUGGING CAUSES COLUMN ---")
-            sample_values = df['causes'].head(10).tolist()
-            print(f"Sample values (first 10): {sample_values}")
+            # Debug: Check sample values and analyze data structure
+            print("\n--- ANALYZING CAUSES COLUMN STRUCTURE ---")
+            sample_size = min(10, len(df))
+            sample_indices = df.sample(n=sample_size, random_state=42).index if len(df) > sample_size else df.index
+            sample_values = df.loc[sample_indices, 'causes'].tolist()
             
-            # Check value types and counts
-            value_types = {}
-            empty_count = 0
-            non_empty_count = 0
+            print(f"Sample values (random {sample_size}):")
+            for i, val in enumerate(sample_values[:5]):  # Show first 5 for readability
+                print(f"  {i+1}: {repr(val)} (type: {type(val).__name__})")
             
-            for idx, val in enumerate(df['causes']):
-                val_type = type(val).__name__
-                if val_type not in value_types:
-                    value_types[val_type] = 0
-                value_types[val_type] += 1
-                
-                # Check if value is empty
-                is_empty = (
-                    pd.isna(val) or 
-                    val is None or 
-                    val == "" or 
-                    val == "[]" or
-                    (isinstance(val, list) and len(val) == 0) or
-                    (isinstance(val, str) and val.strip() == "")
-                )
-                
-                if is_empty:
-                    empty_count += 1
+            # Analyze value types and patterns
+            value_analysis = {
+                'total_rows': len(df),
+                'null_values': 0,
+                'empty_strings': 0,
+                'empty_lists': 0,
+                'string_representations': 0,
+                'direct_objects': 0,
+                'other_types': 0
+            }
+            
+            for val in df['causes']:
+                if pd.isna(val) or val is None:
+                    value_analysis['null_values'] += 1
+                elif val == "" or val == "[]":
+                    value_analysis['empty_strings'] += 1
+                elif isinstance(val, list) and len(val) == 0:
+                    value_analysis['empty_lists'] += 1
+                elif isinstance(val, str) and val.strip():
+                    value_analysis['string_representations'] += 1
+                elif isinstance(val, (list, dict)):
+                    value_analysis['direct_objects'] += 1
                 else:
-                    non_empty_count += 1
-                    # Show first few non-empty values for debugging
-                    if non_empty_count <= 5:
-                        print(f"Non-empty value {non_empty_count}: {repr(val)} (type: {val_type})")
+                    value_analysis['other_types'] += 1
             
-            print(f"Value types found: {value_types}")
-            print(f"Empty values: {empty_count}")
-            print(f"Non-empty values: {non_empty_count}")
-            print("--- END DEBUGGING ---\n")
+            print(f"\nData structure analysis:")
+            for key, count in value_analysis.items():
+                percentage = (count / value_analysis['total_rows']) * 100
+                print(f"  {key}: {count:,} ({percentage:.1f}%)")
+            print("--- END ANALYSIS ---\n")
             
-            # Process each row in the causes column
+            # Define weather-related category mappings
+            WEATHER_INDICATORS = {
+                # Strong weather indicators (score: 3)
+                'strong': {'I1', 'I2'},
+                # Possible weather indicators (score: 2) 
+                'possible': {'A1', 'K1', 'O1', 'P1', 'S1', 'S2', 'T2', 'T3', 'V3'}
+            }
+            
+            print(f"Weather indicator categories:")
+            print(f"  Strong indicators (score 3): {sorted(WEATHER_INDICATORS['strong'])}")
+            print(f"  Possible indicators (score 2): {sorted(WEATHER_INDICATORS['possible'])}")
+            print(f"  Other categories (score 1): Any other non-empty detailedCategoryCode")
+            print(f"  No indicator (score 0): Empty/None values")
+            
+            # Process each row more efficiently using vectorized operations where possible
             processed_values = []
-            successful_extractions = 0
-            failed_extractions = 0
+            weather_scores = []
+            
+            # Counters for detailed reporting
+            stats = {
+                'empty_values': 0,
+                'successful_extractions': 0,
+                'failed_extractions': 0,
+                'parsing_errors': 0,
+                'weather_strong': 0,
+                'weather_possible': 0,
+                'weather_weak': 0,
+                'weather_none': 0
+            }
+            
+            print("\nProcessing causes data...")
             
             for index, cause_value in df['causes'].items():
-                # Check if value is empty (using comprehensive check)
-                is_empty = (
-                    pd.isna(cause_value) or 
-                    cause_value is None or 
-                    cause_value == "" or 
-                    cause_value == "[]" or
-                    (isinstance(cause_value, list) and len(cause_value) == 0) or
-                    (isinstance(cause_value, str) and cause_value.strip() == "")
-                )
-                
-                if is_empty:
-                    # Keep empty values as None
-                    processed_values.append(None)
-                else:
-                    try:
-                        # Process non-empty values
-                        if isinstance(cause_value, str):
-                            # Replace unquoted 'nan' with 'None' for parsing compatibility
-                            cause_fixed = cause_value.replace("nan", "None")
-                            parsed_causes = ast.literal_eval(cause_fixed)
-                        else:
-                            # Assume it's already a Python object (list, dict, etc.)
-                            parsed_causes = cause_value
-                        
-                        # Extract categoryCode from the parsed data
-                        category_code = None
-                        
-                        if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
-                            # List format: get first item
-                            first_cause = parsed_causes[0]
-                            if isinstance(first_cause, dict) and 'categoryCode' in first_cause:
-                                category_code = first_cause['categoryCode']
-                        elif isinstance(parsed_causes, dict) and 'categoryCode' in parsed_causes:
-                            # Direct dictionary format
-                            category_code = parsed_causes['categoryCode']
-                        
-                        if category_code is not None:
-                            processed_values.append(category_code)
-                            successful_extractions += 1
-                        else:
-                            processed_values.append(None)
-                            failed_extractions += 1
-                            # Show first few failed cases
-                            if failed_extractions <= 3:
-                                print(f"Warning: No categoryCode found in row {index}, value: {repr(cause_value)}")
-                            
-                    except Exception as e:
-                        # Parsing failed, set to None
-                        processed_values.append(None)
-                        failed_extractions += 1
-                        if failed_extractions <= 3:  # Only print first few errors to avoid spam
-                            print(f"Warning: Failed to parse causes in row {index}: {e}, value: {repr(cause_value)}")
+                category_code, weather_score = self._process_single_cause(cause_value, index, stats)
+                processed_values.append(category_code)
+                weather_scores.append(weather_score)
             
-            # Replace the causes column with processed values
+            # Update the dataframe with processed values
             df['causes'] = processed_values
+            df['causes_related_to_weather'] = weather_scores
             
-            # Count final state
-            final_none_count = sum(1 for val in processed_values if val is None)
-            final_category_count = len(processed_values) - final_none_count
+            # Generate comprehensive statistics
+            unique_categories = set(code for code in processed_values if code is not None)
             
-            # Get unique category codes
-            unique_categories = set()
-            for val in processed_values:
-                if val is not None:
-                    unique_categories.add(val)
+            print(f"\n=== CAUSES PROCESSING RESULTS ===")
+            print(f"Processing Statistics:")
+            print(f"  Total rows processed: {len(df):,}")
+            print(f"  Empty values: {stats['empty_values']:,}")
+            print(f"  Successful extractions: {stats['successful_extractions']:,}")
+            print(f"  Failed extractions: {stats['failed_extractions']:,}")
+            print(f"  Parsing errors: {stats['parsing_errors']:,}")
             
-            print(f"\nCauses column processing completed:")
-            print(f"  Original empty values: {empty_count}")
-            print(f"  Original non-empty values: {non_empty_count}")
-            print(f"  Successful categoryCode extractions: {successful_extractions}")
-            print(f"  Failed extractions: {failed_extractions}")
-            print(f"  Final state: {final_none_count} None values, {final_category_count} categoryCode values")
+            print(f"\nWeather Indicator Distribution:")
+            print(f"  Strong indicators (3): {stats['weather_strong']:,} ({stats['weather_strong']/len(df)*100:.1f}%)")
+            print(f"  Possible indicators (2): {stats['weather_possible']:,} ({stats['weather_possible']/len(df)*100:.1f}%)")
+            print(f"  Weak indicators (1): {stats['weather_weak']:,} ({stats['weather_weak']/len(df)*100:.1f}%)")
+            print(f"  No indicators (0): {stats['weather_none']:,} ({stats['weather_none']/len(df)*100:.1f}%)")
             
             if unique_categories:
-                print(f"  Unique category codes found: {sorted(unique_categories)}")
+                print(f"\nUnique category codes found ({len(unique_categories)}): {sorted(unique_categories)}")
+                
+                # Show category frequency distribution
+                category_counts = pd.Series(processed_values).value_counts().sort_index()
+                print(f"\nCategory Code Frequency:")
+                for category, count in category_counts.items():
+                    if category is not None:
+                        percentage = (count / len(df)) * 100
+                        # Determine weather indicator level
+                        if category in STRONG_INDICATORS:
+                            level = "Strong"
+                        elif category in POSSIBLE_INDICATORS:
+                            level = "Possible"
+                        else:
+                            level = "Weak"
+                        print(f"  {category}: {count:,} ({percentage:.1f}%) - {level} weather indicator")
             else:
-                print(f"  No category codes were successfully extracted")
+                print("\nNo category codes were successfully extracted")
+            
+            # Validate weather score distribution
+            weather_score_counts = pd.Series(weather_scores).value_counts().sort_index()
+            print(f"\nWeather Score Validation:")
+            for score, count in weather_score_counts.items():
+                percentage = (count / len(df)) * 100
+                print(f"  Score {score}: {count:,} ({percentage:.1f}%)")
+            
+            print("=== END PROCESSING RESULTS ===\n")
             
             return df
             
@@ -811,6 +1368,91 @@ class TrainingPipeline:
             import traceback
             traceback.print_exc()
             return dataframe  # Return original dataframe on error
+
+    def _process_single_cause(self, cause_value, index, stats):
+        """
+        Helper method to process a single cause value and extract detailedCategoryCode.
+        
+        Parameters:
+        -----------
+        cause_value : various
+            The cause value to process (can be string, list, dict, None, etc.)
+        index : int
+            Row index for error reporting
+        stats : dict
+            Statistics dictionary to update
+            
+        Returns:
+        --------
+        tuple
+            (category_code, weather_score) where:
+            - category_code: Extracted detailedCategoryCode or None
+            - weather_score: Weather indicator score (0-3)
+        """
+        # Import weather indicator constants
+        from config.const import STRONG_INDICATORS, POSSIBLE_INDICATORS
+        
+        # Check if value is empty (comprehensive check)
+        is_empty = (
+            pd.isna(cause_value) or 
+            cause_value is None or 
+            cause_value == "" or 
+            cause_value == "[]" or
+            (isinstance(cause_value, list) and len(cause_value) == 0) or
+            (isinstance(cause_value, str) and cause_value.strip() == "")
+        )
+        
+        if is_empty:
+            stats['empty_values'] += 1
+            return None, 0  # No category code, no weather indicator
+        
+        try:
+            # Process non-empty values
+            if isinstance(cause_value, str):
+                # Parse string representation
+                cause_fixed = cause_value.replace("nan", "None")
+                parsed_causes = ast.literal_eval(cause_fixed)
+            else:
+                # Assume it's already a Python object (list, dict, etc.)
+                parsed_causes = cause_value
+            
+            # Extract categoryCode from the parsed data
+            category_code = None
+            
+            if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
+                # List format: get first item
+                first_cause = parsed_causes[0]
+                if isinstance(first_cause, dict) and 'detailedCategoryCode' in first_cause:
+                    category_code = first_cause['detailedCategoryCode']
+            elif isinstance(parsed_causes, dict) and 'detailedCategoryCode' in parsed_causes:
+                # Direct dictionary format
+                category_code = parsed_causes['detailedCategoryCode']
+            
+            if category_code is not None:
+                stats['successful_extractions'] += 1
+                
+                # Determine weather score based on detailedCategoryCode
+                if category_code in STRONG_INDICATORS:
+                    weather_score = 3
+                    stats['weather_strong'] += 1
+                elif category_code in POSSIBLE_INDICATORS:
+                    weather_score = 2
+                    stats['weather_possible'] += 1
+                else:
+                    weather_score = 1  # Other non-empty category
+                    stats['weather_weak'] += 1
+                    
+                return category_code, weather_score
+            else:
+                stats['failed_extractions'] += 1
+                return None, 0
+                
+        except Exception as e:
+            # Parsing failed
+            stats['parsing_errors'] += 1
+            if stats['parsing_errors'] <= 3:  # Only print first few errors
+                print(f"    Warning: Failed to parse causes in row {index}: {e}")
+            return None, 0
 
     def add_train_delayed_feature(self, dataframe=None):
         """
@@ -1318,7 +1960,7 @@ class TrainingPipeline:
             """
             Convert boolean columns to numeric values (0/1).
             
-            This method processes columns specified in NON_NUMERIC_FEATURES:
+            This method processes columns specified in BOOLEAN_FEATURES:
             - Fills NaN values with 0 before conversion
             - Converts boolean values to integers (False -> 0, True -> 1)
             
@@ -1349,14 +1991,14 @@ class TrainingPipeline:
             # Use the logging method for detailed logging
             with self.get_logger("convert_boolean_to_numeric.log", "convert_boolean", month_id) as logger:
                 try:
-                    logger.info(f"Starting boolean to numeric conversion for {len(NON_NUMERIC_FEATURES)} columns")
-                    logger.info(f"Columns to process: {NON_NUMERIC_FEATURES}")
+                    logger.info(f"Starting boolean to numeric conversion for {len(BOOLEAN_FEATURES)} columns")
+                    logger.info(f"Columns to process: {BOOLEAN_FEATURES}")
                     
                     columns_processed = 0
                     columns_not_found = 0
                     total_nulls_filled = 0
                     
-                    for col in NON_NUMERIC_FEATURES:
+                    for col in BOOLEAN_FEATURES:
                         if col in df.columns:
                             # Count NaN values before processing
                             nulls = df[col].isna().sum()
@@ -1406,6 +2048,291 @@ class TrainingPipeline:
                     traceback_str = traceback.format_exc()
                     logger.error(f"Traceback: {traceback_str}")
                     return dataframe  # Return original dataframe on error
+
+    def handle_missing_values(self, dataframe=None, month_id=None):
+        """
+        Handle missing values in preprocessed dataframes with enhanced imputation strategy.
+        Now includes initial data completeness analysis and weather column filtering.
+        
+        Processes the provided dataframe and handles missing values:
+        - Drop weather columns that exceed the missing value threshold
+        - Drop rows where all remaining weather condition columns have missing values
+        - Drop rows where differenceInMinutes or cancelled are None
+        - Fill missing values in trainStopping and commercialStop with False
+        - Use variable-specific imputation for weather columns:
+        - Zero for precipitation and snow metrics
+        - Median for all other columns that still have missing values
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The preprocessed dataframe to handle missing values in.
+        month_id : str, optional
+            Month identifier for logging purposes.
+                
+        Returns:
+        --------
+        pandas.DataFrame
+            The cleaned dataframe with missing values handled.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+                
+        df = dataframe.copy()  # Make a copy to avoid modifying the original
+        
+        # Use the logging context manager
+        with self.get_logger("handle_missing_values.log", "missing_values_handler", month_id) as logger:
+            print(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
+            logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
+            
+            if df.empty:
+                print("Warning: Empty dataframe")
+                logger.warning("Empty dataframe provided")
+                return df
+            
+            print(f"\n--- DATA COMPLETENESS ANALYSIS ---")
+            logger.info("=== Data Completeness Analysis ===")
+            
+            # Check completeness for important weather conditions
+            available_important_cols = [col for col in self.important_conditions if col in df.columns]
+            if available_important_cols:
+                # Count rows where ALL important weather conditions are filled
+                important_weather_complete = df[available_important_cols].notna().all(axis=1).sum()
+                important_weather_complete_pct = (important_weather_complete / len(df)) * 100
+                
+                print(f"Rows with ALL important weather conditions filled: {important_weather_complete} / {len(df)} ({important_weather_complete_pct:.2f}%)")
+                logger.info(f"Rows with ALL important weather conditions filled: {important_weather_complete} / {len(df)} ({important_weather_complete_pct:.2f}%)")
+            else:
+                print("No important weather conditions found in the dataframe")
+                logger.info("No important weather conditions found in the dataframe")
+            
+            # Check overall completeness (no missing data anywhere)
+            completely_filled_rows = df.notna().all(axis=1).sum()
+            completely_filled_pct = (completely_filled_rows / len(df)) * 100
+            
+            print(f"Completely filled rows (no missing data): {completely_filled_rows} / {len(df)} ({completely_filled_pct:.2f}%)")
+            logger.info(f"Completely filled rows (no missing data): {completely_filled_rows} / {len(df)} ({completely_filled_pct:.2f}%)")
+            
+            # Additional statistics: show missing data per column for important weather conditions
+            if available_important_cols:
+                print(f"\nMissing data breakdown for important weather conditions:")
+                logger.info("Missing data breakdown for important weather conditions:")
+                for col in available_important_cols:
+                    missing_count = df[col].isna().sum()
+                    missing_pct = (missing_count / len(df)) * 100
+                    print(f"  - {col}: {missing_count} missing ({missing_pct:.2f}%)")
+                    logger.info(f"  - {col}: {missing_count} missing ({missing_pct:.2f}%)")
+            
+            # Show total missing values across all columns
+            total_missing = df.isna().sum().sum()
+            total_cells = len(df) * len(df.columns)
+            total_missing_pct = (total_missing / total_cells) * 100
+            
+            print(f"\nOverall missing data statistics:")
+            print(f"Total missing values: {total_missing} / {total_cells} cells ({total_missing_pct:.2f}%)")
+            logger.info(f"Total missing values: {total_missing} / {total_cells} cells ({total_missing_pct:.2f}%)")
+            
+            print("--- END COMPLETENESS ANALYSIS ---\n")
+            logger.info("=== End Completeness Analysis ===")
+            # END NEW COMPLETENESS ANALYSIS
+            
+            # Count rows before cleaning
+            original_row_count = len(df)
+            original_col_count = len(df.columns)
+            
+            # Fill missing values in non numeric features
+            for col in CATEGORICAL_FEATURES or BOOLEAN_FEATURES:
+                if col in df.columns:
+                    nulls = df[col].isna().sum()
+                    if nulls > 0:
+                        # Calculate percentage of missing values
+                        percentage = (nulls / len(df)) * 100
+                        df[col] = df[col].fillna(0)  # Fill with 0 instead of False since they're now numeric
+                        print(f"- Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+                    else:
+                        print(f"- Filled {nulls} missing values in '{col}' with 0")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with 0")
+
+            # Check required columns
+            required_cols = [col for col in VALID_TARGET_FEATURES if col in df.columns]
+            
+            if required_cols:
+                print(f"Checking for missing values in required columns: {required_cols}")
+                logger.info(f"Checking for missing values in required columns: {required_cols}")
+                # Store the count before dropping rows
+                before_required_drop = len(df)
+                # Drop rows where any of the required columns are None/NaN
+                df = df.dropna(subset=required_cols)
+                # Calculate dropped rows
+                dropped_required = before_required_drop - len(df)
+                dropped_percentage = (dropped_required / before_required_drop) * 100 if before_required_drop > 0 else 0
+                print(f"- Dropped {dropped_required} rows with missing values in required columns ({dropped_percentage:.2f}%)")
+                logger.info(f"Dropped {dropped_required} rows with missing values in required columns ({dropped_percentage:.2f}%)")
+            else:
+                print("Warning: Required columns not found in dataframe")
+                logger.warning("Required columns not found in dataframe")
+                dropped_required = 0
+            
+            # Step 3: Handle weather condition columns
+            print(f"\n--- WEATHER COLUMN FILTERING ---")
+            logger.info("=== Weather Column Filtering ===")
+            
+            # Identify all weather-related columns (not just important ones)
+            all_weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in self.important_conditions)]
+            
+            if all_weather_cols:
+                print(f"Checking missing value threshold for {len(all_weather_cols)} weather-related columns...")
+                logger.info(f"Checking missing value threshold for {len(all_weather_cols)} weather-related columns...")
+                
+                columns_to_drop = []
+                columns_kept = []
+                
+                for col in all_weather_cols:
+                    missing_count = df[col].isna().sum()
+                    missing_pct = (missing_count / len(df)) * 100
+                    
+                    if missing_pct > WEATHER_MISSING_THRESHOLD:
+                        columns_to_drop.append(col)
+                        print(f"  - DROPPING '{col}': {missing_count} missing ({missing_pct:.2f}% > {WEATHER_MISSING_THRESHOLD}%)")
+                        logger.info(f"DROPPING '{col}': {missing_pct:.2f}% missing > {WEATHER_MISSING_THRESHOLD}% threshold")
+                    else:
+                        columns_kept.append(col)
+                        print(f"  - KEEPING '{col}': {missing_count} missing ({missing_pct:.2f}% <= {WEATHER_MISSING_THRESHOLD}%)")
+                        logger.info(f"KEEPING '{col}': {missing_pct:.2f}% missing <= {WEATHER_MISSING_THRESHOLD}% threshold")
+                
+                # Drop columns that exceed the threshold
+                if columns_to_drop:
+                    df = df.drop(columns=columns_to_drop)
+                    print(f"\nDropped {len(columns_to_drop)} weather columns exceeding {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"Dropped {len(columns_to_drop)} weather columns exceeding {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"Dropped columns: {columns_to_drop}")
+                else:
+                    print(f"\nNo weather columns exceeded the {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    logger.info(f"No weather columns exceeded the {WEATHER_MISSING_THRESHOLD}% missing threshold")
+                    
+                print(f"Kept {len(columns_kept)} weather columns within threshold")
+                logger.info(f"Kept {len(columns_kept)} weather columns within threshold")
+            else:
+                print("No weather-related columns found in dataframe")
+                logger.info("No weather-related columns found in dataframe")
+            
+            print("--- END WEATHER COLUMN FILTERING ---\n")
+            logger.info("=== End Weather Column Filtering ===")
+            
+            # Update the available important columns list after dropping columns
+            available_important_cols = [col for col in self.important_conditions if col in df.columns]
+            
+            if not available_important_cols:
+                print("Warning: None of the specified important weather conditions found in the dataframe after filtering")
+                logger.warning("None of the specified important weather conditions found in the dataframe after filtering")
+                return df
+            
+            print(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
+            logger.info(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
+            
+            # Store count before dropping weather condition rows
+            before_weather_drop = len(df)
+            
+            # Drop rows where ALL of the remaining important weather conditions are missing
+            # (Keep rows with at least one of the specified conditions)
+            df = df.dropna(subset=available_important_cols, how='all')
+            
+            # Count how many rows were dropped due to weather conditions
+            dropped_weather = before_weather_drop - len(df)
+            weather_dropped_percentage = (dropped_weather / before_weather_drop) * 100 if before_weather_drop > 0 else 0
+            
+            if dropped_weather > 0:
+                print(f"- Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
+                logger.info(f"Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
+            else:
+                logger.info(f"Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
+            
+            # ===== ENHANCED MISSING VALUE HANDLING (WITHOUT INDICATORS) =====
+            
+            # Group weather variables by appropriate imputation method
+            zero_fill_cols = ['Precipitation amount', 'Precipitation intensity', 'Snow depth']
+            
+            # 1. Zero imputation for precipitation and snow metrics
+            for col in zero_fill_cols:
+                if col in df.columns:
+                    nulls = df[col].isna().sum()
+                    if nulls > 0:
+                        # Calculate percentage of missing values
+                        percentage = (nulls / len(df)) * 100
+                        # Apply zero imputation
+                        df[col] = df[col].fillna(0)
+                        print(f"- Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+            
+            # 2. Median imputation for all remaining columns with missing values
+            # Find all columns that still have missing values after zero imputation
+            remaining_cols_with_na = [col for col in df.columns if df[col].isna().sum() > 0]
+            
+            for col in remaining_cols_with_na:
+                nulls = df[col].isna().sum()
+                if nulls > 0:
+                    # Calculate percentage of missing values
+                    percentage = (nulls / len(df)) * 100
+                    # Apply median imputation to all remaining columns
+                    median_value = df[col].median()
+                    df[col] = df[col].fillna(median_value)
+                    print(f"- Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+                    logger.info(f"Filled {nulls} missing values in '{col}' with median: {median_value:.2f} ({percentage:.2f}%)")
+            
+            # Count total rows and columns dropped
+            total_rows_dropped = original_row_count - len(df)
+            total_cols_dropped = original_col_count - len(df.columns)
+            total_dropped_percentage = (total_rows_dropped / original_row_count) * 100 if original_row_count > 0 else 0
+            
+            # Report the results
+            print(f"\nMissing values handling complete:")
+            print(f"- Original shape: {original_row_count} rows × {original_col_count} columns")
+            print(f"- Columns dropped (weather threshold): {total_cols_dropped}")
+            print(f"- Rows dropped due to missing required columns: {dropped_required}")
+            print(f"- Rows dropped due to missing all weather conditions: {dropped_weather}")
+            print(f"- Total rows dropped: {total_rows_dropped} ({total_dropped_percentage:.2f}%)")
+            print(f"- Final shape: {len(df)} rows × {len(df.columns)} columns")
+            
+            # Log the summary
+            logger.info(f"Missing values handling complete:")
+            logger.info(f"Original shape: {original_row_count} rows × {original_col_count} columns")
+            logger.info(f"Columns dropped (weather threshold): {total_cols_dropped}")
+            logger.info(f"Rows dropped due to missing required columns: {dropped_required}")
+            logger.info(f"Rows dropped due to missing all weather conditions: {dropped_weather}")
+            logger.info(f"Total rows dropped: {total_rows_dropped} ({total_dropped_percentage:.2f}%)")
+            logger.info(f"Final shape: {len(df)} rows × {len(df.columns)} columns")
+            
+            # Calculate percentage of data retained
+            if original_row_count > 0:
+                retention_percentage = (len(df) / original_row_count) * 100
+                print(f"- Data retention: {retention_percentage:.2f}%")
+                logger.info(f"Data retention: {retention_percentage:.2f}%")
+                
+            # Additional statistics on the remaining important columns
+            for col in available_important_cols:
+                non_null_count = df[col].count()
+                null_count = len(df) - non_null_count
+                null_percentage = (null_count / len(df) * 100) if len(df) > 0 else 0
+                print(f"  - {col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
+                logger.info(f"{col}: {non_null_count} non-null values ({100-null_percentage:.2f}% complete)")
+            
+            # Additional statistics for trainStopping and commercialStop if they exist
+            boolean_cols = ['trainStopping', 'commercialStop']
+            available_boolean_cols = [col for col in boolean_cols if col in df.columns]
+            
+            if available_boolean_cols:
+                print("\nBoolean columns statistics:")
+                logger.info("Boolean columns statistics:")
+                for col in available_boolean_cols:
+                    true_count = df[col].sum()
+                    true_percentage = (true_count / len(df) * 100) if len(df) > 0 else 0
+                    print(f"  - {col}: {true_count} True values ({true_percentage:.2f}% True)")
+                    logger.info(f"{col}: {true_count} True values ({true_percentage:.2f}% True)")
+            
+            return df
 
     def save_month_df_to_csv(self, month_id, dataframe):
         """
