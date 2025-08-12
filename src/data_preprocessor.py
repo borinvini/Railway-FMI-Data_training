@@ -19,7 +19,6 @@ from config.const import (
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
     BOOLEAN_FEATURES, 
-    CATEGORICAL_FEATURES,
     OUTPUT_FOLDER,
     POSSIBLE_INDICATORS,
     PREPROCESSING_STATE_MACHINE,
@@ -33,523 +32,6 @@ from config.const import (
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAINING_READY_OUTPUT_FOLDER,
-    VALID_TARGET_FEATURES,
-    VALID_TRAIN_PREDICTION_FEATURES,
-    WEATHER_COLS_TO_MERGE,
-    WEIGHT_DELAY_COLUMN,
-    XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
-    DEFAULT_TARGET_FEATURE,
-    MAX_SAMPLE_WEIGHT_CLASSIFICATION,
-)
-
-
-class TrainingPipeline:
-    def __init__(self):
-        """
-        Initialize the TrainingPipeline class with default values.
-        """
-        # Get script directory and project root for file operations
-        self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.project_root = os.path.dirname(self.script_dir)
-        self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
-        self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
-        self.all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)  # NEW LINE
-        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
-        self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
-        self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
-        self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
-        self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
-
-
-        # Create log directory
-        self.log_dir = os.path.join(self.project_root, "data", "output", "log")
-        os.makedirs(self.log_dir, exist_ok=True)
-
-        # Add this line to make the constant available as an instance attribute
-        self.DATA_FILE_PREFIX_FOR_TRAINING = DATA_FILE_PREFIX_FOR_TRAINING
-
-        # Use the imported constant instead of defining it here
-        self.important_conditions = IMPORTANT_WEATHER_CONDITIONS
-
-    @contextmanager
-    def get_logger(self, log_filename, logger_name=None, month_id=None):
-        """
-        Context manager for creating and managing loggers with automatic cleanup.
-        
-        Parameters:
-        -----------
-        log_filename : str
-            Name of the log file (e.g., "merge_snow_depth.log")
-        logger_name : str, optional
-            Name of the logger. If None, uses log_filename without extension.
-        month_id : str, optional
-            Month identifier (e.g., "2023-2024_12") to log at the beginning of the file.
-            
-        Yields:
-        -------
-        logging.Logger
-            Configured logger instance
-        """
-        # Create log file path
-        log_file_path = os.path.join(self.log_dir, log_filename)
-        
-        # Create logger name if not provided
-        if logger_name is None:
-            logger_name = os.path.splitext(log_filename)[0]
-        
-        # Create a logger specifically for this operation
-        logger = logging.getLogger(logger_name)
-        logger.setLevel(logging.INFO)
-        
-        # Remove existing handlers to avoid duplicates
-        for handler in logger.handlers[:]:
-            logger.removeHandler(handler)
-        
-        # Add file handler
-        file_handler = logging.FileHandler(log_file_path, mode='a')
-        file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(asctime)s - %(message)s')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        
-        # Log the month_id at the beginning if provided
-        if month_id:
-            logger.info(f"=== Processing Month: {month_id} ===")
-        
-        try:
-            yield logger
-        finally:
-            # Clean up logger handlers
-            for handler in logger.handlers[:]:
-                handler.close()
-                logger.removeHandler(handler)
-
-    def run_pipeline(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
-        """
-        Run pipeline - processes each CSV file individually based on state machine configuration.
-        
-        This method processes each input file through the configured pipeline steps,
-        resulting in individual preprocessed files for each YYYY-MM period.
-        
-        Parameters:
-        -----------
-        csv_files : list
-            List of CSV file paths to process.
-        target_feature : str, optional
-            The target feature (currently used for compatibility, may be used in future steps).
-            
-        Returns:
-        --------
-        dict
-            Summary of the preprocessing results.
-        """
-        if not csv_files:
-            print("\nNo CSV files to process.")
-            return {
-                "total_files": 0,
-                "successful_preprocessing": 0,
-                "failed_files": 0,
-                "state_machine_used": PREPROCESSING_STATE_MACHINE
-            }
-        
-        # Check if any pipeline steps are enabled
-        enabled_steps = [step for step, enabled in PREPROCESSING_STATE_MACHINE.items() if enabled]
-        if not enabled_steps:
-            print("Warning: No pipeline steps are enabled in the state machine.")
-            return {
-                "total_files": len(csv_files),
-                "successful_preprocessing": 0,
-                "failed_files": len(csv_files),
-                "state_machine_used": PREPROCESSING_STATE_MACHINE,
-                "error": "No pipeline steps enabled"
-            }
-        
-        print(f"\nStarting pipeline processing for {len(csv_files)} CSV files")
-        print(f"State machine configuration: {PREPROCESSING_STATE_MACHINE}")
-        print(f"Enabled pipeline steps: {enabled_steps}")
-        
-        # Initialize counters
-        successful_preprocessing = 0
-        failed_files = 0
-        processed_files_info = []
-        pipeline_execution_details = []
-        
-        # Process each file individually
-        for i, input_file_path in enumerate(csv_files):
-            filename = os.path.basename(input_file_path)
-            
-            # Extract year and month from filename
-            match = re.search(r'(\d{4})_(\d{2})\.csv$', filename)
-            
-            if not match:
-                print(f"\n[{i+1}/{len(csv_files)}] Warning: Could not extract date from filename {filename}. Skipping.")
-                failed_files += 1
-                pipeline_execution_details.append({
-                    "filename": filename,
-                    "success": False,
-                    "error": "Could not extract date from filename",
-                    "steps_executed": []
-                })
-                continue
-            
-            year, month = match.groups()
-            file_id = f"{year}_{month}"
-            
-            print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename} (Year: {year}, Month: {month})")
-            
-            try:
-                # Execute pipeline steps using the state machine
-                pipeline_result = self.execute_pipeline_steps(
-                    input_file_path=input_file_path,
-                    file_id=file_id,
-                    year=year,
-                    state_machine=PREPROCESSING_STATE_MACHINE
-                )
-                
-                # Record pipeline execution details
-                execution_detail = {
-                    "filename": filename,
-                    "file_id": file_id,
-                    "year": year,
-                    "month": month,
-                    "success": pipeline_result["success"],
-                    "steps_executed": pipeline_result["steps_executed"],
-                    "errors": pipeline_result["errors"]
-                }
-                
-                if pipeline_result["success"]:
-                    print(f"✓ Successfully processed {filename}")
-                    successful_preprocessing += 1
-                    
-                    # Add file info to results
-                    processed_files_info.append({
-                        "original_file": filename,
-                        "year": year,
-                        "month": month,
-                        "file_id": file_id,
-                        "rows": pipeline_result["file_info"]["rows"],
-                        "columns": pipeline_result["file_info"]["columns"],
-                        "steps_executed": pipeline_result["steps_executed"]
-                    })
-                    
-                    execution_detail.update(pipeline_result["file_info"])
-                else:
-                    print(f"✗ Failed to process {filename}")
-                    print(f"  Errors: {'; '.join(pipeline_result['errors'])}")
-                    failed_files += 1
-                
-                pipeline_execution_details.append(execution_detail)
-                    
-            except Exception as e:
-                print(f"✗ Error processing {filename}: {e}")
-                failed_files += 1
-                pipeline_execution_details.append({
-                    "filename": filename,
-                    "success": False,
-                    "error": f"Unexpected error: {str(e)}",
-                    "steps_executed": []
-                })
-        
-        # Generate summary
-        summary = {
-            "total_files": len(csv_files),
-            "successful_preprocessing": successful_preprocessing,
-            "failed_files": failed_files,
-            "processed_files_info": processed_files_info,
-            "state_machine_used": PREPROCESSING_STATE_MACHINE,
-            "enabled_steps": enabled_steps,
-            "pipeline_execution_details": pipeline_execution_details
-        }
-        
-        # Print summary
-        print("\n" + "="*60)
-        print("PIPELINE PROCESSING SUMMARY:")
-        print("="*60)
-        print(f"State machine configuration: {PREPROCESSING_STATE_MACHINE}")
-        print(f"Enabled steps: {enabled_steps}")
-        print(f"Total files processed: {summary['total_files']}")
-        print(f"Successfully processed and saved: {summary['successful_preprocessing']}")
-        print(f"Failed to process: {summary['failed_files']}")
-        
-        if processed_files_info:
-            print(f"\nSuccessfully processed files:")
-            for info in processed_files_info:
-                steps_str = " → ".join(info['steps_executed'])
-                print(f"  {info['original_file']} -> preprocessed_data_{info['file_id']}.csv")
-                print(f"    ({info['rows']:,} rows, {len(info['steps_executed'])} steps: {steps_str})")
-        
-        if failed_files > 0:
-            print(f"\nFailed files:")
-            for detail in pipeline_execution_details:
-                if not detail["success"]:
-                    error_msg = detail.get("error", "Unknown error")
-                    print(f"  {detail['filename']}: {error_msg}")
-        
-        # Calculate and display success rate
-        success_rate = (successful_preprocessing / len(csv_files) * 100) if csv_files else 0
-        print(f"\nSuccess rate: {success_rate:.1f}%")
-        print("="*60)
-        
-        return summary
-
-    def execute_pipeline_steps(self, input_file_path, file_id, year, state_machine):
-        """
-        Execute pipeline steps based on the state machine configuration.
-        
-        This helper method processes a single file through the configured pipeline steps,
-        maintaining data flow between steps and handling errors gracefully.
-        
-        Parameters:
-        -----------
-        input_file_path : str
-            Path to the input CSV file
-        file_id : str
-            File identifier (e.g., "2023_12")
-        year : str
-            Year extracted from filename for reference
-        state_machine : dict
-            State machine configuration defining which steps to execute
-            
-        Returns:
-        --------
-        dict
-            Results of pipeline execution including success status, data, and metadata
-        """
-        result = {
-            "success": False,
-            "data": None,
-            "steps_executed": [],
-            "errors": [],
-            "file_info": {
-                "file_id": file_id,
-                "year": year,
-                "rows": 0,
-                "columns": 0
-            }
-        }
-        
-        print(f"  Executing pipeline steps based on state machine configuration...")
-        
-        if state_machine.get("extract_nested_data", False):
-            try:
-                print(f"    → extract_nested_data")
-                processed_df = self.extract_nested_data(input_file_path)
-                
-                if processed_df is not None and not processed_df.empty:
-                    # Add year information for reference
-                    processed_df['data_year'] = year
-                    result["data"] = processed_df
-                    result["steps_executed"].append("extract_nested_data")
-                    result["file_info"]["rows"] = len(processed_df)
-                    result["file_info"]["columns"] = len(processed_df.columns)
-                    print(f"      ✓ Extracted {len(processed_df)} rows, {len(processed_df.columns)} columns")
-                else:
-                    result["errors"].append("extract_nested_data returned empty data")
-                    print(f"      ✗ Failed - empty result")
-                    return result
-                    
-            except Exception as e:
-                result["errors"].append(f"extract_nested_data failed: {str(e)}")
-                print(f"      ✗ Failed - {str(e)}")
-                return result
-        else:
-            print(f"    ⊝ extract_nested_data (disabled)")
-
-        if state_machine.get("process_causes_column", False):
-            if result["data"] is not None:
-                try:
-                    print(f"    → process_causes_column")
-                    causes_df = self.process_causes_column(dataframe=result["data"])
-                    
-                    if causes_df is not None:
-                        result["data"] = causes_df
-                        result["steps_executed"].append("process_causes_column")
-                        result["file_info"]["rows"] = len(causes_df)
-                        result["file_info"]["columns"] = len(causes_df.columns)
-                        print(f"      ✓ Processed causes column for {len(causes_df)} rows")
-                    else:
-                        result["errors"].append("process_causes_column failed")
-                        print(f"      ✗ Failed to process causes column")
-                        return result
-                        
-                except Exception as e:
-                    result["errors"].append(f"process_causes_column failed: {str(e)}")
-                    print(f"      ✗ Failed - {str(e)}")
-                    return result
-            else:
-                print(f"    ⊝ process_causes_column (no data available)")
-                result["errors"].append("process_causes_column skipped - no data available")
-        else:
-            print(f"    ⊝ process_causes_column (disabled)")
-        
-        if state_machine.get("add_train_delayed_feature", False):
-            if result["data"] is not None:
-                try:
-                    print(f"    → add_train_delayed_feature")
-                    delayed_df = self.add_train_delayed_feature(dataframe=result["data"])
-                    
-                    if delayed_df is not None:
-                        result["data"] = delayed_df
-                        result["steps_executed"].append("add_train_delayed_feature")
-                        result["file_info"]["rows"] = len(delayed_df)
-                        result["file_info"]["columns"] = len(delayed_df.columns)
-                        print(f"      ✓ Added trainDelayed feature to {len(delayed_df)} rows")
-                    else:
-                        result["errors"].append("add_train_delayed_feature failed")
-                        print(f"      ✗ Failed to add trainDelayed feature")
-                        return result
-                        
-                except Exception as e:
-                    result["errors"].append(f"add_train_delayed_feature failed: {str(e)}")
-                    print(f"      ✗ Failed - {str(e)}")
-                    return result
-            else:
-                print(f"    ⊝ add_train_delayed_feature (no data available)")
-                result["errors"].append("add_train_delayed_feature skipped - no data available")
-        else:
-            print(f"    ⊝ add_train_delayed_feature (disabled)")
-
-        if state_machine.get("merge_weather_columns", False):
-            if result["data"] is not None:
-                try:
-                    print(f"    → merge_weather_columns")
-                    merged_df = self.merge_weather_columns(dataframe=result["data"], month_id=file_id)
-                    
-                    if merged_df is not None:
-                        result["data"] = merged_df
-                        result["steps_executed"].append("merge_weather_columns")
-                        result["file_info"]["rows"] = len(merged_df)
-                        result["file_info"]["columns"] = len(merged_df.columns)
-                        print(f"      ✓ Merged weather columns for {len(merged_df)} rows")
-                    else:
-                        result["errors"].append("merge_weather_columns failed")
-                        print(f"      ✗ Failed to merge weather columns")
-                        return result
-                        
-                except Exception as e:
-                    result["errors"].append(f"merge_weather_columns failed: {str(e)}")
-                    print(f"      ✗ Failed - {str(e)}")
-                    return result
-            else:
-                print(f"    ⊝ merge_weather_columns (no data available)")
-                result["errors"].append("merge_weather_columns skipped - no data available")
-        else:
-            print(f"    ⊝ merge_weather_columns (disabled)")
-
-
-        if state_machine.get("process_actual_time_column", False):
-            if result["data"] is not None:
-                try:
-                    print(f"    → process_actual_time_column")
-                    time_df = self.process_actual_time_column(dataframe=result["data"], month_id=file_id)
-                    
-                    if time_df is not None:
-                        result["data"] = time_df
-                        result["steps_executed"].append("process_actual_time_column")
-                        result["file_info"]["rows"] = len(time_df)
-                        result["file_info"]["columns"] = len(time_df.columns)
-                        print(f"      ✓ Extracted temporal features for {len(time_df)} rows")
-                    else:
-                        result["errors"].append("process_actual_time_column failed")
-                        print(f"      ✗ Failed to process actualTime column")
-                        return result
-                        
-                except Exception as e:
-                    result["errors"].append(f"process_actual_time_column failed: {str(e)}")
-                    print(f"      ✗ Failed - {str(e)}")
-                    return result
-            else:
-                print(f"    ⊝ process_actual_time_column (no data available)")
-                result["errors"].append("process_actual_time_column skipped - no data available")
-        else:
-            print(f"    ⊝ process_actual_time_column (disabled)")
-
-        if state_machine.get("filter_columns", False):
-            if result["data"] is not None:
-                try:
-                    print(f"    → filter_columns")
-                    filtered_df = self.filter_columns(dataframe=result["data"], month_id=file_id)
-                    
-                    if filtered_df is not None:
-                        result["data"] = filtered_df
-                        result["steps_executed"].append("filter_columns")
-                        result["file_info"]["rows"] = len(filtered_df)
-                        result["file_info"]["columns"] = len(filtered_df.columns)
-                        print(f"      ✓ Filtered columns for {len(filtered_df)} rows, {len(filtered_df.columns)} columns")
-                    else:
-                        result["errors"].append("filter_columns failed")
-                        print(f"      ✗ Failed to filter columns")
-                        return result
-                        
-                except Exception as e:
-                    result["errors"].append(f"filter_columns failed: {str(e)}")
-                    print(f"      ✗ Failed - {str(e)}")
-                    return result
-            else:
-                print(f"    ⊝ filter_columns (no data available)")
-                result["errors"].append("filter_columns skipped - no data available")
-        else:
-            print(f"    ⊝ filter_columns (disabled)")
-
-        if state_machine.get("convert_boolean_to_numeric", False):
-            if result["data"] is not None:
-                try:
-                    print(f"    → convert_boolean_to_numeric")
-                    numeric_df = self.convert_boolean_to_numeric(dataframe=result["data"], month_id=file_id)
-                    
-                    if numeric_df is not None:
-                        result["data"] = numeric_df
-                        result["steps_executed"].append("convert_boolean_to_numeric")
-                        result["file_info"]["rows"] = len(numeric_df)
-                        result["file_info"]["columns"] = len(numeric_df.columns)
-                        print(f"      ✓ Converted boolean columns to numeric for {len(numeric_df)} rows")
-                    else:
-                        result["errors"].append("convert_boolean_to_numeric failed")
-                        print(f"      ✗ Failed to convert boolean columns to numeric")
-                        return result
-                        
-                except Exception as e:
-                    result["errors"].append(f"convert_boolean_to_numeric failed: {str(e)}")
-                    print(f"      ✗ Failed - {str(e)}")
-                    return result
-            else:
-                print(f"    ⊝ convert_boolean_to_numeric (no data available)")
-                result["errors"].append("convert_boolean_to_numeric skipped - no data available")
-        else:
-            print(f"    ⊝ convert_boolean_to_numeric (disabled)")
-
-
-from contextlib import contextmanager
-import os
-import pandas as pd
-import re
-import ast
-import joblib
-import logging
-import numpy as np
-from sklearn.tree import DecisionTreeClassifier
-from src.file_utils import generate_output_path
-from sklearn.model_selection import RandomizedSearchCV
-from sklearn.model_selection import StratifiedKFold
-            
-
-from config.const import (
-    ALL_PREPROCESSED_OUTPUT_FOLDER,
-    ALL_WEATHER_FEATURES,
-    DATA_FILE_PREFIX_FOR_TRAINING,
-    IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
-    IMPORTANT_WEATHER_CONDITIONS,
-    BOOLEAN_FEATURES, 
-    OUTPUT_FOLDER,
-    PREPROCESSING_STATE_MACHINE,
-    PREPROCESSED_OUTPUT_FOLDER,
-    RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
-    RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
-    REGRESSION_PROBLEM,
-    REGULARIZED_REGRESSION_OUTPUT_FOLDER,
-    SCORE_METRIC,
-    TRAIN_DELAY_MINUTES,
-    TRAIN_DELAYED_TARGET_COLUMN,
     VALID_TARGET_FEATURES,
     VALID_TRAIN_PREDICTION_FEATURES,
     WEATHER_COLS_TO_MERGE,
@@ -1086,6 +568,70 @@ class TrainingPipeline:
                 result["errors"].append("save_month_df_to_csv skipped - no data available")
         else:
             print(f"    ⊝ save_month_df_to_csv (disabled)")
+
+        if state_machine.get("convert_hour_to_sincos", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_hour_to_sincos")
+                    sincos_df = self.convert_hour_to_sincos(
+                        dataframe=result["data"], 
+                        month_id=file_id
+                    )
+                    
+                    if sincos_df is not None and not sincos_df.empty:
+                        # Clear previous dataframe from memory
+                        del result["data"]
+                        result["data"] = sincos_df
+                        result["steps_executed"].append("convert_hour_to_sincos")
+                        result["file_info"]["rows"] = len(sincos_df)
+                        result["file_info"]["columns"] = len(sincos_df.columns)
+                        print(f"      ✓ Converted hour to sin/cos features ({len(sincos_df)} rows, {len(sincos_df.columns)} columns)")
+                    else:
+                        result["errors"].append("convert_hour_to_sincos returned empty data")
+                        print(f"      ✗ Failed - empty result")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"convert_hour_to_sincos failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_hour_to_sincos (no data available)")
+                result["errors"].append("convert_hour_to_sincos skipped - no data available")
+        else:
+            print(f"    ⊝ convert_hour_to_sincos (disabled)")
+
+        if state_machine.get("convert_month_to_sincos", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_month_to_sincos")
+                    month_sincos_df = self.convert_month_to_sincos(
+                        dataframe=result["data"], 
+                        month_id=file_id
+                    )
+                    
+                    if month_sincos_df is not None and not month_sincos_df.empty:
+                        # Clear previous dataframe from memory
+                        del result["data"]
+                        result["data"] = month_sincos_df
+                        result["steps_executed"].append("convert_month_to_sincos")
+                        result["file_info"]["rows"] = len(month_sincos_df)
+                        result["file_info"]["columns"] = len(month_sincos_df.columns)
+                        print(f"      ✓ Converted month to sin/cos features ({len(month_sincos_df)} rows, {len(month_sincos_df.columns)} columns)")
+                    else:
+                        result["errors"].append("convert_month_to_sincos returned empty data")
+                        print(f"      ✗ Failed - empty result")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"convert_month_to_sincos failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_month_to_sincos (no data available)")
+                result["errors"].append("convert_month_to_sincos skipped - no data available")
+        else:
+            print(f"    ⊝ convert_month_to_sincos (disabled)")
 
         if state_machine.get("select_target", False):
             if result["data"] is not None:
@@ -2519,7 +2065,346 @@ class TrainingPipeline:
         except Exception as e:
             print(f"Error saving dataframe for {month_id}: {e}")
             return False
+
+    def convert_hour_to_sincos(self, dataframe=None, month_id=None):
+        """
+        Convert the hour column from HH:MM format to cyclical sin/cos features.
         
+        This method transforms the hour column (e.g., "03:15", "14:30") into two 
+        continuous cyclical features that better represent the temporal nature
+        of time for machine learning models:
+        - hour_sin: sine component of the hour
+        - hour_cos: cosine component of the hour
+        
+        The original hour column is removed after transformation.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with hour_sin and hour_cos columns replacing the original hour column.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Converting hour column to sin/cos format in dataframe with {len(df)} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Check if 'hour' column exists
+        if 'hour' not in df.columns:
+            print("Warning: 'hour' column not found in dataframe. Skipping hour to sin/cos conversion.")
+            print(f"Available columns: {list(df.columns)}")
+            return df
+        
+        # Use the logging method for detailed logging
+        with self.get_logger("convert_hour_to_sincos.log", "convert_hour_to_sincos", month_id) as logger:
+            try:
+                logger.info(f"Starting hour to sin/cos conversion for {len(df)} rows")
+                
+                # Debug: Check sample values
+                print("\n--- DEBUGGING HOUR COLUMN ---")
+                sample_values = df['hour'].dropna().head(5).tolist()
+                print(f"Sample hour values (first 5 non-null): {sample_values}")
+                
+                # Check for missing values
+                missing_count = df['hour'].isna().sum()
+                valid_count = len(df) - missing_count
+                print(f"Valid hour values: {valid_count}")
+                print(f"Missing hour values: {missing_count}")
+                
+                if valid_count == 0:
+                    print("Warning: All hour values are missing. Cannot convert to sin/cos.")
+                    logger.warning("All hour values are missing")
+                    return df
+                
+                print("--- END DEBUGGING ---\n")
+                
+                # Convert hour from HH:MM to decimal hours
+                print("Converting hour from HH:MM format to decimal hours...")
+                
+                # Create a mask for valid (non-null) hour values
+                valid_mask = df['hour'].notna()
+                
+                # Convert HH:MM to decimal hours for valid entries
+                hour_decimal = pd.Series(index=df.index, dtype=float)
+                
+                for idx in df[valid_mask].index:
+                    try:
+                        hour_str = str(df.loc[idx, 'hour'])
+                        if ':' in hour_str:
+                            hour_part, minute_part = hour_str.split(':')
+                            decimal_hour = int(hour_part) + int(minute_part) / 60.0
+                            hour_decimal.loc[idx] = decimal_hour
+                        else:
+                            # Handle case where hour might not be in HH:MM format
+                            print(f"Warning: Unexpected hour format '{hour_str}' at index {idx}")
+                            logger.warning(f"Unexpected hour format '{hour_str}' at index {idx}")
+                            hour_decimal.loc[idx] = np.nan
+                    except (ValueError, AttributeError) as e:
+                        print(f"Warning: Could not parse hour '{df.loc[idx, 'hour']}' at index {idx}: {e}")
+                        logger.warning(f"Could not parse hour '{df.loc[idx, 'hour']}' at index {idx}: {e}")
+                        hour_decimal.loc[idx] = np.nan
+                
+                # Count successfully converted values
+                converted_count = hour_decimal.notna().sum()
+                failed_conversion_count = valid_count - converted_count
+                
+                print(f"Successfully converted to decimal: {converted_count}")
+                if failed_conversion_count > 0:
+                    print(f"Failed to convert: {failed_conversion_count}")
+                    logger.warning(f"Failed to convert {failed_conversion_count} hour values to decimal")
+                
+                # Create sin/cos features using the cyclical transformation
+                print("Creating sin/cos cyclical features...")
+                
+                # Calculate sin and cos for the 24-hour cycle
+                # Formula: sin(2π × hour / 24) and cos(2π × hour / 24)
+                df['hour_sin'] = np.sin(2 * np.pi * hour_decimal / 24.0)
+                df['hour_cos'] = np.cos(2 * np.pi * hour_decimal / 24.0)
+                
+                # Fill NaN values in sin/cos with 0 (neutral position on the unit circle)
+                df['hour_sin'] = df['hour_sin'].fillna(0.0)
+                df['hour_cos'] = df['hour_cos'].fillna(0.0)
+                
+                # Drop the original hour column
+                df = df.drop('hour', axis=1)
+                
+                # Reorder columns to put hour_sin and hour_cos right after month
+                print("Reordering columns to place hour_sin and hour_cos after month...")
+                
+                # Get current column order
+                current_cols = list(df.columns)
+                
+                # Find the position of month column
+                if 'month' in current_cols:
+                    month_index = current_cols.index('month')
+                    
+                    # Remove hour_sin and hour_cos from their current positions
+                    cols_without_sincos = [col for col in current_cols if col not in ['hour_sin', 'hour_cos']]
+                    
+                    # Insert hour_sin and hour_cos right after month
+                    reordered_cols = (
+                        cols_without_sincos[:month_index + 1] +  # Everything up to and including month
+                        ['hour_sin', 'hour_cos'] +               # Our new temporal features
+                        cols_without_sincos[month_index + 1:]    # Everything after month
+                    )
+                    
+                    # Reorder the dataframe
+                    df = df[reordered_cols]
+                    
+                    print(f"✓ Columns reordered: hour_sin and hour_cos placed after month")
+                    logger.info("Columns reordered: hour_sin and hour_cos placed after month column")
+                else:
+                    print("Warning: 'month' column not found. hour_sin and hour_cos will remain in their current positions.")
+                    logger.warning("month column not found during reordering")
+                
+                print(f"Hour to sin/cos conversion completed:")
+                print(f"- Original hour column removed")
+                print(f"- Added hour_sin column (range: {df['hour_sin'].min():.3f} to {df['hour_sin'].max():.3f})")
+                print(f"- Added hour_cos column (range: {df['hour_cos'].min():.3f} to {df['hour_cos'].max():.3f})")
+                print(f"- Successfully converted {converted_count} out of {len(df)} rows")
+                print(f"- Temporal features grouped: month → hour_sin → hour_cos")
+                
+                # Show some examples of the conversion
+                if converted_count > 0:
+                    print(f"\nExample conversions:")
+                    sample_indices = df[df['hour_sin'].notna()].head(3).index
+                    for idx in sample_indices:
+                        sin_val = df.loc[idx, 'hour_sin']
+                        cos_val = df.loc[idx, 'hour_cos']
+                        print(f"  Index {idx}: sin={sin_val:.3f}, cos={cos_val:.3f}")
+                
+                logger.info(f"Hour to sin/cos conversion completed successfully for {converted_count} rows")
+                logger.info(f"Added columns: hour_sin, hour_cos")
+                logger.info(f"Removed column: hour")
+                
+                return df
+                
+            except Exception as e:
+                error_msg = f"Error converting hour to sin/cos: {e}"
+                print(error_msg)
+                logger.error(error_msg)
+                logger.error(f"Exception details: {str(e)}")
+                return dataframe  # Return original dataframe on error
+
+    def convert_month_to_sincos(self, dataframe=None, month_id=None):
+        """
+        Convert the month column to cyclical sin/cos features while keeping the original.
+        
+        This method transforms the month column (1-12) into two continuous cyclical 
+        features that better represent the seasonal nature of months for machine 
+        learning models:
+        - month_sin: sine component of the month
+        - month_cos: cosine component of the month
+        
+        The original month column is preserved for flexibility (tree-based models
+        can still use the categorical representation).
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with month_sin and month_cos columns added after the original month column.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Converting month column to sin/cos format in dataframe with {len(df)} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Check if 'month' column exists
+        if 'month' not in df.columns:
+            print("Warning: 'month' column not found in dataframe. Skipping month to sin/cos conversion.")
+            print(f"Available columns: {list(df.columns)}")
+            return df
+        
+        # Use the logging method for detailed logging
+        with self.get_logger("convert_month_to_sincos.log", "convert_month_to_sincos", month_id) as logger:
+            try:
+                logger.info(f"Starting month to sin/cos conversion for {len(df)} rows")
+                
+                # Debug: Check sample values
+                print("\n--- DEBUGGING MONTH COLUMN ---")
+                sample_values = df['month'].dropna().head(5).tolist()
+                print(f"Sample month values (first 5 non-null): {sample_values}")
+                
+                # Check for missing values
+                missing_count = df['month'].isna().sum()
+                valid_count = len(df) - missing_count
+                print(f"Valid month values: {valid_count}")
+                print(f"Missing month values: {missing_count}")
+                
+                # Check for invalid month values (not 1-12)
+                invalid_months = df[(df['month'].notna()) & ((df['month'] < 1) | (df['month'] > 12))]
+                invalid_count = len(invalid_months)
+                
+                if invalid_count > 0:
+                    print(f"Warning: Found {invalid_count} invalid month values (not 1-12)")
+                    print(f"Invalid values: {sorted(invalid_months['month'].unique())}")
+                    logger.warning(f"Found {invalid_count} invalid month values: {sorted(invalid_months['month'].unique())}")
+                
+                if valid_count == 0:
+                    print("Warning: All month values are missing. Cannot convert to sin/cos.")
+                    logger.warning("All month values are missing")
+                    return df
+                
+                print("--- END DEBUGGING ---\n")
+                
+                # Create sin/cos features using the cyclical transformation for 12-month cycle
+                print("Creating month sin/cos cyclical features...")
+                
+                # Calculate sin and cos for the 12-month cycle
+                # Formula: sin(2π × month / 12) and cos(2π × month / 12)
+                # Note: We use the month values directly since they're already in 1-12 format
+                df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12.0)
+                df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12.0)
+                
+                # For missing month values, set sin/cos to 0 (neutral position on the unit circle)
+                month_mask = df['month'].isna()
+                df.loc[month_mask, 'month_sin'] = 0.0
+                df.loc[month_mask, 'month_cos'] = 0.0
+                
+                # Count successfully converted values (non-missing original values)
+                converted_count = df['month'].notna().sum()
+                
+                # Reorder columns to group temporal features: month → month_sin → month_cos → (rest)
+                print("Reordering columns to place month_sin and month_cos right after month...")
+                
+                # Get current column order
+                current_cols = list(df.columns)
+                
+                # Find the position of month column
+                if 'month' in current_cols:
+                    month_index = current_cols.index('month')
+                    
+                    # Remove month_sin and month_cos from their current positions
+                    cols_without_sincos = [col for col in current_cols if col not in ['month_sin', 'month_cos']]
+                    
+                    # Insert month_sin and month_cos right after month
+                    reordered_cols = (
+                        cols_without_sincos[:month_index + 1] +  # Everything up to and including month
+                        ['month_sin', 'month_cos'] +             # Our new seasonal features
+                        cols_without_sincos[month_index + 1:]    # Everything after month
+                    )
+                    
+                    # Reorder the dataframe
+                    df = df[reordered_cols]
+                    
+                    print(f"✓ Columns reordered: month_sin and month_cos placed after month")
+                    logger.info("Columns reordered: month_sin and month_cos placed after month column")
+                else:
+                    print("Warning: 'month' column not found during reordering (this shouldn't happen).")
+                    logger.warning("month column not found during reordering")
+                
+                print(f"Month to sin/cos conversion completed:")
+                print(f"- Original month column preserved")
+                print(f"- Added month_sin column (range: {df['month_sin'].min():.3f} to {df['month_sin'].max():.3f})")
+                print(f"- Added month_cos column (range: {df['month_cos'].min():.3f} to {df['month_cos'].max():.3f})")
+                print(f"- Successfully converted {converted_count} out of {len(df)} rows")
+                print(f"- Temporal features order: month → month_sin → month_cos → hour_sin → hour_cos")
+                
+                # Show some examples of the conversion
+                if converted_count > 0:
+                    print(f"\nExample seasonal conversions:")
+                    # Try to show examples from different seasons if available
+                    example_months = []
+                    for target_month in [1, 4, 7, 10]:  # Winter, Spring, Summer, Fall
+                        month_examples = df[df['month'] == target_month].head(1)
+                        if not month_examples.empty:
+                            example_months.extend(month_examples.index.tolist())
+                    
+                    # If we don't have examples from all seasons, just show first few
+                    if not example_months:
+                        example_months = df[df['month'].notna()].head(3).index.tolist()
+                    
+                    for idx in example_months[:3]:  # Show max 3 examples
+                        month_val = df.loc[idx, 'month']
+                        sin_val = df.loc[idx, 'month_sin']
+                        cos_val = df.loc[idx, 'month_cos']
+                        
+                        # Add season name for context
+                        season_map = {1: 'Winter', 2: 'Winter', 3: 'Spring', 4: 'Spring', 5: 'Spring', 6: 'Summer',
+                                    7: 'Summer', 8: 'Summer', 9: 'Fall', 10: 'Fall', 11: 'Fall', 12: 'Winter'}
+                        season = season_map.get(int(month_val) if pd.notna(month_val) else 0, 'Unknown')
+                        
+                        print(f"  Month {int(month_val)} ({season}): sin={sin_val:.3f}, cos={cos_val:.3f}")
+                
+                logger.info(f"Month to sin/cos conversion completed successfully for {converted_count} rows")
+                logger.info(f"Added columns: month_sin, month_cos")
+                logger.info("Original month column preserved")
+                
+                return df
+                
+            except Exception as e:
+                error_msg = f"Error converting month to sin/cos: {e}"
+                print(error_msg)
+                logger.error(error_msg)
+                logger.error(f"Exception details: {str(e)}")
+                return dataframe  # Return original dataframe on error
 
     def select_target_feature(self, dataframe=None, target_feature=None):
         """

@@ -29,6 +29,8 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_boolean_to_numeric": True,
     "handle_missing_values": True,
     "save_month_df_to_csv": True,
+    "convert_hour_to_sincos": True,
+    "convert_month_to_sincos": True,
     "select_target": True,
     "save_training_ready_csv": True
 }
