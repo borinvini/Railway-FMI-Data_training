@@ -33,6 +33,7 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_month_to_sincos": True,
     "select_target": True,
     "filter_strong_weather_causes": True,
+    "remove_duplicates": True,
     "save_training_ready_csv": True
 }
 

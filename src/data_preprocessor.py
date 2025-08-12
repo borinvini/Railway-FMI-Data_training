@@ -692,6 +692,38 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ filter_strong_weather_causes (disabled)")
 
+        if state_machine.get("remove_duplicates", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → remove_duplicates")
+                    deduplicated_df = self.remove_duplicates(
+                        dataframe=result["data"], 
+                        month_id=file_id
+                    )
+                    
+                    if deduplicated_df is not None:
+                        # Clear previous dataframe from memory
+                        del result["data"]
+                        result["data"] = deduplicated_df
+                        result["steps_executed"].append("remove_duplicates")
+                        result["file_info"]["rows"] = len(deduplicated_df)
+                        print(f"      ✓ Removed duplicates ({len(deduplicated_df)} rows remaining)")
+                    else:
+                        result["errors"].append("remove_duplicates returned None")
+                        print(f"      ✗ Failed - returned None")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"remove_duplicates failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                result["errors"].append("remove_duplicates: No data available")
+                print(f"    ✗ remove_duplicates (no data)")
+                return result
+        else:
+            print(f"    ⊝ remove_duplicates (disabled)")
+
         if state_machine.get("save_training_ready_csv", False):
             if result["data"] is not None:
                 try:
@@ -2592,6 +2624,93 @@ class TrainingPipeline:
             print(f"Final dataset: {len(filtered_df):,} rows, {len(filtered_df.columns)} columns")
         
         return filtered_df
+
+    def remove_duplicates(self, dataframe=None, month_id=None):
+        """
+        Remove duplicate rows from the processed dataframe.
+        
+        Duplicate rows can affect model training by:
+        - Introducing bias towards duplicated data points
+        - Increasing training time unnecessarily
+        - Preventing simpler models
+        - Causing overfitting
+        - Affecting overall model accuracy
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to deduplicate.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with duplicates removed.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Checking for duplicates in dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Use the logging context manager
+        with self.get_logger("remove_duplicates.log", "remove_duplicates", month_id) as logger:
+            logger.info(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
+            
+            # Count rows before deduplication
+            original_row_count = len(df)
+            
+            # Remove duplicate rows
+            df_deduplicated = df.drop_duplicates()
+            
+            # Count how many rows were removed
+            removed_duplicates = original_row_count - len(df_deduplicated)
+            
+            # Calculate percentage of data retained
+            if original_row_count > 0:
+                retention_percentage = (len(df_deduplicated) / original_row_count) * 100
+                duplicate_percentage = 100 - retention_percentage
+            else:
+                retention_percentage = 0
+                duplicate_percentage = 0
+            
+            # Report the results to console
+            print(f"\n=== DUPLICATE REMOVAL RESULTS ===")
+            print(f"Original row count: {original_row_count:,}")
+            print(f"Duplicate rows removed: {removed_duplicates:,}")
+            print(f"Remaining rows: {len(df_deduplicated):,}")
+            print(f"Data retention: {retention_percentage:.2f}%")
+            print(f"Duplicate percentage: {duplicate_percentage:.2f}%")
+            
+            # Log the essential summary information
+            logger.info(f"Original row count: {original_row_count}")
+            logger.info(f"Duplicate rows removed: {removed_duplicates}")
+            logger.info(f"Remaining rows: {len(df_deduplicated)}")
+            logger.info(f"Data retention: {retention_percentage:.2f}%")
+            logger.info(f"Duplicate percentage: {duplicate_percentage:.2f}%")
+            
+            # Warn if high percentage of duplicates found
+            if duplicate_percentage > 10:
+                warning_msg = f"WARNING: High duplicate percentage ({duplicate_percentage:.1f}%) detected!"
+                print(f"⚠️  {warning_msg}")  # Use emoji only for console output
+                logger.warning(warning_msg)  # Use plain text for logging
+            elif removed_duplicates > 0:
+                success_msg = f"Successfully removed {removed_duplicates:,} duplicate rows"
+                print(f"✓ {success_msg}")  # Use checkmark only for console output
+                logger.info(success_msg)  # Log success message too
+            else:
+                success_msg = "No duplicate rows found - data is already clean"
+                print(f"✓ {success_msg}")  # Use checkmark only for console output
+                logger.info(success_msg)  # Log success message too
+        
+        return df_deduplicated
 
     def save_training_ready_csv(self, month_id, dataframe):
         """
