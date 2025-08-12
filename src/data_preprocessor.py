@@ -1776,6 +1776,48 @@ class TrainingPipeline:
                 if 'hour' in df.columns:
                     df['hour'] = df['hour'].fillna("00:00")
                 
+                # ========== VALIDATION FOR MONTH = 0 DATA ==========
+                # Validate month = 0 data (indicates failed parsing)
+                month_zero_count = (df['month'] == 0).sum()
+                day_zero_count = (df['day_of_week'] == 0).sum()
+                invalid_hour_count = (df['hour'] == "00:00").sum()
+
+                if month_zero_count > 0 or day_zero_count > 0:
+                    print(f"\n⚠️  DATA QUALITY WARNING - Invalid temporal data detected:")
+                    print(f"   - Rows with month = 0 (failed parsing): {month_zero_count:,}")
+                    print(f"   - Rows with day_of_week = 0 (failed parsing): {day_zero_count:,}")
+                    print(f"   - Rows with hour = '00:00' (failed parsing): {invalid_hour_count:,}")
+                    print(f"   - Total rows affected: {max(month_zero_count, day_zero_count):,} / {len(df):,} ({(max(month_zero_count, day_zero_count)/len(df)*100):.2f}%)")
+                    
+                    # Log the warning
+                    logger.warning(f"Invalid temporal data detected - Month=0: {month_zero_count}, Day=0: {day_zero_count}, Hour='00:00': {invalid_hour_count}")
+                    
+                    # Show sample rows with month = 0 for debugging
+                    if month_zero_count > 0:
+                        sample_invalid = df[df['month'] == 0][['actualTime', 'month', 'hour', 'day_of_week']].head(3)
+                        print(f"\n   Sample rows with month = 0:")
+                        for idx, row in sample_invalid.iterrows():
+                            print(f"   - actualTime: '{row['actualTime']}' -> month: {row['month']}, hour: '{row['hour']}', day_of_week: {row['day_of_week']}")
+                    
+                    # Optional: Add to processing result if you want to track this in the pipeline
+                    if hasattr(self, '_current_result') and self._current_result:
+                        warning_msg = f"Invalid temporal data: {month_zero_count} rows with month=0"
+                        if 'warnings' not in self._current_result:
+                            self._current_result['warnings'] = []
+                        self._current_result['warnings'].append(warning_msg)
+                else:
+                    print(f"✓ All temporal data successfully parsed (no month = 0 detected)")
+                    logger.info("All temporal data successfully parsed")
+
+                # Optional: You could also decide to filter out invalid rows
+                # Uncomment the lines below if you want to remove rows with month = 0
+                # if month_zero_count > 0:
+                #     print(f"   → Removing {month_zero_count} rows with invalid temporal data...")
+                #     df = df[df['month'] > 0].copy()
+                #     print(f"   → Dataframe size after filtering: {len(df):,} rows")
+                #     logger.info(f"Filtered out {month_zero_count} rows with month=0")
+                # ========== END VALIDATION ==========
+                
                 # Print summary statistics
                 print(f"\nTemporal feature extraction completed:")
                 
@@ -1792,33 +1834,32 @@ class TrainingPipeline:
                     
                     print(f"\nHour distribution (showing top 5 most frequent times):")
                     hour_counts = df[df['hour'] != '00:00']['hour'].value_counts().head(5)
-                    for hour_time, count in hour_counts.items():
-                        print(f"  {hour_time}: {count:,} records")
+                    for hour, count in hour_counts.items():
+                        print(f"  {hour}: {count:,} records")
                     
                     print(f"\nDay of week distribution:")
-                    day_names = {1: 'Sunday', 2: 'Monday', 3: 'Tuesday', 4: 'Wednesday', 
-                               5: 'Thursday', 6: 'Friday', 7: 'Saturday'}
-                    dow_counts = df[df['day_of_week'] > 0]['day_of_week'].value_counts().sort_index()
-                    for day_num, count in dow_counts.items():
-                        day_name = day_names.get(day_num, f'Unknown({day_num})')
+                    day_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+                    day_counts = df[df['day_of_week'] > 0]['day_of_week'].value_counts().sort_index()
+                    for day_num, count in day_counts.items():
+                        day_name = day_names[day_num - 1] if 1 <= day_num <= 7 else f"Unknown({day_num})"
                         print(f"  {day_num} ({day_name}): {count:,} records")
                 
-                # Log summary
-                logger.info(f"Temporal feature extraction completed")
-                logger.info(f"Successfully processed: {parsed_count} records")
-                logger.info(f"Failed to parse: {failed_count} records") 
-                logger.info(f"Missing actualTime: {missing_count} records")
+                # Final summary
+                print(f"\nFinal temporal columns added:")
+                for col in ['month', 'hour', 'day_of_week']:
+                    if col in df.columns:
+                        print(f"  - {col}: {df[col].dtype}")
+                
+                logger.info(f"Temporal feature extraction completed successfully for {len(df)} rows")
                 logger.info(f"Added columns: month, hour, day_of_week")
                 
                 return df
                 
             except Exception as e:
-                error_msg = f"Error processing actualTime column: {str(e)}"
+                error_msg = f"Error processing actualTime column: {e}"
                 print(error_msg)
                 logger.error(error_msg)
-                import traceback
-                traceback_str = traceback.format_exc()
-                logger.error(f"Traceback: {traceback_str}")
+                logger.error(f"Exception details: {str(e)}")
                 return dataframe  # Return original dataframe on error
 
     def filter_columns(self, dataframe=None, month_id=None):

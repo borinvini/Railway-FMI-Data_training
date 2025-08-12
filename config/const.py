@@ -50,6 +50,41 @@ VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset',
 CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled']
 REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
 
+# All columns available in the matched dataset before preprocessing (alphabetical order):
+#
+# actualTime                              - Actual arrival/departure time
+# cancelled                               - Boolean indicating if train was cancelled
+# causes                                  - Reasons for delays (nested data)
+# causes_related_to_weather               - Weather-related delay indicator/score
+# commercialStop                          - Boolean indicating if it's a commercial stop
+# commercialTrack                         - Track number for commercial operations
+# commuterLineID                          - ID for commuter train lines
+# countryCode                             - Country code where station is located
+# day_of_week                             - Day of week extracted from date (1-7)
+# departureDate                           - Date when the train departed
+# differenceInMinutes                     - Difference between scheduled and actual time
+# differenceInMinutes_eachStation_offset  - Station-specific offset time difference
+# differenceInMinutes_offset              - Offset-adjusted time difference
+# hour                                    - Hour extracted from time
+# month                                   - Month extracted from date
+# operatorShortCode                       - Short code of the train operator
+# operatorUICCode                         - UIC code of the train operator
+# runningCurrently                        - Boolean indicating if train is currently running
+# scheduledTime                           - Originally scheduled time
+# stationName                             - Name of the station
+# stationShortCode                        - Short code for the station
+# stationUICCode                          - UIC code for the station
+# timetableAcceptanceDate                 - Date when timetable was accepted
+# timetableType                           - Type of timetable used
+# trainCategory                           - Category classification of the train
+# trainNumber                             - Unique identifier for the train
+# trainReady                              - Boolean indicating if train is ready for departure
+# trainStopping                           - Boolean indicating if train stops at station
+# trainType                               - Type of train (e.g., passenger, freight)
+# type                                    - Type of stop (arrival/departure)
+# version                                 - Version of the data record
+# =============================================================================
+
 
 # Valid prediction features (non-target features used for training)
 VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week", "causes_related_to_weather"]
@@ -120,13 +155,18 @@ REQUIRED_STATIONS = ['HKI', 'OL', 'ROI']  # Trains must pass through ALL of thes
 
 
 # Weather Indicator Categories for Causes Analysis
+# Used to create 'causes_related_to_weather' column from nested 'causes' data
+# Extracts 'detailedCategoryCode' and assigns weather likelihood scores:
+# - Score 3 (Strong): Direct weather-related delays (I1, I2)
+# - Score 2 (Possible): May be weather-influenced (A1, K1, O1, P1, S1, S2, T2, T3, V3)
+# - Score 1 (Weak): Other non-empty category codes
+# - Score 0 (None): Empty/missing cause data
+
 # Strong weather delay indicators (score: 3)
 STRONG_INDICATORS = {'I1', 'I2'}
 
 # Possible weather delay indicators (score: 2)  
 POSSIBLE_INDICATORS = {'A1', 'K1', 'O1', 'P1', 'S1', 'S2', 'T2', 'T3', 'V3'}
-
-
 
 
 # Model training parameters
