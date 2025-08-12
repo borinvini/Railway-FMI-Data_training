@@ -1546,6 +1546,9 @@ class TrainingPipeline:
             
         df = dataframe.copy()
         print(f"Filtering columns in dataframe with {len(df)} rows and {len(df.columns)} columns")
+
+        # Ensure all column names are strings to avoid type comparison issues
+        df.columns = df.columns.astype(str)
         
         if df.empty:
             print("Warning: Empty dataframe")
