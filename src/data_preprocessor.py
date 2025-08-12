@@ -665,6 +665,33 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ select_target (disabled)")
 
+        if state_machine.get("filter_strong_weather_causes", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → filter_strong_weather_causes")
+                    filtered_df = self.filter_strong_weather_causes(dataframe=result["data"])
+                    
+                    if filtered_df is not None:
+                        result["data"] = filtered_df
+                        result["steps_executed"].append("filter_strong_weather_causes")
+                        result["file_info"]["rows"] = len(filtered_df)
+                        print(f"      ✓ Filtered to {len(filtered_df)} rows with strong weather causes")
+                    else:
+                        result["errors"].append("filter_strong_weather_causes returned None")
+                        print(f"      ✗ Failed - returned None")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"filter_strong_weather_causes failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                result["errors"].append("filter_strong_weather_causes: No data available")
+                print(f"    ✗ filter_strong_weather_causes (no data)")
+                return result
+        else:
+            print(f"    ⊝ filter_strong_weather_causes (disabled)")
+
         if state_machine.get("save_training_ready_csv", False):
             if result["data"] is not None:
                 try:
@@ -688,6 +715,7 @@ class TrainingPipeline:
                 result["errors"].append("save_training_ready_csv skipped - no data available")
         else:
             print(f"    ⊝ save_training_ready_csv (disabled)")
+
         
         # Mark as successful if no errors occurred
         result["success"] = len(result["errors"]) == 0
@@ -2472,6 +2500,98 @@ class TrainingPipeline:
         
         print(f"Final dataframe shape: {df.shape}")
         return df
+
+    def filter_strong_weather_causes(self, dataframe=None):
+        """
+        Filter the dataframe to keep only rows where causes_related_to_weather equals 3 (strong weather indicators).
+        
+        This method filters the data to focus on train delays that are strongly related to weather conditions.
+        Based on the causes_related_to_weather column:
+        - 3: Strong weather indicator ('I1', 'I2' category codes)
+        - 2: Possible weather indicator 
+        - 1: Weak weather indicator
+        - 0: No weather indicator
+        
+        Only rows with value 3 (strong weather indicators) are retained.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to filter.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The filtered dataframe containing only strong weather-related delays.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Filtering for strong weather causes in dataframe with {len(df)} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Check if 'causes_related_to_weather' column exists
+        if 'causes_related_to_weather' not in df.columns:
+            print("Warning: 'causes_related_to_weather' column not found in dataframe. Skipping weather filtering.")
+            return df
+        
+        # Store original row count
+        original_rows = len(df)
+        
+        # Filter to keep only rows where causes_related_to_weather equals 3 (strong weather indicators)
+        filtered_df = df[df['causes_related_to_weather'] == 3].copy()
+        
+        # Calculate filtering statistics
+        filtered_rows = len(filtered_df)
+        filtered_percentage = (filtered_rows / original_rows) * 100 if original_rows > 0 else 0
+        removed_rows = original_rows - filtered_rows
+        removed_percentage = (removed_rows / original_rows) * 100 if original_rows > 0 else 0
+        
+        # Display filtering results
+        print(f"\n=== STRONG WEATHER CAUSES FILTERING RESULTS ===")
+        print(f"Original rows: {original_rows:,}")
+        print(f"Rows with strong weather causes (value = 3): {filtered_rows:,} ({filtered_percentage:.1f}%)")
+        print(f"Rows removed: {removed_rows:,} ({removed_percentage:.1f}%)")
+        
+        # Show distribution of causes_related_to_weather values in original data
+        if 'causes_related_to_weather' in df.columns:
+            value_counts = df['causes_related_to_weather'].value_counts().sort_index()
+            print(f"\nOriginal causes_related_to_weather distribution:")
+            for value, count in value_counts.items():
+                percentage = (count / original_rows) * 100
+                if value == 0:
+                    label = "No weather indicator"
+                elif value == 1:
+                    label = "Weak weather indicator"
+                elif value == 2:
+                    label = "Possible weather indicator"
+                elif value == 3:
+                    label = "Strong weather indicator"
+                else:
+                    label = f"Unknown value ({value})"
+                print(f"  {value}: {count:,} rows ({percentage:.1f}%) - {label}")
+        
+        # Warn if no data remains after filtering
+        if filtered_rows == 0:
+            print("⚠️  WARNING: No rows with strong weather causes found! The filtered dataset is empty.")
+            print("   Consider using a different filter criteria or checking the data.")
+            return filtered_df
+        else:
+            print(f"✓ Successfully filtered data to focus on strong weather-related delays")
+        
+        # Drop the causes_related_to_weather column since all remaining rows have the same value (3)
+        if 'causes_related_to_weather' in filtered_df.columns:
+            filtered_df = filtered_df.drop('causes_related_to_weather', axis=1)
+            print(f"✓ Dropped 'causes_related_to_weather' column (redundant after filtering)")
+            print(f"Final dataset: {len(filtered_df):,} rows, {len(filtered_df.columns)} columns")
+        
+        return filtered_df
 
     def save_training_ready_csv(self, month_id, dataframe):
         """
