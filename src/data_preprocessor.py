@@ -1367,16 +1367,53 @@ class TrainingPipeline:
             print("Warning: Empty dataframe")
             return df
         
-        # Check if 'actualTime' column exists
+        # Check if required columns exist
+        missing_columns = []
         if 'actualTime' not in df.columns:
-            print("Warning: 'actualTime' column not found in dataframe. Skipping actualTime processing.")
+            missing_columns.append('actualTime')
+        if 'scheduledTime' not in df.columns:
+            missing_columns.append('scheduledTime')
+        
+        if missing_columns:
+            print(f"Warning: Required columns not found in dataframe: {missing_columns}")
             print(f"Available columns: {list(df.columns)}")
+            return df
+        
+        # NEW: Check for NULL/NaN values in scheduledTime OR actualTime and drop those rows
+        initial_row_count = len(df)
+        
+        # Create mask for rows where either scheduledTime OR actualTime is NULL/NaN
+        scheduled_time_null = df['scheduledTime'].isna()
+        actual_time_null = df['actualTime'].isna()
+        rows_to_drop = scheduled_time_null | actual_time_null
+        
+        # Count rows to be dropped
+        scheduled_nulls = scheduled_time_null.sum()
+        actual_nulls = actual_time_null.sum()
+        total_rows_to_drop = rows_to_drop.sum()
+        
+        print(f"Data quality check:")
+        print(f"- Rows with NULL/NaN scheduledTime: {scheduled_nulls}")
+        print(f"- Rows with NULL/NaN actualTime: {actual_nulls}")
+        print(f"- Total rows to drop (either column NULL/NaN): {total_rows_to_drop}")
+        
+        # Drop rows where either column is NULL/NaN
+        if total_rows_to_drop > 0:
+            df = df[~rows_to_drop].copy()
+            print(f"- Dropped {total_rows_to_drop} rows")
+            print(f"- Remaining rows: {len(df)} (was {initial_row_count})")
+        else:
+            print("- No rows to drop (all time values are valid)")
+        
+        # If no rows remain after dropping, return empty dataframe
+        if df.empty:
+            print("Warning: All rows were dropped due to NULL/NaN time values")
             return df
         
         # Use the logging method for detailed logging
         with self.get_logger("process_actual_time.log", "process_actual_time", month_id) as logger:
             try:
-                logger.info(f"Starting actualTime processing for {len(df)} rows")
+                logger.info(f"Starting actualTime processing for {len(df)} rows (after dropping {total_rows_to_drop} rows with NULL/NaN time values)")
                 
                 print(f"Found 'actualTime' column with {len(df)} rows to process")
                 
@@ -1385,7 +1422,7 @@ class TrainingPipeline:
                 sample_values = df['actualTime'].dropna().head(5).tolist()
                 print(f"Sample values (first 5 non-null): {sample_values}")
                 
-                # Check for missing values
+                # Check for missing values (should be 0 after our filtering)
                 missing_count = df['actualTime'].isna().sum()
                 valid_count = len(df) - missing_count
                 print(f"Valid actualTime values: {valid_count}")
@@ -1435,147 +1472,12 @@ class TrainingPipeline:
                         # Fill NaN values with 0 for rows that couldn't be parsed, then convert to int
                         df[col] = df[col].fillna(0).astype(int)
                 
-                # For hour column, fill NaN values with "00:00" for rows that couldn't be parsed
-                if 'hour' in df.columns:
-                    df['hour'] = df['hour'].fillna("00:00")
-                
-                # ========== ENHANCED VALIDATION FOR MONTH = 0 DATA ==========
-                # Validate month = 0 data (indicates failed parsing)
-                month_zero_count = (df['month'] == 0).sum()
-                day_zero_count = (df['day_of_week'] == 0).sum()
-                invalid_hour_count = (df['hour'] == "00:00").sum()
-
-                if month_zero_count > 0 or day_zero_count > 0:
-                    print(f"\n⚠️  DATA QUALITY WARNING - Invalid temporal data detected:")
-                    print(f"   - Rows with month = 0 (failed parsing): {month_zero_count:,}")
-                    print(f"   - Rows with day_of_week = 0 (failed parsing): {day_zero_count:,}")
-                    print(f"   - Rows with hour = '00:00' (failed parsing): {invalid_hour_count:,}")
-                    print(f"   - Total rows affected: {max(month_zero_count, day_zero_count):,} / {len(df):,} ({(max(month_zero_count, day_zero_count)/len(df)*100):.2f}%)")
-                    
-                    # Log the warning
-                    logger.warning(f"Invalid temporal data detected - Month=0: {month_zero_count}, Day=0: {day_zero_count}, Hour='00:00': {invalid_hour_count}")
-                    
-                    # ========== DETAILED DEBUGGING - FULL ROW SAMPLES ==========
-                    print(f"\n🔍 GENERATING DETAILED SAMPLES OF INVALID TEMPORAL DATA...")
-                    
-                    # Get invalid rows (any row with month=0 OR day_of_week=0)
-                    invalid_mask = (df['month'] == 0) | (df['day_of_week'] == 0)
-                    invalid_rows = df[invalid_mask].copy()
-                    sample_size = min(10, len(invalid_rows))
-                    sample_invalid = invalid_rows.head(sample_size)
-                    
-                    print(f"📝 SHOWING {sample_size} COMPLETE INVALID ROWS:")
-                    print("=" * 80)
-                    
-                    # Prepare log content for file saving
-                    import os
-                    from datetime import datetime
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    
-                    log_content = []
-                    log_content.append("=" * 80)
-                    log_content.append("INVALID TEMPORAL DATA - COMPLETE ROW DEBUG")
-                    log_content.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    log_content.append(f"Total invalid rows: {len(invalid_rows):,}")
-                    log_content.append(f"Showing: {sample_size} samples")
-                    log_content.append("=" * 80)
-                    log_content.append("")
-                    
-                    # Display each sample with COMPLETE row data
-                    for idx, (row_idx, row) in enumerate(sample_invalid.iterrows(), 1):
-                        print(f"\n🔸 INVALID SAMPLE {idx} (DataFrame Index: {row_idx}):")
-                        print("-" * 60)
-                        
-                        log_content.append(f"SAMPLE {idx} (DataFrame Index: {row_idx}):")
-                        log_content.append("-" * 60)
-                        
-                        print("COMPLETE ROW DATA:")
-                        log_content.append("COMPLETE ROW DATA:")
-                        
-                        # Show ALL columns for this row
-                        for col in df.columns:
-                            value = row[col]
-                            
-                            # Handle different types of missing/invalid values for display
-                            if pd.isna(value):
-                                display_value = "NULL/NaN"
-                            elif str(value).lower() == 'nan':
-                                display_value = f"'{value}' (string 'nan')"
-                            elif value == '':
-                                display_value = "'' (empty string)"
-                            elif isinstance(value, str) and len(str(value)) > 100:
-                                display_value = f"'{str(value)[:100]}...' (truncated, length: {len(str(value))})"
-                            else:
-                                display_value = f"'{value}'"
-                            
-                            print(f"  {col:30}: {display_value}")
-                            log_content.append(f"  {col:30}: {display_value}")
-                        
-                        log_content.append("")
-                        print("-" * 60)
-                    
-                    # Save detailed log file
-                    try:
-                        log_dir = "data/output/log"
-                        os.makedirs(log_dir, exist_ok=True)
-                        log_file = os.path.join(log_dir, f"invalid_temporal_debug_{timestamp}.log")
-                        
-                        with open(log_file, 'w', encoding='utf-8') as f:
-                            f.write('\n'.join(log_content))
-                        
-                        print(f"\n💾 COMPLETE DEBUG LOG SAVED: {log_file}")
-                        logger.info(f"Invalid temporal data debug log saved: {log_file}")
-                        
-                    except Exception as e:
-                        print(f"❌ Error saving debug log: {e}")
-                        logger.error(f"Error saving debug log: {e}")
-                    
-                    # ========== ADDITIONAL ANALYSIS ==========
-                    print(f"\n📊 INVALID DATA PATTERNS ANALYSIS:")
-                    
-                    # Analyze actualTime patterns
-                    if 'actualTime' in df.columns:
-                        print("ActualTime patterns in invalid rows:")
-                        actualtime_patterns = invalid_rows['actualTime'].value_counts().head(5)
-                        for value, count in actualtime_patterns.items():
-                            if pd.isna(value):
-                                print(f"  NULL/NaN: {count:,} occurrences")
-                            elif str(value).lower() == 'nan':
-                                print(f"  'nan' (string): {count:,} occurrences")
-                            else:
-                                print(f"  '{value}': {count:,} occurrences")
-                        
-                        logger.info(f"ActualTime patterns in invalid data: {dict(actualtime_patterns)}")
-                    
-                    # Analyze by train/station patterns
-                    if 'trainNumber' in df.columns:
-                        train_patterns = invalid_rows['trainNumber'].value_counts().head(3)
-                        print(f"\nTop trains with invalid temporal data:")
-                        for train, count in train_patterns.items():
-                            print(f"  Train {train}: {count:,} invalid rows")
-                    
-                    if 'stationName' in df.columns:
-                        station_patterns = invalid_rows['stationName'].value_counts().head(3)
-                        print(f"\nTop stations with invalid temporal data:")
-                        for station, count in station_patterns.items():
-                            print(f"  {station}: {count:,} invalid rows")
-                    
-                    # Check for cancelled trains
-                    if 'cancelled' in df.columns:
-                        cancelled_invalid = invalid_rows['cancelled'].sum() if invalid_rows['cancelled'].dtype == bool else (invalid_rows['cancelled'] == True).sum()
-                        print(f"\nCancelled trains in invalid data: {cancelled_invalid:,} / {len(invalid_rows):,} ({cancelled_invalid/len(invalid_rows)*100:.1f}%)")
-                        logger.info(f"Cancelled trains in invalid temporal data: {cancelled_invalid}")
-                    
-                    print("=" * 80)
-                    # ========== END DETAILED DEBUGGING ==========
-                
-                # Print summary statistics
-                print(f"\nTemporal feature extraction completed:")
-                
-                if parsed_count > 0:
-                    print(f"Month values range: {df['month'].min()} - {df['month'].max()}")
-                    print(f"Hour format: HH:MM (e.g., {df[df['hour'] != '00:00']['hour'].iloc[0] if (df['hour'] != '00:00').any() else '00:00'})")
-                    print(f"Day of week values range: {df['day_of_week'].min()} - {df['day_of_week'].max()}")
+                # Log statistics if we have valid data
+                if len(df) > 0 and 'month' in df.columns:
+                    valid_temporal_data = df[df['month'] > 0]
+                    print(f"\nTemporal feature extraction summary:")
+                    print(f"Total rows processed: {len(df):,}")
+                    print(f"Rows with valid temporal data: {len(valid_temporal_data):,}")
                     
                     # Show distribution
                     print(f"\nMonth distribution:")
