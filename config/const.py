@@ -7,6 +7,7 @@ INPUT_FOLDER = "data/input"
 OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/preprocessed"
 ALL_PREPROCESSED_OUTPUT_FOLDER = "data/output/all_preprocessed"
+TRAINING_READY_OUTPUT_FOLDER = "data/output/preprocessed_training_ready"
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
 DATA_FILE_PREFIX = "matched_data_"
@@ -27,7 +28,9 @@ PREPROCESSING_STATE_MACHINE = {
     "filter_columns": True,
     "convert_boolean_to_numeric": True,
     "handle_missing_values": True,
-    "save_month_df_to_csv": True
+    "save_month_df_to_csv": True,
+    "select_target": True,
+    "save_training_ready_csv": True
 }
 
 
@@ -44,8 +47,13 @@ TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes_eachStation_offset'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
 
 # Valid target features for selection
-VALID_TARGET_FEATURES = ['differenceInMinutes', 'differenceInMinutes_offset', 
-                         'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled']
+VALID_TARGET_FEATURES = [
+    'differenceInMinutes', 
+    'differenceInMinutes_offset', 
+    'differenceInMinutes_eachStation_offset', 
+    'trainDelayed', 
+    'cancelled'
+]
 
 CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled']
 REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']

@@ -32,6 +32,7 @@ from config.const import (
     STRONG_INDICATORS,
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
+    TRAINING_READY_OUTPUT_FOLDER,
     VALID_TARGET_FEATURES,
     VALID_TRAIN_PREDICTION_FEATURES,
     WEATHER_COLS_TO_MERGE,
@@ -1085,6 +1086,62 @@ class TrainingPipeline:
                 result["errors"].append("save_month_df_to_csv skipped - no data available")
         else:
             print(f"    ⊝ save_month_df_to_csv (disabled)")
+
+        if state_machine.get("select_target", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → select_target")
+                    target_df = self.select_target_feature(
+                        dataframe=result["data"], 
+                        target_feature=DEFAULT_TARGET_FEATURE
+                    )
+                    
+                    if target_df is not None and not target_df.empty:
+                        # Clear previous dataframe from memory
+                        del result["data"]
+                        result["data"] = target_df
+                        result["steps_executed"].append("select_target")
+                        result["file_info"]["rows"] = len(target_df)
+                        result["file_info"]["columns"] = len(target_df.columns)
+                        print(f"      ✓ Selected target feature '{DEFAULT_TARGET_FEATURE}' ({len(target_df)} rows, {len(target_df.columns)} columns)")
+                    else:
+                        result["errors"].append("select_target returned empty data")
+                        print(f"      ✗ Failed - empty result")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"select_target failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ select_target (no data available)")
+                result["errors"].append("select_target skipped - no data available")
+        else:
+            print(f"    ⊝ select_target (disabled)")
+
+        if state_machine.get("save_training_ready_csv", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → save_training_ready_csv")
+                    save_success = self.save_training_ready_csv(file_id, result["data"])
+                    
+                    if save_success:
+                        result["steps_executed"].append("save_training_ready_csv")
+                        print(f"      ✓ Saved training-ready data for {file_id}")
+                    else:
+                        result["errors"].append("save_training_ready_csv failed")
+                        print(f"      ✗ Failed to save training-ready data for {file_id}")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"save_training_ready_csv failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ save_training_ready_csv (no data available)")
+                result["errors"].append("save_training_ready_csv skipped - no data available")
+        else:
+            print(f"    ⊝ save_training_ready_csv (disabled)")
         
         # Mark as successful if no errors occurred
         result["success"] = len(result["errors"]) == 0
@@ -2462,387 +2519,111 @@ class TrainingPipeline:
         except Exception as e:
             print(f"Error saving dataframe for {month_id}: {e}")
             return False
-    
+        
 
+    def select_target_feature(self, dataframe=None, target_feature=None):
         """
-        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV on combined preprocessed data.
-        Uses pre-split data from the split_combined_dataset method.
-        Includes SHAP analysis for enhanced model interpretability.
-        Updated to include sample weights based on delay magnitude.
+        Select one of the target features and optionally drop train-specific features.
         
         Parameters:
         -----------
-        param_distributions : dict, optional
-            Dictionary with parameters names as keys and distributions or lists of parameters to try.
-            Defaults to DECISION_TREE_PARAM_DISTRIBUTIONS from constants.
-        n_iter : int, optional
-            Number of parameter settings that are sampled. Defaults to RANDOM_SEARCH_ITERATIONS.
-        cv : int, optional
-            Number of cross-validation folds. Defaults to RANDOM_SEARCH_CV_FOLDS.
-        random_state : int, optional
-            Random seed for reproducibility. Defaults to 42.
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        target_feature : str
+            The feature to keep as target.
             
         Returns:
         --------
-        dict
-            A summary of the training results, including model performance metrics.
+        pandas.DataFrame
+            The dataframe with only the selected target feature retained and optional 
+            train features dropped based on configuration.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Selecting target feature '{target_feature}' from dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+            
+        # Validate target feature
+        if target_feature is None:
+            print("Error: target_feature must be specified")
+            return df
+            
+        if target_feature not in VALID_TARGET_FEATURES:
+            print(f"Error: Invalid target feature '{target_feature}'. Must be one of: {VALID_TARGET_FEATURES}")
+            return df
+            
+        if target_feature not in df.columns:
+            print(f"Error: Target feature '{target_feature}' not found in dataframe columns")
+            return df
+            
+        # Drop other target features, keeping only the selected one
+        other_targets = [col for col in VALID_TARGET_FEATURES if col != target_feature and col in df.columns]
+        
+        if other_targets:
+            print(f"Dropping other target features: {other_targets}")
+            df = df.drop(columns=other_targets)
+            
+        print(f"Kept target feature: '{target_feature}'")
+        
+        # NEW: Drop train features if configured
+        # Note: You may need to define DROP_TRAIN_FEATURES and NON_NUMERIC_FEATURES in const.py
+        # For now, I'll comment this out since these constants weren't found in the search
+        """
+        if hasattr(self, 'DROP_TRAIN_FEATURES') and self.DROP_TRAIN_FEATURES:
+            features_to_drop = [col for col in NON_NUMERIC_FEATURES if col in df.columns]
+            if features_to_drop:
+                df = df.drop(columns=features_to_drop)
+                print(f"Dropped train features as configured: {features_to_drop}")
+            else:
+                print("No train features found to drop")
+        """
+        
+        print(f"Final dataframe shape: {df.shape}")
+        return df
+
+    def save_training_ready_csv(self, month_id, dataframe):
+        """
+        Save a training-ready dataframe to the training-ready directory.
+        
+        Parameters:
+        -----------
+        month_id : str
+            Month identifier in format "YYYY_MM" for the filename.
+        dataframe : pandas.DataFrame
+            The dataframe to save.
+            
+        Returns:
+        --------
+        bool
+            True if saving was successful, False otherwise.
         """
         try:
-            # Use default values from constants if not provided
-            if param_distributions is None:
-                from config.const import DECISION_TREE_PARAM_DISTRIBUTIONS
-                param_distributions = DECISION_TREE_PARAM_DISTRIBUTIONS
-            
-            if n_iter is None:
-                from config.const import RANDOM_SEARCH_ITERATIONS
-                n_iter = RANDOM_SEARCH_ITERATIONS
+            if dataframe is None or dataframe.empty:
+                print(f"Warning: Cannot save empty dataframe for {month_id}")
+                return False
                 
-            if cv is None:
-                from config.const import RANDOM_SEARCH_CV_FOLDS
-                cv = RANDOM_SEARCH_CV_FOLDS
+            # Create the training-ready directory path
+            training_ready_dir = TRAINING_READY_OUTPUT_FOLDER
             
-            print(f"\n{'='*80}")
-            print("TRAINING DECISION TREE ON PRE-SPLIT COMBINED DATA")
-            print(f"{'='*80}")
+            # Create the output filename with training_ready prefix
+            filename = f"training_ready_{month_id}.csv"
+            file_path = os.path.join(training_ready_dir, filename)
             
-            # Load pre-split data from the split_combined_dataset method
-            all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)
+            # Ensure output directory exists
+            os.makedirs(training_ready_dir, exist_ok=True)
             
-            train_path = os.path.join(all_preprocessed_dir, "combined_data_train.csv")
-            test_path = os.path.join(all_preprocessed_dir, "combined_data_test.csv")
+            # Save the dataframe
+            dataframe.to_csv(file_path, index=False)
+            print(f"Successfully saved training-ready dataframe to {file_path}")
+            return True
             
-            # Check if pre-split files exist
-            if not os.path.exists(train_path) or not os.path.exists(test_path):
-                error_msg = f"Pre-split combined data files not found: {train_path} or {test_path}"
-                print(f"Error: {error_msg}")
-                print("Make sure split_combined_dataset was called before this method.")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            # Load the pre-split datasets
-            print(f"Loading pre-split training data from: {os.path.basename(train_path)}")
-            train_df = pd.read_csv(train_path)
-            
-            print(f"Loading pre-split test data from: {os.path.basename(test_path)}")
-            test_df = pd.read_csv(test_path)
-            
-            if train_df.empty or test_df.empty:
-                error_msg = "Pre-split datasets are empty"
-                print(f"Error: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            print(f"Loaded pre-split data:")
-            print(f"  Training set: {len(train_df):,} rows")
-            print(f"  Test set: {len(test_df):,} rows")
-            
-            # Show month distribution if Month column exists
-            if 'Month' in train_df.columns and 'Month' in test_df.columns:
-                train_months = sorted(train_df['Month'].unique())
-                test_months = sorted(test_df['Month'].unique())
-                print(f"  Train months: {train_months}")
-                print(f"  Test months: {test_months}")
-                
-                # Show detailed month distribution
-                print("\nMonth distribution in training data:")
-                train_month_counts = train_df['Month'].value_counts().sort_index()
-                for month, count in train_month_counts.items():
-                    print(f"  Month {month:2d}: {count:,} rows")
-                
-                print("\nMonth distribution in test data:")
-                test_month_counts = test_df['Month'].value_counts().sort_index()
-                for month, count in test_month_counts.items():
-                    print(f"  Month {month:2d}: {count:,} rows")
-            
-            # Identify target column
-            target_options = VALID_TARGET_FEATURES
-            target_column = None
-            
-            for option in target_options:
-                if option in train_df.columns:
-                    target_column = option
-                    break
-            
-            if not target_column:
-                error_msg = "No target column found in pre-split datasets"
-                print(f"Error: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            print(f"Identified target column: {target_column}")
-            
-            # Prepare features and target
-            feature_columns = [col for col in train_df.columns if col not in [target_column, 'Month', 'data_year']]
-            
-            X_train = train_df[feature_columns]
-            y_train = train_df[target_column]
-            X_test = test_df[feature_columns]
-            y_test = test_df[target_column]
-            
-            print(f"Feature columns: {len(feature_columns)}")
-            print(f"Features: {feature_columns[:10]}..." if len(feature_columns) > 10 else f"Features: {feature_columns}")
-            
-            # Check if we have classification or regression problem
-            is_classification = True
-            if target_column in REGRESSION_PROBLEM:
-                is_classification = False
-                print(f"Target '{target_column}' indicates a regression problem")
-            else:
-                print(f"Target '{target_column}' indicates a classification problem")
-            
-            if is_classification:
-                # Create sample weights for classification if delay info is available
-                sample_weights = None
-                if WEIGHT_DELAY_COLUMN in train_df.columns:
-                    print("Using weighted samples based on delay magnitude for randomized search")
-                    # Create sample weights based on delay magnitude
-                    delay_col = WEIGHT_DELAY_COLUMN
-                    sample_weights = np.ones(len(y_train))
-                    
-                    # Get delay values for each training sample
-                    delays = train_df[delay_col].values
-                    
-                    # Apply weights - higher delays get higher weights
-                    delayed_idx = (delays > TRAIN_DELAY_MINUTES)
-                    if np.any(delayed_idx):
-                        # Normalize delay values by mean positive delay
-                        mean_delay = delays[delayed_idx].mean()
-                        # Use configured maximum weight
-                        sample_weights[delayed_idx] = np.minimum(MAX_SAMPLE_WEIGHT_CLASSIFICATION, 1 + delays[delayed_idx]/mean_delay)
-                    
-                    print(f"Created sample weights with range [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
-                
-                # Create proper CV strategy for classification
-                cv_strategy = StratifiedKFold(
-                    n_splits=cv,       
-                    shuffle=True,
-                    random_state=random_state
-                )
-
-                # Initialize base classifier
-                dt = DecisionTreeClassifier(random_state=random_state)
-                
-                print(f"Starting RandomizedSearchCV with {n_iter} iterations and {cv}-fold cross-validation...")
-            
-                # Run RandomizedSearchCV
-                random_search = RandomizedSearchCV(
-                    dt, param_distributions, n_iter=n_iter, cv=cv_strategy, 
-                    scoring=SCORE_METRIC, random_state=random_state, n_jobs=-1
-                )
-                
-                # Fit RandomizedSearchCV with sample weights if available
-                if sample_weights is not None:
-                    print("Training RandomizedSearchCV with sample weights")
-                    random_search.fit(X_train, y_train, sample_weight=sample_weights)
-                else:
-                    random_search.fit(X_train, y_train)
-                
-                best_params = random_search.best_params_
-                print(f"Best Hyperparameters: {best_params}")
-                
-                # Train model with best parameters
-                best_dt = DecisionTreeClassifier(**best_params, random_state=random_state)
-                
-                # Fit the final model with sample weights if available
-                if sample_weights is not None:
-                    print("Training final model with sample weights")
-                    best_dt.fit(X_train, y_train, sample_weight=sample_weights)
-                else:
-                    best_dt.fit(X_train, y_train)
-                
-                # Create output directory for combined data results
-                combined_output_dir = os.path.join(self.project_root, "data/output/decision_tree_combined_data")
-                os.makedirs(combined_output_dir, exist_ok=True)
-                
-                # === COMPREHENSIVE EVALUATION ===
-                evaluation_result = self.evaluate_model_comprehensive(
-                    model=best_dt,
-                    X_test=X_test,
-                    y_test=y_test,
-                    model_name="Decision Tree with RandomizedSearchCV (Combined Data)",
-                    month_id="combined",
-                    output_dir=combined_output_dir,
-                    target_column=target_column,
-                    random_search_obj=random_search,
-                    is_classification=is_classification
-                )
-                
-                if not evaluation_result["success"]:
-                    return {
-                        "success": False,
-                        "error": f"Evaluation failed: {evaluation_result.get('error', 'Unknown error')}"
-                    }
-                
-                # Feature importance
-                feature_importance = pd.DataFrame({
-                    'Feature': X_train.columns,
-                    'Importance': best_dt.feature_importances_
-                }).sort_values(by='Importance', ascending=False)
-                
-                print("\nFeature Importance (top 10):")
-                print(feature_importance.head(10))
-                
-                # ========== SHAP ANALYSIS ==========
-                print("\nPerforming SHAP analysis on the Combined Data Decision Tree model...")
-                
-                shap_result = self.analyze_model_with_shap(
-                    model=best_dt,
-                    X_test=X_test,
-                    y_test=y_test,
-                    model_type='classification',
-                    month_id="combined",
-                    output_dir=combined_output_dir,
-                    target_column=target_column,
-                    max_samples=1000,
-                    random_state=random_state,
-                    model_name="decision_tree_combined_data",
-                    baseline_data=train_df
-                )
-                
-                if shap_result.get("success", False):
-                    print("SHAP analysis completed successfully for Combined Data Decision Tree model!")
-                    
-                    # Compare with standard importance if SHAP was successful
-                    if "shap_importance_path" in shap_result:
-                        print("\n" + "-"*60)
-                        print("COMPARISON: Standard vs SHAP Feature Importance (Combined Data Decision Tree)")
-                        print("-"*60)
-                        
-                        try:
-                            # Load SHAP importance for comparison
-                            shap_importance = pd.read_csv(shap_result["shap_importance_path"])
-                            
-                            # Merge the two importance measures
-                            comparison = feature_importance.merge(
-                                shap_importance[['Feature', 'SHAP_Importance_Abs', 'SHAP_Importance_Signed', 
-                                            'SHAP_Percentage_Points', 'SHAP_Abs_Percentage_Points', 'Relative_Contribution_Pct']], 
-                                on='Feature', how='left'
-                            )
-                            
-                            print("Top 10 features by Standard Importance vs SHAP Importance:")
-                            for _, row in comparison.head(10).iterrows():
-                                direction = "↑" if row['SHAP_Importance_Signed'] > 0 else "↓"
-                                shap_abs = row['SHAP_Abs_Percentage_Points'] if pd.notna(row['SHAP_Abs_Percentage_Points']) else 0
-                                rel_contrib = row['Relative_Contribution_Pct'] if pd.notna(row['Relative_Contribution_Pct']) else 0
-                                print(f"{row['Feature']:<25}: Standard={row['Importance']:>6.4f}, "
-                                    f"SHAP={shap_abs:>5.2f}pp {direction}, "
-                                    f"({rel_contrib:>4.1f}% of impact)")
-                        except Exception as e:
-                            print(f"Could not perform comparison: {e}")
-                    
-                else:
-                    print(f"SHAP analysis failed: {shap_result.get('error', 'Unknown error')}")
-                
-                print("="*60)
-                
-                # Save the model and related files
-                try:
-                    import joblib
-                    
-                    # Save the model
-                    model_filename = f"decision_tree_combined_data.joblib"
-                    model_path = os.path.join(combined_output_dir, model_filename)
-                    joblib.dump(best_dt, model_path)
-                    print(f"Model saved to {model_path}")
-                    
-                    # Save feature importance
-                    importance_filename = f"feature_importance_combined_data.csv"
-                    importance_path = os.path.join(combined_output_dir, importance_filename)
-                    feature_importance.to_csv(importance_path, index=False)
-                    print(f"Feature importance saved to {importance_path}")
-                    
-                    # Save best parameters and training info
-                    params_filename = f"training_summary_combined_data.txt"
-                    params_path = os.path.join(combined_output_dir, params_filename)
-                    with open(params_path, 'w') as f:
-                        f.write(f"Combined Data Decision Tree Training Summary\n")
-                        f.write("="*50 + "\n\n")
-                        f.write(f"Training file: {os.path.basename(train_path)}\n")
-                        f.write(f"Test file: {os.path.basename(test_path)}\n")
-                        f.write(f"Training samples: {len(train_df):,}\n")
-                        f.write(f"Test samples: {len(test_df):,}\n")
-                        f.write(f"Split method: Random train/test split\n")
-                        if 'Month' in train_df.columns:
-                            f.write(f"Available months in data: {sorted(set(train_df['Month'].unique()) | set(test_df['Month'].unique()))}\n")
-                        f.write(f"Target column: {target_column}\n")
-                        f.write(f"Number of features: {len(feature_columns)}\n")
-                        f.write(f"Used sample weights: {sample_weights is not None}\n\n")
-                        f.write("Best Hyperparameters:\n")
-                        for param, value in best_params.items():
-                            f.write(f"{param}: {value}\n")
-                        f.write(f"\nBest CV Score ({SCORE_METRIC}): {random_search.best_score_:.4f}\n")
-                        f.write(f"Test {evaluation_result.get('optimized_metric_name', 'accuracy')}: {evaluation_result.get('optimized_metric', 0):.4f}\n")
-                    print(f"Training summary saved to {params_path}")
-                    
-                    # Save sample weights information if used
-                    if sample_weights is not None:
-                        weights_filename = f"sample_weights_info_combined.txt"
-                        weights_path = os.path.join(combined_output_dir, weights_filename)
-                        with open(weights_path, 'w') as f:
-                            f.write(f"Sample Weights Information - Combined Data\n")
-                            f.write("="*40 + "\n")
-                            f.write(f"Used sample weights: Yes\n")
-                            f.write(f"Weight range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]\n")
-                            f.write(f"Mean weight: {sample_weights.mean():.2f}\n")
-                            f.write(f"Standard deviation: {sample_weights.std():.2f}\n")
-                            f.write(f"Number of weighted samples: {(sample_weights > 1.0).sum()}\n")
-                            f.write(f"Max weight constant used: {MAX_SAMPLE_WEIGHT_CLASSIFICATION}\n")
-                        print(f"Sample weights info saved to {weights_path}")
-                    
-                    print(f"\n{'='*80}")
-                    print("COMBINED DATA DECISION TREE TRAINING COMPLETED SUCCESSFULLY")
-                    print(f"{'='*80}")
-                    
-                    return {
-                        "success": True,
-                        **evaluation_result,  # Include all evaluation results
-                        "best_params": best_params,
-                        "model_path": model_path,
-                        "feature_importance_path": importance_path,
-                        "shap_analysis": shap_result,
-                        "used_sample_weights": sample_weights is not None,
-                        "data_source": f"{os.path.basename(train_path)} + {os.path.basename(test_path)}",
-                        "total_samples": len(train_df) + len(test_df),
-                        "train_samples": len(train_df),
-                        "test_samples": len(test_df),
-                        "split_method": "random",
-                        "available_months": sorted(set(train_df['Month'].unique()) | set(test_df['Month'].unique())) if 'Month' in train_df.columns else []
-                    }
-                    
-                except Exception as e:
-                    print(f"Warning: Could not save model: {str(e)}")
-                    return {
-                        "success": True,
-                        **evaluation_result,  # Include evaluation results even if save failed
-                        "best_params": best_params,
-                        "model_saved": False,
-                        "shap_analysis": shap_result,
-                        "used_sample_weights": sample_weights is not None,
-                        "data_source": f"{os.path.basename(train_path)} + {os.path.basename(test_path)}",
-                        "total_samples": len(train_df) + len(test_df),
-                        "train_samples": len(train_df),
-                        "test_samples": len(test_df),
-                        "split_method": "random"
-                    }
-            else:
-                # For regression problems we would need a different approach
-                print(f"Regression with Decision Trees on combined data not implemented for target {target_column}")
-                return {
-                    "success": False,
-                    "error": f"Regression with Decision Trees on combined data not implemented for target {target_column}"
-                }
-        
         except Exception as e:
-            print(f"Error in Combined Data Decision Tree training: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            print(f"Error saving training-ready dataframe for {month_id}: {e}")
+            return False
