@@ -1439,7 +1439,7 @@ class TrainingPipeline:
                 if 'hour' in df.columns:
                     df['hour'] = df['hour'].fillna("00:00")
                 
-                # ========== VALIDATION FOR MONTH = 0 DATA ==========
+                # ========== ENHANCED VALIDATION FOR MONTH = 0 DATA ==========
                 # Validate month = 0 data (indicates failed parsing)
                 month_zero_count = (df['month'] == 0).sum()
                 day_zero_count = (df['day_of_week'] == 0).sum()
@@ -1455,31 +1455,119 @@ class TrainingPipeline:
                     # Log the warning
                     logger.warning(f"Invalid temporal data detected - Month=0: {month_zero_count}, Day=0: {day_zero_count}, Hour='00:00': {invalid_hour_count}")
                     
-                    # Show sample rows with month = 0 for debugging
-                    if month_zero_count > 0:
-                        sample_invalid = df[df['month'] == 0][['actualTime', 'month', 'hour', 'day_of_week']].head(3)
-                        print(f"\n   Sample rows with month = 0:")
-                        for idx, row in sample_invalid.iterrows():
-                            print(f"   - actualTime: '{row['actualTime']}' -> month: {row['month']}, hour: '{row['hour']}', day_of_week: {row['day_of_week']}")
+                    # ========== DETAILED DEBUGGING - FULL ROW SAMPLES ==========
+                    print(f"\n🔍 GENERATING DETAILED SAMPLES OF INVALID TEMPORAL DATA...")
                     
-                    # Optional: Add to processing result if you want to track this in the pipeline
-                    if hasattr(self, '_current_result') and self._current_result:
-                        warning_msg = f"Invalid temporal data: {month_zero_count} rows with month=0"
-                        if 'warnings' not in self._current_result:
-                            self._current_result['warnings'] = []
-                        self._current_result['warnings'].append(warning_msg)
-                else:
-                    print(f"✓ All temporal data successfully parsed (no month = 0 detected)")
-                    logger.info("All temporal data successfully parsed")
-
-                # Optional: You could also decide to filter out invalid rows
-                # Uncomment the lines below if you want to remove rows with month = 0
-                # if month_zero_count > 0:
-                #     print(f"   → Removing {month_zero_count} rows with invalid temporal data...")
-                #     df = df[df['month'] > 0].copy()
-                #     print(f"   → Dataframe size after filtering: {len(df):,} rows")
-                #     logger.info(f"Filtered out {month_zero_count} rows with month=0")
-                # ========== END VALIDATION ==========
+                    # Get invalid rows (any row with month=0 OR day_of_week=0)
+                    invalid_mask = (df['month'] == 0) | (df['day_of_week'] == 0)
+                    invalid_rows = df[invalid_mask].copy()
+                    sample_size = min(10, len(invalid_rows))
+                    sample_invalid = invalid_rows.head(sample_size)
+                    
+                    print(f"📝 SHOWING {sample_size} COMPLETE INVALID ROWS:")
+                    print("=" * 80)
+                    
+                    # Prepare log content for file saving
+                    import os
+                    from datetime import datetime
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    
+                    log_content = []
+                    log_content.append("=" * 80)
+                    log_content.append("INVALID TEMPORAL DATA - COMPLETE ROW DEBUG")
+                    log_content.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    log_content.append(f"Total invalid rows: {len(invalid_rows):,}")
+                    log_content.append(f"Showing: {sample_size} samples")
+                    log_content.append("=" * 80)
+                    log_content.append("")
+                    
+                    # Display each sample with COMPLETE row data
+                    for idx, (row_idx, row) in enumerate(sample_invalid.iterrows(), 1):
+                        print(f"\n🔸 INVALID SAMPLE {idx} (DataFrame Index: {row_idx}):")
+                        print("-" * 60)
+                        
+                        log_content.append(f"SAMPLE {idx} (DataFrame Index: {row_idx}):")
+                        log_content.append("-" * 60)
+                        
+                        print("COMPLETE ROW DATA:")
+                        log_content.append("COMPLETE ROW DATA:")
+                        
+                        # Show ALL columns for this row
+                        for col in df.columns:
+                            value = row[col]
+                            
+                            # Handle different types of missing/invalid values for display
+                            if pd.isna(value):
+                                display_value = "NULL/NaN"
+                            elif str(value).lower() == 'nan':
+                                display_value = f"'{value}' (string 'nan')"
+                            elif value == '':
+                                display_value = "'' (empty string)"
+                            elif isinstance(value, str) and len(str(value)) > 100:
+                                display_value = f"'{str(value)[:100]}...' (truncated, length: {len(str(value))})"
+                            else:
+                                display_value = f"'{value}'"
+                            
+                            print(f"  {col:30}: {display_value}")
+                            log_content.append(f"  {col:30}: {display_value}")
+                        
+                        log_content.append("")
+                        print("-" * 60)
+                    
+                    # Save detailed log file
+                    try:
+                        log_dir = "data/output/log"
+                        os.makedirs(log_dir, exist_ok=True)
+                        log_file = os.path.join(log_dir, f"invalid_temporal_debug_{timestamp}.log")
+                        
+                        with open(log_file, 'w', encoding='utf-8') as f:
+                            f.write('\n'.join(log_content))
+                        
+                        print(f"\n💾 COMPLETE DEBUG LOG SAVED: {log_file}")
+                        logger.info(f"Invalid temporal data debug log saved: {log_file}")
+                        
+                    except Exception as e:
+                        print(f"❌ Error saving debug log: {e}")
+                        logger.error(f"Error saving debug log: {e}")
+                    
+                    # ========== ADDITIONAL ANALYSIS ==========
+                    print(f"\n📊 INVALID DATA PATTERNS ANALYSIS:")
+                    
+                    # Analyze actualTime patterns
+                    if 'actualTime' in df.columns:
+                        print("ActualTime patterns in invalid rows:")
+                        actualtime_patterns = invalid_rows['actualTime'].value_counts().head(5)
+                        for value, count in actualtime_patterns.items():
+                            if pd.isna(value):
+                                print(f"  NULL/NaN: {count:,} occurrences")
+                            elif str(value).lower() == 'nan':
+                                print(f"  'nan' (string): {count:,} occurrences")
+                            else:
+                                print(f"  '{value}': {count:,} occurrences")
+                        
+                        logger.info(f"ActualTime patterns in invalid data: {dict(actualtime_patterns)}")
+                    
+                    # Analyze by train/station patterns
+                    if 'trainNumber' in df.columns:
+                        train_patterns = invalid_rows['trainNumber'].value_counts().head(3)
+                        print(f"\nTop trains with invalid temporal data:")
+                        for train, count in train_patterns.items():
+                            print(f"  Train {train}: {count:,} invalid rows")
+                    
+                    if 'stationName' in df.columns:
+                        station_patterns = invalid_rows['stationName'].value_counts().head(3)
+                        print(f"\nTop stations with invalid temporal data:")
+                        for station, count in station_patterns.items():
+                            print(f"  {station}: {count:,} invalid rows")
+                    
+                    # Check for cancelled trains
+                    if 'cancelled' in df.columns:
+                        cancelled_invalid = invalid_rows['cancelled'].sum() if invalid_rows['cancelled'].dtype == bool else (invalid_rows['cancelled'] == True).sum()
+                        print(f"\nCancelled trains in invalid data: {cancelled_invalid:,} / {len(invalid_rows):,} ({cancelled_invalid/len(invalid_rows)*100:.1f}%)")
+                        logger.info(f"Cancelled trains in invalid temporal data: {cancelled_invalid}")
+                    
+                    print("=" * 80)
+                    # ========== END DETAILED DEBUGGING ==========
                 
                 # Print summary statistics
                 print(f"\nTemporal feature extraction completed:")
