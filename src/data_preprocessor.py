@@ -2526,7 +2526,7 @@ class TrainingPipeline:
         print(f"Final dataframe shape: {df.shape}")
         return df
 
-    def filter_strong_weather_causes(self, dataframe=None):
+    def filter_strong_weather_causes(self, dataframe=None, month_id=None):
         """
         Filter the dataframe to keep only rows where causes_related_to_weather equals 3 (strong weather indicators).
         
@@ -2543,6 +2543,8 @@ class TrainingPipeline:
         -----------
         dataframe : pandas.DataFrame
             The dataframe to filter.
+        month_id : str, optional
+            Month identifier for logging purposes.
             
         Returns:
         --------
@@ -2555,68 +2557,143 @@ class TrainingPipeline:
             return None
             
         df = dataframe.copy()
-        print(f"Filtering for strong weather causes in dataframe with {len(df)} rows")
         
-        if df.empty:
-            print("Warning: Empty dataframe")
-            return df
-        
-        # Check if 'causes_related_to_weather' column exists
-        if 'causes_related_to_weather' not in df.columns:
-            print("Warning: 'causes_related_to_weather' column not found in dataframe. Skipping weather filtering.")
-            return df
-        
-        # Store original row count
-        original_rows = len(df)
-        
-        # Filter to keep only rows where causes_related_to_weather equals 3 (strong weather indicators)
-        filtered_df = df[df['causes_related_to_weather'] == 3].copy()
-        
-        # Calculate filtering statistics
-        filtered_rows = len(filtered_df)
-        filtered_percentage = (filtered_rows / original_rows) * 100 if original_rows > 0 else 0
-        removed_rows = original_rows - filtered_rows
-        removed_percentage = (removed_rows / original_rows) * 100 if original_rows > 0 else 0
-        
-        # Display filtering results
-        print(f"\n=== STRONG WEATHER CAUSES FILTERING RESULTS ===")
-        print(f"Original rows: {original_rows:,}")
-        print(f"Rows with strong weather causes (value = 3): {filtered_rows:,} ({filtered_percentage:.1f}%)")
-        print(f"Rows removed: {removed_rows:,} ({removed_percentage:.1f}%)")
-        
-        # Show distribution of causes_related_to_weather values in original data
-        if 'causes_related_to_weather' in df.columns:
-            value_counts = df['causes_related_to_weather'].value_counts().sort_index()
-            print(f"\nOriginal causes_related_to_weather distribution:")
-            for value, count in value_counts.items():
-                percentage = (count / original_rows) * 100
-                if value == 0:
-                    label = "No weather indicator"
-                elif value == 1:
-                    label = "Weak weather indicator"
-                elif value == 2:
-                    label = "Possible weather indicator"
-                elif value == 3:
-                    label = "Strong weather indicator"
-                else:
-                    label = f"Unknown value ({value})"
-                print(f"  {value}: {count:,} rows ({percentage:.1f}%) - {label}")
-        
-        # Warn if no data remains after filtering
-        if filtered_rows == 0:
-            print("⚠️  WARNING: No rows with strong weather causes found! The filtered dataset is empty.")
-            print("   Consider using a different filter criteria or checking the data.")
+        # Use the logging context manager for comprehensive logging
+        with self.get_logger("filter_strong_weather_causes.log", "strong_weather_filter", month_id) as logger:
+            print(f"Filtering for strong weather causes in dataframe with {len(df)} rows")
+            logger.info(f"=== STRONG WEATHER CAUSES FILTERING START ===")
+            logger.info(f"Input dataframe shape: {df.shape}")
+            logger.info(f"Processing month: {month_id if month_id else 'Unknown'}")
+            
+            if df.empty:
+                print("Warning: Empty dataframe")
+                logger.warning("Empty dataframe provided - no filtering performed")
+                return df
+            
+            # Check if 'causes_related_to_weather' column exists
+            if 'causes_related_to_weather' not in df.columns:
+                warning_msg = "'causes_related_to_weather' column not found in dataframe. Skipping weather filtering."
+                print(f"Warning: {warning_msg}")
+                logger.warning(warning_msg)
+                logger.info(f"Available columns: {list(df.columns)}")
+                return df
+            
+            # Log initial data distribution
+            logger.info(f"Initial data analysis:")
+            logger.info(f"  - Total rows: {len(df):,}")
+            logger.info(f"  - Total columns: {len(df.columns)}")
+            
+            # Store original row count
+            original_rows = len(df)
+            
+            # Show distribution of causes_related_to_weather values in original data
+            if 'causes_related_to_weather' in df.columns:
+                value_counts = df['causes_related_to_weather'].value_counts().sort_index()
+                
+                print(f"\nOriginal causes_related_to_weather distribution:")
+                logger.info("Original causes_related_to_weather distribution:")
+                
+                for value, count in value_counts.items():
+                    percentage = (count / original_rows) * 100
+                    if value == 0:
+                        label = "No weather indicator"
+                    elif value == 1:
+                        label = "Weak weather indicator"
+                    elif value == 2:
+                        label = "Possible weather indicator"
+                    elif value == 3:
+                        label = "Strong weather indicator"
+                    else:
+                        label = f"Unknown value ({value})"
+                    
+                    log_msg = f"  {value}: {count:,} rows ({percentage:.1f}%) - {label}"
+                    print(log_msg)
+                    logger.info(log_msg)
+            
+            # Filter to keep only rows where causes_related_to_weather equals 3 (strong weather indicators)
+            logger.info("Applying filter: causes_related_to_weather == 3")
+            filtered_df = df[df['causes_related_to_weather'] == 3].copy()
+            
+            # Calculate filtering statistics
+            filtered_rows = len(filtered_df)
+            filtered_percentage = (filtered_rows / original_rows) * 100 if original_rows > 0 else 0
+            removed_rows = original_rows - filtered_rows
+            removed_percentage = (removed_rows / original_rows) * 100 if original_rows > 0 else 0
+            
+            # Display and log filtering results
+            print(f"\n=== STRONG WEATHER CAUSES FILTERING RESULTS ===")
+            logger.info("=== FILTERING RESULTS SUMMARY ===")
+            
+            results_summary = [
+                f"Original rows: {original_rows:,}",
+                f"Rows with strong weather causes (value = 3): {filtered_rows:,} ({filtered_percentage:.1f}%)",
+                f"Rows removed: {removed_rows:,} ({removed_percentage:.1f}%)",
+                f"Data retention rate: {filtered_percentage:.1f}%"
+            ]
+            
+            for result in results_summary:
+                print(result)
+                logger.info(result)
+            
+            # Log detailed statistics
+            logger.info("=== DETAILED FILTERING STATISTICS ===")
+            logger.info(f"Filter criteria: Keep rows where causes_related_to_weather == 3")
+            logger.info(f"Rows meeting criteria: {filtered_rows:,}")
+            logger.info(f"Rows not meeting criteria: {removed_rows:,}")
+            logger.info(f"Percentage of data retained: {filtered_percentage:.2f}%")
+            logger.info(f"Percentage of data removed: {removed_percentage:.2f}%")
+            
+            # Warn if no data remains after filtering
+            if filtered_rows == 0:
+                warning_msg = "WARNING: No rows with strong weather causes found! The filtered dataset is empty."
+                recommendation = "Consider using a different filter criteria or checking the data."
+                
+                print(f"⚠️  {warning_msg}")
+                print(f"   {recommendation}")
+                
+                logger.warning(warning_msg)
+                logger.warning(recommendation)
+                logger.warning("Returning empty dataframe")
+                
+                return filtered_df
+            else:
+                success_msg = f"Successfully filtered data to focus on strong weather-related delays"
+                print(f"✓ {success_msg}")
+                logger.info(success_msg)
+            
+            # Drop the causes_related_to_weather column since all remaining rows have the same value (3)
+            if 'causes_related_to_weather' in filtered_df.columns:
+                filtered_df = filtered_df.drop('causes_related_to_weather', axis=1)
+                drop_msg = "Dropped 'causes_related_to_weather' column (redundant after filtering)"
+                print(f"✓ {drop_msg}")
+                logger.info(drop_msg)
+                
+                final_msg = f"Final dataset: {len(filtered_df):,} rows, {len(filtered_df.columns)} columns"
+                print(final_msg)
+                logger.info(final_msg)
+            
+            # Log final data characteristics
+            logger.info("=== FINAL DATASET CHARACTERISTICS ===")
+            logger.info(f"Final shape: {filtered_df.shape}")
+            logger.info(f"Final columns: {list(filtered_df.columns)}")
+            
+            # Log memory usage information
+            memory_usage = filtered_df.memory_usage(deep=True).sum()
+            logger.info(f"Memory usage: {memory_usage / 1024 / 1024:.2f} MB")
+            
+            # If there are any null values, log them
+            if filtered_df.isnull().any().any():
+                null_counts = filtered_df.isnull().sum()
+                null_columns = null_counts[null_counts > 0]
+                logger.info("Columns with null values in filtered data:")
+                for col, count in null_columns.items():
+                    logger.info(f"  {col}: {count} null values ({count/len(filtered_df)*100:.1f}%)")
+            else:
+                logger.info("No null values found in filtered dataset")
+            
+            logger.info("=== STRONG WEATHER CAUSES FILTERING COMPLETE ===")
+            
             return filtered_df
-        else:
-            print(f"✓ Successfully filtered data to focus on strong weather-related delays")
-        
-        # Drop the causes_related_to_weather column since all remaining rows have the same value (3)
-        if 'causes_related_to_weather' in filtered_df.columns:
-            filtered_df = filtered_df.drop('causes_related_to_weather', axis=1)
-            print(f"✓ Dropped 'causes_related_to_weather' column (redundant after filtering)")
-            print(f"Final dataset: {len(filtered_df):,} rows, {len(filtered_df.columns)} columns")
-        
-        return filtered_df
 
     def remove_duplicates(self, dataframe=None, month_id=None):
         """
