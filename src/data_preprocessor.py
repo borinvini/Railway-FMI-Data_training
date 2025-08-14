@@ -669,7 +669,11 @@ class TrainingPipeline:
             if result["data"] is not None:
                 try:
                     print(f"    → filter_strong_weather_causes")
-                    filtered_df = self.filter_strong_weather_causes(dataframe=result["data"])
+                    filtered_df = self.filter_strong_weather_causes(
+                        dataframe=result["data"], 
+                        month_id=file_id, 
+                        filename=os.path.basename(input_file_path)
+                    )
                     
                     if filtered_df is not None:
                         result["data"] = filtered_df
@@ -898,64 +902,76 @@ class TrainingPipeline:
             
             # Debug: Check sample values and analyze data structure
             print("\n--- ANALYZING CAUSES COLUMN STRUCTURE ---")
-            sample_size = min(10, len(df))
+
+            # Get a larger sample and look for different types
+            print("Analyzing data types in causes column...")
+            type_counts = {}
+            array_examples = []
+            non_empty_examples = []
+
+            # Sample more values to get a better picture
+            sample_size = min(100, len(df))
             sample_indices = df.sample(n=sample_size, random_state=42).index if len(df) > sample_size else df.index
-            sample_values = df.loc[sample_indices, 'causes'].tolist()
+
+            for idx in sample_indices:
+                val = df.loc[idx, 'causes']
+                val_type = type(val).__name__
+                
+                # Count types
+                type_counts[val_type] = type_counts.get(val_type, 0) + 1
+                
+                # Collect examples of arrays
+                if isinstance(val, (np.ndarray, pd.Series)):
+                    if len(array_examples) < 3:  # Keep first 3 array examples
+                        array_examples.append((idx, val, len(val)))
+                
+                # Collect examples of non-empty values
+                if not (val == [] or val == "" or val == "[]" or pd.isna(val) or val is None):
+                    if len(non_empty_examples) < 5:  # Keep first 5 non-empty examples
+                        non_empty_examples.append((idx, val))
+
+            print(f"\nData type distribution in sample of {sample_size}:")
+            for data_type, count in sorted(type_counts.items()):
+                percentage = (count / sample_size) * 100
+                print(f"  {data_type}: {count} ({percentage:.1f}%)")
+
+            if array_examples:
+                print(f"\nFound {len(array_examples)} array examples:")
+                for idx, arr, length in array_examples:
+                    print(f"  Index {idx}: {type(arr).__name__} with {length} elements")
+                    print(f"    Content: {repr(arr)}")
+
+            if non_empty_examples:
+                print(f"\nFound {len(non_empty_examples)} non-empty examples:")
+                for idx, val in non_empty_examples:
+                    print(f"  Index {idx}: {repr(val)} (type: {type(val).__name__})")
+            else:
+                print("\nNo non-empty values found in sample")
+
+            # Also check the full dataset for problematic types
+            print(f"\nScanning full dataset for arrays...")
+            array_count = 0
+            multi_element_arrays = 0
+
+            for idx, val in df['causes'].items():
+                if isinstance(val, (np.ndarray, pd.Series)):
+                    array_count += 1
+                    if hasattr(val, '__len__') and len(val) > 1:
+                        multi_element_arrays += 1
+                        if multi_element_arrays <= 3:  # Show first 3 problematic arrays
+                            print(f"  Multi-element array at index {idx}: {type(val).__name__} with {len(val)} elements")
+                            print(f"    Content: {repr(val)}")
+
+            print(f"\nFull dataset summary:")
+            print(f"  Total arrays found: {array_count}")
+            print(f"  Multi-element arrays: {multi_element_arrays}")
+
+            if multi_element_arrays > 0:
+                print(f"\n⚠️  Found {multi_element_arrays} multi-element arrays - these are causing the error!")
+            else:
+                print("\n✓ No multi-element arrays found in full scan")
             
-            print(f"Sample values (random {sample_size}):")
-            for i, val in enumerate(sample_values[:5]):  # Show first 5 for readability
-                print(f"  {i+1}: {repr(val)} (type: {type(val).__name__})")
-            
-            # Analyze value types and patterns
-            value_analysis = {
-                'total_rows': len(df),
-                'null_values': 0,
-                'empty_strings': 0,
-                'empty_lists': 0,
-                'string_representations': 0,
-                'direct_objects': 0,
-                'other_types': 0
-            }
-            
-            for val in df['causes']:
-                if pd.isna(val) or val is None:
-                    value_analysis['null_values'] += 1
-                elif val == "" or val == "[]":
-                    value_analysis['empty_strings'] += 1
-                elif isinstance(val, list) and len(val) == 0:
-                    value_analysis['empty_lists'] += 1
-                elif isinstance(val, str) and val.strip():
-                    value_analysis['string_representations'] += 1
-                elif isinstance(val, (list, dict)):
-                    value_analysis['direct_objects'] += 1
-                else:
-                    value_analysis['other_types'] += 1
-            
-            print(f"\nData structure analysis:")
-            for key, count in value_analysis.items():
-                percentage = (count / value_analysis['total_rows']) * 100
-                print(f"  {key}: {count:,} ({percentage:.1f}%)")
-            print("--- END ANALYSIS ---\n")
-            
-            # Define weather-related category mappings
-            WEATHER_INDICATORS = {
-                # Strong weather indicators (score: 3)
-                'strong': {'I1', 'I2'},
-                # Possible weather indicators (score: 2) 
-                'possible': {'A1', 'K1', 'O1', 'P1', 'S1', 'S2', 'T2', 'T3', 'V3'}
-            }
-            
-            print(f"Weather indicator categories:")
-            print(f"  Strong indicators (score 3): {sorted(WEATHER_INDICATORS['strong'])}")
-            print(f"  Possible indicators (score 2): {sorted(WEATHER_INDICATORS['possible'])}")
-            print(f"  Other categories (score 1): Any other non-empty detailedCategoryCode")
-            print(f"  No indicator (score 0): Empty/None values")
-            
-            # Process each row more efficiently using vectorized operations where possible
-            processed_values = []
-            weather_scores = []
-            
-            # Counters for detailed reporting
+            # Initialize tracking variables
             stats = {
                 'empty_values': 0,
                 'successful_extractions': 0,
@@ -967,8 +983,10 @@ class TrainingPipeline:
                 'weather_none': 0
             }
             
-            print("\nProcessing causes data...")
+            processed_values = []
+            weather_scores = []
             
+            # Process each value using the helper method
             for index, cause_value in df['causes'].items():
                 category_code, weather_score = self._process_single_cause(cause_value, index, stats)
                 processed_values.append(category_code)
@@ -1005,6 +1023,7 @@ class TrainingPipeline:
                     if category is not None:
                         percentage = (count / len(df)) * 100
                         # Determine weather indicator level
+                        from config.const import STRONG_INDICATORS, POSSIBLE_INDICATORS
                         if category in STRONG_INDICATORS:
                             level = "Strong"
                         elif category in POSSIBLE_INDICATORS:
@@ -1031,6 +1050,121 @@ class TrainingPipeline:
             import traceback
             traceback.print_exc()
             return dataframe  # Return original dataframe on error
+
+    def _process_single_cause(self, cause_value, index, stats):
+        """
+        Helper method to process a single cause value and extract detailedCategoryCode.
+        
+        Parameters:
+        -----------
+        cause_value : various
+            The cause value to process (can be string, list, dict, None, etc.)
+        index : int
+            Row index for error reporting
+        stats : dict
+            Statistics dictionary to update
+            
+        Returns:
+        --------
+        tuple
+            (category_code, weather_score) where:
+            - category_code: Extracted detailedCategoryCode or None
+            - weather_score: Weather indicator score (0-3)
+        """
+        # Import weather indicator constants
+        from config.const import STRONG_INDICATORS, POSSIBLE_INDICATORS
+        import ast
+        import numpy as np
+        import pandas as pd
+        
+        # FIX: Handle arrays and comprehensive empty value check
+        def is_empty_value(val):
+            """Check if a value is considered empty, handling arrays properly."""
+            if val is None:
+                return True
+            if isinstance(val, (np.ndarray, pd.Series)):
+                # For arrays, check if empty or all NaN
+                if len(val) == 0:
+                    return True
+                if hasattr(val, 'isna') and val.isna().all():
+                    return True
+                if hasattr(val, '__iter__') and all(pd.isna(x) for x in val):
+                    return True
+                return False
+            if pd.isna(val):
+                return True
+            if val == "" or val == "[]":
+                return True
+            if isinstance(val, list) and len(val) == 0:
+                return True
+            if isinstance(val, str) and val.strip() == "":
+                return True
+            return False
+        
+        # Check if value is empty (comprehensive check)
+        if is_empty_value(cause_value):
+            stats['empty_values'] += 1
+            stats['weather_none'] += 1
+            return None, 0  # No category code, no weather indicator
+        
+        try:
+            # Process non-empty values
+            if isinstance(cause_value, str):
+                # Parse string representation
+                cause_fixed = cause_value.replace("nan", "None")
+                parsed_causes = ast.literal_eval(cause_fixed)
+            else:
+                # Handle arrays by converting to list first
+                if isinstance(cause_value, (np.ndarray, pd.Series)):
+                    # Convert array to list and take first non-null element
+                    cause_list = cause_value.tolist() if hasattr(cause_value, 'tolist') else list(cause_value)
+                    if cause_list and len(cause_list) > 0:
+                        parsed_causes = cause_list[0] if not pd.isna(cause_list[0]) else None
+                    else:
+                        parsed_causes = None
+                else:
+                    # Assume it's already a Python object (list, dict, etc.)
+                    parsed_causes = cause_value
+            
+            # Extract categoryCode from the parsed data
+            category_code = None
+            
+            if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
+                # List format: get first item
+                first_cause = parsed_causes[0]
+                if isinstance(first_cause, dict) and 'detailedCategoryCode' in first_cause:
+                    category_code = first_cause['detailedCategoryCode']
+            elif isinstance(parsed_causes, dict) and 'detailedCategoryCode' in parsed_causes:
+                # Direct dictionary format
+                category_code = parsed_causes['detailedCategoryCode']
+            
+            if category_code is not None:
+                stats['successful_extractions'] += 1
+                
+                # Determine weather score based on detailedCategoryCode
+                if category_code in STRONG_INDICATORS:
+                    weather_score = 3
+                    stats['weather_strong'] += 1
+                elif category_code in POSSIBLE_INDICATORS:
+                    weather_score = 2
+                    stats['weather_possible'] += 1
+                else:
+                    weather_score = 1  # Other non-empty category
+                    stats['weather_weak'] += 1
+                    
+                return category_code, weather_score
+            else:
+                stats['failed_extractions'] += 1
+                stats['weather_none'] += 1
+                return None, 0
+                
+        except Exception as e:
+            # Parsing failed
+            stats['parsing_errors'] += 1
+            stats['weather_none'] += 1
+            if stats['parsing_errors'] <= 3:  # Only print first few errors
+                print(f"    Warning: Failed to parse causes in row {index}: {e}")
+            return None, 0
 
     def _process_single_cause(self, cause_value, index, stats):
         """
@@ -2526,7 +2660,7 @@ class TrainingPipeline:
         print(f"Final dataframe shape: {df.shape}")
         return df
 
-    def filter_strong_weather_causes(self, dataframe=None, month_id=None):
+    def filter_strong_weather_causes(self, dataframe=None, month_id=None, filename=None):
         """
         Filter the dataframe to keep only rows where causes_related_to_weather equals 3 (strong weather indicators).
         
@@ -2539,18 +2673,28 @@ class TrainingPipeline:
         
         Only rows with value 3 (strong weather indicators) are retained.
         
+        If the 'causes_related_to_weather' column is not found, the entire dataframe is dropped
+        and a CSV file with only column names (no data) is saved.
+        
         Parameters:
         -----------
         dataframe : pandas.DataFrame
             The dataframe to filter.
         month_id : str, optional
-            Month identifier for logging purposes.
+            Month identifier for logging purposes (format: YYYY_MM).
+        filename : str, optional
+            Original filename to extract date information if month_id is not available.
             
         Returns:
         --------
         pandas.DataFrame
             The filtered dataframe containing only strong weather-related delays.
+            Returns empty dataframe with column names if causes_related_to_weather column is missing.
         """
+        import re
+        import os
+        from datetime import datetime
+        
         # Check if dataframe is provided
         if dataframe is None:
             print("Error: Dataframe must be provided")
@@ -2558,12 +2702,59 @@ class TrainingPipeline:
             
         df = dataframe.copy()
         
+        # Extract month and year information
+        month_info = "Unknown"
+        year_info = "Unknown"
+        
+        # Priority 1: Try to get month from dataframe's 'month' column
+        if 'month' in df.columns and not df.empty:
+            try:
+                # Get the first non-null month value
+                month_values = df['month'].dropna()
+                if not month_values.empty:
+                    first_month = month_values.iloc[0]
+                    if isinstance(first_month, (int, float)) and not pd.isna(first_month):
+                        month_info = f"{int(first_month):02d}"
+                    elif isinstance(first_month, str):
+                        month_info = first_month.strip()
+                    print(f"Extracted month from dataframe 'month' column: {month_info}")
+            except Exception as e:
+                print(f"Could not extract month from dataframe 'month' column: {e}")
+        
+        # Priority 2: Try to get from month_id parameter
+        if month_info == "Unknown" and month_id:
+            try:
+                # month_id should be in format YYYY_MM
+                if '_' in month_id:
+                    year_part, month_part = month_id.split('_')
+                    month_info = month_part
+                    year_info = year_part
+                    print(f"Extracted from month_id parameter: Year={year_info}, Month={month_info}")
+            except Exception as e:
+                print(f"Could not extract month from month_id parameter: {e}")
+        
+        # Priority 3: Try to extract from filename
+        if month_info == "Unknown" and filename:
+            try:
+                # Extract from filename pattern: matched_data_YYYY_MM.csv
+                match = re.search(r'(\d{4}).*?(\d{2})', filename)
+                if match:
+                    year_info, month_info = match.groups()
+                    print(f"Extracted from filename: Year={year_info}, Month={month_info}")
+            except Exception as e:
+                print(f"Could not extract month from filename: {e}")
+        
+        # Set current year if not found
+        if year_info == "Unknown":
+            year_info = str(datetime.now().year)
+            print(f"Using current year: {year_info}")
+        
         # Use the logging context manager for comprehensive logging
         with self.get_logger("filter_strong_weather_causes.log", "strong_weather_filter", month_id) as logger:
             print(f"Filtering for strong weather causes in dataframe with {len(df)} rows")
             logger.info(f"=== STRONG WEATHER CAUSES FILTERING START ===")
             logger.info(f"Input dataframe shape: {df.shape}")
-            logger.info(f"Processing month: {month_id if month_id else 'Unknown'}")
+            logger.info(f"Processing month: {month_info}, Year: {year_info}")
             
             if df.empty:
                 print("Warning: Empty dataframe")
@@ -2572,43 +2763,48 @@ class TrainingPipeline:
             
             # Check if 'causes_related_to_weather' column exists
             if 'causes_related_to_weather' not in df.columns:
-                warning_msg = "'causes_related_to_weather' column not found in dataframe. Skipping weather filtering."
+                warning_msg = f"'causes_related_to_weather' column not found in dataframe for {year_info}-{month_info}. Dropping entire dataframe and saving empty CSV with column names only."
                 print(f"Warning: {warning_msg}")
                 logger.warning(warning_msg)
                 logger.info(f"Available columns: {list(df.columns)}")
-                return df
+                
+                # Create empty dataframe with same columns but no data
+                empty_df = pd.DataFrame(columns=df.columns)
+                logger.info(f"Returning empty dataframe with {len(empty_df.columns)} columns and 0 rows")
+                
+                return empty_df
             
             # Log initial data distribution
             logger.info(f"Initial data analysis:")
             logger.info(f"  - Total rows: {len(df):,}")
             logger.info(f"  - Total columns: {len(df.columns)}")
+            logger.info(f"  - Month/Year: {month_info}/{year_info}")
             
             # Store original row count
             original_rows = len(df)
             
             # Show distribution of causes_related_to_weather values in original data
-            if 'causes_related_to_weather' in df.columns:
-                value_counts = df['causes_related_to_weather'].value_counts().sort_index()
+            value_counts = df['causes_related_to_weather'].value_counts().sort_index()
+            
+            print(f"\nOriginal causes_related_to_weather distribution for {year_info}-{month_info}:")
+            logger.info(f"Original causes_related_to_weather distribution for {year_info}-{month_info}:")
+            
+            for value, count in value_counts.items():
+                percentage = (count / original_rows) * 100
+                if value == 0:
+                    label = "No weather indicator"
+                elif value == 1:
+                    label = "Weak weather indicator"
+                elif value == 2:
+                    label = "Possible weather indicator"
+                elif value == 3:
+                    label = "Strong weather indicator"
+                else:
+                    label = f"Unknown value ({value})"
                 
-                print(f"\nOriginal causes_related_to_weather distribution:")
-                logger.info("Original causes_related_to_weather distribution:")
-                
-                for value, count in value_counts.items():
-                    percentage = (count / original_rows) * 100
-                    if value == 0:
-                        label = "No weather indicator"
-                    elif value == 1:
-                        label = "Weak weather indicator"
-                    elif value == 2:
-                        label = "Possible weather indicator"
-                    elif value == 3:
-                        label = "Strong weather indicator"
-                    else:
-                        label = f"Unknown value ({value})"
-                    
-                    log_msg = f"  {value}: {count:,} rows ({percentage:.1f}%) - {label}"
-                    print(log_msg)
-                    logger.info(log_msg)
+                log_msg = f"  {value}: {count:,} rows ({percentage:.1f}%) - {label}"
+                print(log_msg)
+                logger.info(log_msg)
             
             # Filter to keep only rows where causes_related_to_weather equals 3 (strong weather indicators)
             logger.info("Applying filter: causes_related_to_weather == 3")
@@ -2621,8 +2817,8 @@ class TrainingPipeline:
             removed_percentage = (removed_rows / original_rows) * 100 if original_rows > 0 else 0
             
             # Display and log filtering results
-            print(f"\n=== STRONG WEATHER CAUSES FILTERING RESULTS ===")
-            logger.info("=== FILTERING RESULTS SUMMARY ===")
+            print(f"\n=== STRONG WEATHER CAUSES FILTERING RESULTS ({year_info}-{month_info}) ===")
+            logger.info(f"=== FILTERING RESULTS SUMMARY ({year_info}-{month_info}) ===")
             
             results_summary = [
                 f"Original rows: {original_rows:,}",
@@ -2645,54 +2841,14 @@ class TrainingPipeline:
             
             # Warn if no data remains after filtering
             if filtered_rows == 0:
-                warning_msg = "WARNING: No rows with strong weather causes found! The filtered dataset is empty."
+                warning_msg = f"WARNING: No rows with strong weather causes found for {year_info}-{month_info}! The filtered dataset is empty."
                 recommendation = "Consider using a different filter criteria or checking the data."
-                
-                print(f"⚠️  {warning_msg}")
-                print(f"   {recommendation}")
-                
+                print(warning_msg)
+                print(recommendation)
                 logger.warning(warning_msg)
                 logger.warning(recommendation)
-                logger.warning("Returning empty dataframe")
-                
-                return filtered_df
-            else:
-                success_msg = f"Successfully filtered data to focus on strong weather-related delays"
-                print(f"✓ {success_msg}")
-                logger.info(success_msg)
             
-            # Drop the causes_related_to_weather column since all remaining rows have the same value (3)
-            if 'causes_related_to_weather' in filtered_df.columns:
-                filtered_df = filtered_df.drop('causes_related_to_weather', axis=1)
-                drop_msg = "Dropped 'causes_related_to_weather' column (redundant after filtering)"
-                print(f"✓ {drop_msg}")
-                logger.info(drop_msg)
-                
-                final_msg = f"Final dataset: {len(filtered_df):,} rows, {len(filtered_df.columns)} columns"
-                print(final_msg)
-                logger.info(final_msg)
-            
-            # Log final data characteristics
-            logger.info("=== FINAL DATASET CHARACTERISTICS ===")
-            logger.info(f"Final shape: {filtered_df.shape}")
-            logger.info(f"Final columns: {list(filtered_df.columns)}")
-            
-            # Log memory usage information
-            memory_usage = filtered_df.memory_usage(deep=True).sum()
-            logger.info(f"Memory usage: {memory_usage / 1024 / 1024:.2f} MB")
-            
-            # If there are any null values, log them
-            if filtered_df.isnull().any().any():
-                null_counts = filtered_df.isnull().sum()
-                null_columns = null_counts[null_counts > 0]
-                logger.info("Columns with null values in filtered data:")
-                for col, count in null_columns.items():
-                    logger.info(f"  {col}: {count} null values ({count/len(filtered_df)*100:.1f}%)")
-            else:
-                logger.info("No null values found in filtered dataset")
-            
-            logger.info("=== STRONG WEATHER CAUSES FILTERING COMPLETE ===")
-            
+            logger.info(f"=== STRONG WEATHER CAUSES FILTERING COMPLETE ({year_info}-{month_info}) ===")
             return filtered_df
 
     def remove_duplicates(self, dataframe=None, month_id=None):
