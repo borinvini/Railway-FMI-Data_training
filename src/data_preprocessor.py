@@ -780,6 +780,7 @@ class TrainingPipeline:
             train_stops = {}
             
             # Extract nested data from the "timeTableRows" column
+            print(f"Processing {len(df)} rows to extract train stops from timeTableRows column. Please wait...")
             for index, row in df.iterrows():
                 ttr = row.get("timeTableRows", None)
                 if ttr is None or pd.isnull(ttr):
@@ -835,6 +836,7 @@ class TrainingPipeline:
                 print("Renamed 'weather_observations' to 'weather_conditions'")
             
             # Expand the 'weather_conditions' dictionaries into separate columns
+            print("Processing weather_conditions column - expanding into separate columns. Please wait...")
             if "weather_conditions" in cross_df.columns:
                 weather_df = cross_df["weather_conditions"].apply(pd.Series)
                 
@@ -894,83 +896,9 @@ class TrainingPipeline:
         # Check if 'causes' column exists
         if 'causes' not in df.columns:
             print("Warning: 'causes' column not found in dataframe. Skipping causes processing.")
-            print(f"Available columns: {list(df.columns)}")
             return df
         
         try:
-            print(f"Found 'causes' column with {len(df)} rows to process")
-            
-            # Debug: Check sample values and analyze data structure
-            print("\n--- ANALYZING CAUSES COLUMN STRUCTURE ---")
-
-            # Get a larger sample and look for different types
-            print("Analyzing data types in causes column...")
-            type_counts = {}
-            array_examples = []
-            non_empty_examples = []
-
-            # Sample more values to get a better picture
-            sample_size = min(100, len(df))
-            sample_indices = df.sample(n=sample_size, random_state=42).index if len(df) > sample_size else df.index
-
-            for idx in sample_indices:
-                val = df.loc[idx, 'causes']
-                val_type = type(val).__name__
-                
-                # Count types
-                type_counts[val_type] = type_counts.get(val_type, 0) + 1
-                
-                # Collect examples of arrays
-                if isinstance(val, (np.ndarray, pd.Series)):
-                    if len(array_examples) < 3:  # Keep first 3 array examples
-                        array_examples.append((idx, val, len(val)))
-                
-                # Collect examples of non-empty values
-                if not (val == [] or val == "" or val == "[]" or pd.isna(val) or val is None):
-                    if len(non_empty_examples) < 5:  # Keep first 5 non-empty examples
-                        non_empty_examples.append((idx, val))
-
-            print(f"\nData type distribution in sample of {sample_size}:")
-            for data_type, count in sorted(type_counts.items()):
-                percentage = (count / sample_size) * 100
-                print(f"  {data_type}: {count} ({percentage:.1f}%)")
-
-            if array_examples:
-                print(f"\nFound {len(array_examples)} array examples:")
-                for idx, arr, length in array_examples:
-                    print(f"  Index {idx}: {type(arr).__name__} with {length} elements")
-                    print(f"    Content: {repr(arr)}")
-
-            if non_empty_examples:
-                print(f"\nFound {len(non_empty_examples)} non-empty examples:")
-                for idx, val in non_empty_examples:
-                    print(f"  Index {idx}: {repr(val)} (type: {type(val).__name__})")
-            else:
-                print("\nNo non-empty values found in sample")
-
-            # Also check the full dataset for problematic types
-            print(f"\nScanning full dataset for arrays...")
-            array_count = 0
-            multi_element_arrays = 0
-
-            for idx, val in df['causes'].items():
-                if isinstance(val, (np.ndarray, pd.Series)):
-                    array_count += 1
-                    if hasattr(val, '__len__') and len(val) > 1:
-                        multi_element_arrays += 1
-                        if multi_element_arrays <= 3:  # Show first 3 problematic arrays
-                            print(f"  Multi-element array at index {idx}: {type(val).__name__} with {len(val)} elements")
-                            print(f"    Content: {repr(val)}")
-
-            print(f"\nFull dataset summary:")
-            print(f"  Total arrays found: {array_count}")
-            print(f"  Multi-element arrays: {multi_element_arrays}")
-
-            if multi_element_arrays > 0:
-                print(f"\n⚠️  Found {multi_element_arrays} multi-element arrays - these are causing the error!")
-            else:
-                print("\n✓ No multi-element arrays found in full scan")
-            
             # Initialize tracking variables
             stats = {
                 'empty_values': 0,
@@ -986,270 +914,97 @@ class TrainingPipeline:
             processed_values = []
             weather_scores = []
             
-            # Process each value using the helper method
+           
+            # Process each value directly in the loop
             for index, cause_value in df['causes'].items():
-                category_code, weather_score = self._process_single_cause(cause_value, index, stats)
-                processed_values.append(category_code)
-                weather_scores.append(weather_score)
+                # Check if value is empty (comprehensive check)
+                is_empty = (
+                    pd.isna(cause_value) or 
+                    cause_value is None or 
+                    cause_value == "" or 
+                    cause_value == "[]" or
+                    (isinstance(cause_value, list) and len(cause_value) == 0) or
+                    (isinstance(cause_value, str) and cause_value.strip() == "")
+                )
+                
+                if is_empty:
+                    stats['empty_values'] += 1
+                    stats['weather_none'] += 1
+                    processed_values.append(None)
+                    weather_scores.append(0)
+                    continue
+                
+                try:
+                    # Process non-empty values
+                    if isinstance(cause_value, str):
+                        # Parse string representation
+                        cause_fixed = cause_value.replace("nan", "None")
+                        parsed_causes = ast.literal_eval(cause_fixed)
+                    else:
+                        # Assume it's already a Python object (list, dict, etc.)
+                        parsed_causes = cause_value
+                    
+                    # Extract categoryCode from the parsed data
+                    category_code = None
+                    
+                    if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
+                        # List format: get first item
+                        first_cause = parsed_causes[0]
+                        if isinstance(first_cause, dict) and 'detailedCategoryCode' in first_cause:
+                            category_code = first_cause['detailedCategoryCode']
+                    elif isinstance(parsed_causes, dict) and 'detailedCategoryCode' in parsed_causes:
+                        # Direct dictionary format
+                        category_code = parsed_causes['detailedCategoryCode']
+                    
+                    if category_code is not None:
+                        stats['successful_extractions'] += 1
+                        
+                        # Determine weather score based on detailedCategoryCode
+                        if category_code in STRONG_INDICATORS:
+                            weather_score = 3
+                            stats['weather_strong'] += 1
+                        elif category_code in POSSIBLE_INDICATORS:
+                            weather_score = 2
+                            stats['weather_possible'] += 1
+                        else:
+                            weather_score = 1  # Other non-empty category
+                            stats['weather_weak'] += 1
+                        
+                        processed_values.append(category_code)
+                        weather_scores.append(weather_score)
+                    else:
+                        stats['failed_extractions'] += 1
+                        stats['weather_none'] += 1
+                        processed_values.append(None)
+                        weather_scores.append(0)
+                        
+                except Exception as e:
+                    # Parsing failed
+                    stats['parsing_errors'] += 1
+                    stats['weather_none'] += 1
+                    if stats['parsing_errors'] <= 3:  # Only print first few errors
+                        print(f"Warning: Failed to parse causes in row {index}: {e}")
+                    processed_values.append(None)
+                    weather_scores.append(0)
             
             # Update the dataframe with processed values
             df['causes'] = processed_values
             df['causes_related_to_weather'] = weather_scores
             
-            # Generate comprehensive statistics
-            unique_categories = set(code for code in processed_values if code is not None)
-            
-            print(f"\n=== CAUSES PROCESSING RESULTS ===")
-            print(f"Processing Statistics:")
-            print(f"  Total rows processed: {len(df):,}")
-            print(f"  Empty values: {stats['empty_values']:,}")
+            # Generate summary statistics
+            print(f"Causes processing completed:")
             print(f"  Successful extractions: {stats['successful_extractions']:,}")
-            print(f"  Failed extractions: {stats['failed_extractions']:,}")
-            print(f"  Parsing errors: {stats['parsing_errors']:,}")
+            print(f"  Weather indicators found: {stats['weather_strong'] + stats['weather_possible'] + stats['weather_weak']:,}")
             
-            print(f"\nWeather Indicator Distribution:")
-            print(f"  Strong indicators (3): {stats['weather_strong']:,} ({stats['weather_strong']/len(df)*100:.1f}%)")
-            print(f"  Possible indicators (2): {stats['weather_possible']:,} ({stats['weather_possible']/len(df)*100:.1f}%)")
-            print(f"  Weak indicators (1): {stats['weather_weak']:,} ({stats['weather_weak']/len(df)*100:.1f}%)")
-            print(f"  No indicators (0): {stats['weather_none']:,} ({stats['weather_none']/len(df)*100:.1f}%)")
-            
-            if unique_categories:
-                print(f"\nUnique category codes found ({len(unique_categories)}): {sorted(unique_categories)}")
-                
-                # Show category frequency distribution
-                category_counts = pd.Series(processed_values).value_counts().sort_index()
-                print(f"\nCategory Code Frequency:")
-                for category, count in category_counts.items():
-                    if category is not None:
-                        percentage = (count / len(df)) * 100
-                        # Determine weather indicator level
-                        from config.const import STRONG_INDICATORS, POSSIBLE_INDICATORS
-                        if category in STRONG_INDICATORS:
-                            level = "Strong"
-                        elif category in POSSIBLE_INDICATORS:
-                            level = "Possible"
-                        else:
-                            level = "Weak"
-                        print(f"  {category}: {count:,} ({percentage:.1f}%) - {level} weather indicator")
-            else:
-                print("\nNo category codes were successfully extracted")
-            
-            # Validate weather score distribution
-            weather_score_counts = pd.Series(weather_scores).value_counts().sort_index()
-            print(f"\nWeather Score Validation:")
-            for score, count in weather_score_counts.items():
-                percentage = (count / len(df)) * 100
-                print(f"  Score {score}: {count:,} ({percentage:.1f}%)")
-            
-            print("=== END PROCESSING RESULTS ===\n")
+            if stats['parsing_errors'] > 0:
+                print(f"  Parsing errors: {stats['parsing_errors']:,}")
             
             return df
             
         except Exception as e:
             print(f"Error processing causes column: {e}")
-            import traceback
-            traceback.print_exc()
             return dataframe  # Return original dataframe on error
 
-    def _process_single_cause(self, cause_value, index, stats):
-        """
-        Helper method to process a single cause value and extract detailedCategoryCode.
-        
-        Parameters:
-        -----------
-        cause_value : various
-            The cause value to process (can be string, list, dict, None, etc.)
-        index : int
-            Row index for error reporting
-        stats : dict
-            Statistics dictionary to update
-            
-        Returns:
-        --------
-        tuple
-            (category_code, weather_score) where:
-            - category_code: Extracted detailedCategoryCode or None
-            - weather_score: Weather indicator score (0-3)
-        """
-        # Import weather indicator constants
-        from config.const import STRONG_INDICATORS, POSSIBLE_INDICATORS
-        import ast
-        import numpy as np
-        import pandas as pd
-        
-        # FIX: Handle arrays and comprehensive empty value check
-        def is_empty_value(val):
-            """Check if a value is considered empty, handling arrays properly."""
-            if val is None:
-                return True
-            if isinstance(val, (np.ndarray, pd.Series)):
-                # For arrays, check if empty or all NaN
-                if len(val) == 0:
-                    return True
-                if hasattr(val, 'isna') and val.isna().all():
-                    return True
-                if hasattr(val, '__iter__') and all(pd.isna(x) for x in val):
-                    return True
-                return False
-            if pd.isna(val):
-                return True
-            if val == "" or val == "[]":
-                return True
-            if isinstance(val, list) and len(val) == 0:
-                return True
-            if isinstance(val, str) and val.strip() == "":
-                return True
-            return False
-        
-        # Check if value is empty (comprehensive check)
-        if is_empty_value(cause_value):
-            stats['empty_values'] += 1
-            stats['weather_none'] += 1
-            return None, 0  # No category code, no weather indicator
-        
-        try:
-            # Process non-empty values
-            if isinstance(cause_value, str):
-                # Parse string representation
-                cause_fixed = cause_value.replace("nan", "None")
-                parsed_causes = ast.literal_eval(cause_fixed)
-            else:
-                # Handle arrays by converting to list first
-                if isinstance(cause_value, (np.ndarray, pd.Series)):
-                    # Convert array to list and take first non-null element
-                    cause_list = cause_value.tolist() if hasattr(cause_value, 'tolist') else list(cause_value)
-                    if cause_list and len(cause_list) > 0:
-                        parsed_causes = cause_list[0] if not pd.isna(cause_list[0]) else None
-                    else:
-                        parsed_causes = None
-                else:
-                    # Assume it's already a Python object (list, dict, etc.)
-                    parsed_causes = cause_value
-            
-            # Extract categoryCode from the parsed data
-            category_code = None
-            
-            if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
-                # List format: get first item
-                first_cause = parsed_causes[0]
-                if isinstance(first_cause, dict) and 'detailedCategoryCode' in first_cause:
-                    category_code = first_cause['detailedCategoryCode']
-            elif isinstance(parsed_causes, dict) and 'detailedCategoryCode' in parsed_causes:
-                # Direct dictionary format
-                category_code = parsed_causes['detailedCategoryCode']
-            
-            if category_code is not None:
-                stats['successful_extractions'] += 1
-                
-                # Determine weather score based on detailedCategoryCode
-                if category_code in STRONG_INDICATORS:
-                    weather_score = 3
-                    stats['weather_strong'] += 1
-                elif category_code in POSSIBLE_INDICATORS:
-                    weather_score = 2
-                    stats['weather_possible'] += 1
-                else:
-                    weather_score = 1  # Other non-empty category
-                    stats['weather_weak'] += 1
-                    
-                return category_code, weather_score
-            else:
-                stats['failed_extractions'] += 1
-                stats['weather_none'] += 1
-                return None, 0
-                
-        except Exception as e:
-            # Parsing failed
-            stats['parsing_errors'] += 1
-            stats['weather_none'] += 1
-            if stats['parsing_errors'] <= 3:  # Only print first few errors
-                print(f"    Warning: Failed to parse causes in row {index}: {e}")
-            return None, 0
-
-    def _process_single_cause(self, cause_value, index, stats):
-        """
-        Helper method to process a single cause value and extract detailedCategoryCode.
-        
-        Parameters:
-        -----------
-        cause_value : various
-            The cause value to process (can be string, list, dict, None, etc.)
-        index : int
-            Row index for error reporting
-        stats : dict
-            Statistics dictionary to update
-            
-        Returns:
-        --------
-        tuple
-            (category_code, weather_score) where:
-            - category_code: Extracted detailedCategoryCode or None
-            - weather_score: Weather indicator score (0-3)
-        """
-        # Import weather indicator constants
-        from config.const import STRONG_INDICATORS, POSSIBLE_INDICATORS
-        
-        # Check if value is empty (comprehensive check)
-        is_empty = (
-            pd.isna(cause_value) or 
-            cause_value is None or 
-            cause_value == "" or 
-            cause_value == "[]" or
-            (isinstance(cause_value, list) and len(cause_value) == 0) or
-            (isinstance(cause_value, str) and cause_value.strip() == "")
-        )
-        
-        if is_empty:
-            stats['empty_values'] += 1
-            return None, 0  # No category code, no weather indicator
-        
-        try:
-            # Process non-empty values
-            if isinstance(cause_value, str):
-                # Parse string representation
-                cause_fixed = cause_value.replace("nan", "None")
-                parsed_causes = ast.literal_eval(cause_fixed)
-            else:
-                # Assume it's already a Python object (list, dict, etc.)
-                parsed_causes = cause_value
-            
-            # Extract categoryCode from the parsed data
-            category_code = None
-            
-            if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
-                # List format: get first item
-                first_cause = parsed_causes[0]
-                if isinstance(first_cause, dict) and 'detailedCategoryCode' in first_cause:
-                    category_code = first_cause['detailedCategoryCode']
-            elif isinstance(parsed_causes, dict) and 'detailedCategoryCode' in parsed_causes:
-                # Direct dictionary format
-                category_code = parsed_causes['detailedCategoryCode']
-            
-            if category_code is not None:
-                stats['successful_extractions'] += 1
-                
-                # Determine weather score based on detailedCategoryCode
-                if category_code in STRONG_INDICATORS:
-                    weather_score = 3
-                    stats['weather_strong'] += 1
-                elif category_code in POSSIBLE_INDICATORS:
-                    weather_score = 2
-                    stats['weather_possible'] += 1
-                else:
-                    weather_score = 1  # Other non-empty category
-                    stats['weather_weak'] += 1
-                    
-                return category_code, weather_score
-            else:
-                stats['failed_extractions'] += 1
-                return None, 0
-                
-        except Exception as e:
-            # Parsing failed
-            stats['parsing_errors'] += 1
-            if stats['parsing_errors'] <= 3:  # Only print first few errors
-                print(f"    Warning: Failed to parse causes in row {index}: {e}")
-            return None, 0
 
     def add_train_delayed_feature(self, dataframe=None):
         """
