@@ -2634,7 +2634,14 @@ class TrainingPipeline:
                 print(recommendation)
                 logger.warning(warning_msg)
                 logger.warning(recommendation)
-            
+
+            # Drop the causes_related_to_weather column since it's no longer needed for training
+            # (all remaining rows have the same value: 3)
+            if 'causes_related_to_weather' in filtered_df.columns:
+                filtered_df = filtered_df.drop(columns=['causes_related_to_weather'])
+                print(f"Dropped 'causes_related_to_weather' column (no longer needed for training)")
+                logger.info("Dropped 'causes_related_to_weather' column - all remaining rows had value 3")
+
             logger.info(f"=== STRONG WEATHER CAUSES FILTERING COMPLETE ({year_info}-{month_info}) ===")
             return filtered_df
 
