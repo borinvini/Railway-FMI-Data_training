@@ -914,18 +914,44 @@ class TrainingPipeline:
             processed_values = []
             weather_scores = []
             
-           
             # Process each value directly in the loop
             for index, cause_value in df['causes'].items():
-                # Check if value is empty (comprehensive check)
-                is_empty = (
-                    pd.isna(cause_value) or 
-                    cause_value is None or 
-                    cause_value == "" or 
-                    cause_value == "[]" or
-                    (isinstance(cause_value, list) and len(cause_value) == 0) or
-                    (isinstance(cause_value, str) and cause_value.strip() == "")
-                )
+                # FIXED: Safe empty value check that handles arrays/series
+                try:
+                    # Handle numpy arrays and pandas Series
+                    if hasattr(cause_value, '__len__') and hasattr(cause_value, '__iter__'):
+                        # For array-like objects, check if it's a single-element array first
+                        if hasattr(cause_value, 'shape') and cause_value.shape == ():
+                            # Single-element numpy scalar
+                            cause_value = cause_value.item()
+                        elif hasattr(cause_value, '__len__') and len(cause_value) == 1:
+                            # Single-element array/series
+                            cause_value = cause_value[0] if not pd.isna(cause_value[0]) else None
+                    
+                    # Now perform safe empty checks
+                    is_empty = False
+                    
+                    # Check for pandas NA/NaN
+                    if pd.isna(cause_value):
+                        is_empty = True
+                    # Check for None
+                    elif cause_value is None:
+                        is_empty = True
+                    # Check for empty string (safe comparison)
+                    elif isinstance(cause_value, str):
+                        is_empty = (cause_value == "" or cause_value == "[]" or cause_value.strip() == "")
+                    # Check for empty list
+                    elif isinstance(cause_value, list):
+                        is_empty = (len(cause_value) == 0)
+                    # Check for other empty-like values
+                    elif str(cause_value) in ["", "[]", "nan", "None"]:
+                        is_empty = True
+                        
+                except Exception as e:
+                    print(f"Warning: Error checking if value is empty at index {index}: {e}")
+                    print(f"Cause value type: {type(cause_value)}, value: {cause_value}")
+                    # Treat problematic values as non-empty to avoid data loss
+                    is_empty = False
                 
                 if is_empty:
                     stats['empty_values'] += 1
@@ -944,46 +970,51 @@ class TrainingPipeline:
                         # Assume it's already a Python object (list, dict, etc.)
                         parsed_causes = cause_value
                     
-                    # Extract categoryCode from the parsed data
-                    category_code = None
+                    # Extract detailed category codes
+                    detailed_codes = []
                     
-                    if isinstance(parsed_causes, list) and len(parsed_causes) > 0:
-                        # List format: get first item
-                        first_cause = parsed_causes[0]
-                        if isinstance(first_cause, dict) and 'detailedCategoryCode' in first_cause:
-                            category_code = first_cause['detailedCategoryCode']
+                    if isinstance(parsed_causes, list):
+                        for cause_dict in parsed_causes:
+                            if isinstance(cause_dict, dict) and 'detailedCategoryCode' in cause_dict:
+                                detailed_codes.append(cause_dict['detailedCategoryCode'])
                     elif isinstance(parsed_causes, dict) and 'detailedCategoryCode' in parsed_causes:
-                        # Direct dictionary format
-                        category_code = parsed_causes['detailedCategoryCode']
+                        detailed_codes.append(parsed_causes['detailedCategoryCode'])
                     
-                    if category_code is not None:
+                    # Store the extracted codes or None if empty
+                    if detailed_codes:
+                        processed_values.append(detailed_codes)
                         stats['successful_extractions'] += 1
-                        
-                        # Determine weather score based on detailedCategoryCode
-                        if category_code in STRONG_INDICATORS:
-                            weather_score = 3
-                            stats['weather_strong'] += 1
-                        elif category_code in POSSIBLE_INDICATORS:
-                            weather_score = 2
-                            stats['weather_possible'] += 1
-                        else:
-                            weather_score = 1  # Other non-empty category
-                            stats['weather_weak'] += 1
-                        
-                        processed_values.append(category_code)
-                        weather_scores.append(weather_score)
                     else:
-                        stats['failed_extractions'] += 1
-                        stats['weather_none'] += 1
                         processed_values.append(None)
-                        weather_scores.append(0)
+                        stats['failed_extractions'] += 1
+                    
+                    # Calculate weather indicator score using constants from const.py
+                    weather_score = 0
+                    for code in detailed_codes:
+                        if code in STRONG_INDICATORS:
+                            weather_score = max(weather_score, 3)  # Strong indicator
+                        elif code in POSSIBLE_INDICATORS:
+                            weather_score = max(weather_score, 2)  # Possible indicator
+                        elif code:  # Any other non-empty code
+                            weather_score = max(weather_score, 1)  # Weak indicator
+                    
+                    weather_scores.append(weather_score)
+                    
+                    # Update stats
+                    if weather_score == 3:
+                        stats['weather_strong'] += 1
+                    elif weather_score == 2:
+                        stats['weather_possible'] += 1
+                    elif weather_score == 1:
+                        stats['weather_weak'] += 1
+                    else:
+                        stats['weather_none'] += 1
                         
                 except Exception as e:
-                    # Parsing failed
+                    print(f"Warning: Failed to parse causes in row {index}: {e}")
+                    print(f"Problematic value: {cause_value}")
+                    print(f"Value type: {type(cause_value)}")
                     stats['parsing_errors'] += 1
-                    stats['weather_none'] += 1
-                    if stats['parsing_errors'] <= 3:  # Only print first few errors
-                        print(f"Warning: Failed to parse causes in row {index}: {e}")
                     processed_values.append(None)
                     weather_scores.append(0)
             
@@ -1003,8 +1034,9 @@ class TrainingPipeline:
             
         except Exception as e:
             print(f"Error processing causes column: {e}")
+            import traceback
+            traceback.print_exc()  # This will help debug the exact location
             return dataframe  # Return original dataframe on error
-
 
     def add_train_delayed_feature(self, dataframe=None):
         """
