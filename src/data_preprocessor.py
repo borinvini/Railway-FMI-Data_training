@@ -629,6 +629,70 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ convert_month_to_sincos (disabled)")
 
+        if state_machine.get("convert_dayofweek_to_sincos", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_dayofweek_to_sincos")
+                    dayofweek_sincos_df = self.convert_dayofweek_to_sincos(
+                        dataframe=result["data"], 
+                        month_id=file_id
+                    )
+                    
+                    if dayofweek_sincos_df is not None and not dayofweek_sincos_df.empty:
+                        # Clear previous dataframe from memory
+                        del result["data"]
+                        result["data"] = dayofweek_sincos_df
+                        result["steps_executed"].append("convert_dayofweek_to_sincos")
+                        result["file_info"]["rows"] = len(dayofweek_sincos_df)
+                        result["file_info"]["columns"] = len(dayofweek_sincos_df.columns)
+                        print(f"      ✓ Converted day_of_week to sin/cos features ({len(dayofweek_sincos_df)} rows, {len(dayofweek_sincos_df.columns)} columns)")
+                    else:
+                        result["errors"].append("convert_dayofweek_to_sincos returned empty data")
+                        print(f"      ✗ Failed - empty result")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"convert_dayofweek_to_sincos failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_dayofweek_to_sincos (no data available)")
+                result["errors"].append("convert_dayofweek_to_sincos skipped - no data available")
+        else:
+            print(f"    ⊝ convert_dayofweek_to_sincos (disabled)")
+
+        if state_machine.get("drop_original_temporal_columns", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → drop_original_temporal_columns")
+                    temporal_dropped_df = self.drop_original_temporal_columns(
+                        dataframe=result["data"], 
+                        month_id=file_id
+                    )
+                    
+                    if temporal_dropped_df is not None and not temporal_dropped_df.empty:
+                        # Clear previous dataframe from memory
+                        del result["data"]
+                        result["data"] = temporal_dropped_df
+                        result["steps_executed"].append("drop_original_temporal_columns")
+                        result["file_info"]["rows"] = len(temporal_dropped_df)
+                        result["file_info"]["columns"] = len(temporal_dropped_df.columns)
+                        print(f"      ✓ Dropped original temporal columns ({len(temporal_dropped_df)} rows, {len(temporal_dropped_df.columns)} columns)")
+                    else:
+                        result["errors"].append("drop_original_temporal_columns returned empty data")
+                        print(f"      ✗ Failed - empty result")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"drop_original_temporal_columns failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ drop_original_temporal_columns (no data available)")
+                result["errors"].append("drop_original_temporal_columns skipped - no data available")
+        else:
+            print(f"    ⊝ drop_original_temporal_columns (disabled)")
+
         if state_machine.get("select_target", False):
             if result["data"] is not None:
                 try:
@@ -2137,9 +2201,6 @@ class TrainingPipeline:
                 df['hour_sin'] = df['hour_sin'].fillna(0.0)
                 df['hour_cos'] = df['hour_cos'].fillna(0.0)
                 
-                # Drop the original hour column
-                df = df.drop('hour', axis=1)
-                
                 # Reorder columns to put hour_sin and hour_cos right after month
                 print("Reordering columns to place hour_sin and hour_cos after month...")
                 
@@ -2360,6 +2421,272 @@ class TrainingPipeline:
                 
             except Exception as e:
                 error_msg = f"Error converting month to sin/cos: {e}"
+                print(error_msg)
+                logger.error(error_msg)
+                logger.error(f"Exception details: {str(e)}")
+                return dataframe  # Return original dataframe on error
+
+    def convert_dayofweek_to_sincos(self, dataframe=None, month_id=None):
+            """
+            Convert the day_of_week column to cyclical sin/cos features while keeping the original.
+            
+            This method transforms the day_of_week column (1-7, where 1=Sunday, 7=Saturday) 
+            into two continuous cyclical features that better represent the weekly cycle for 
+            machine learning models:
+            - day_week_sin: sine component of the day of week
+            - day_week_cos: cosine component of the day of week
+            
+            The original day_of_week column is preserved for flexibility (tree-based models
+            can still use the categorical representation).
+            
+            Parameters:
+            -----------
+            dataframe : pandas.DataFrame
+                The dataframe to process.
+            month_id : str, optional
+                Month identifier for logging purposes.
+                
+            Returns:
+            --------
+            pandas.DataFrame
+                The dataframe with day_week_sin and day_week_cos columns added after the original day_of_week column.
+            """
+            # Check if dataframe is provided
+            if dataframe is None:
+                print("Error: Dataframe must be provided")
+                return None
+                
+            df = dataframe.copy()
+            print(f"Converting day_of_week column to sin/cos format in dataframe with {len(df)} rows")
+            
+            if df.empty:
+                print("Warning: Empty dataframe")
+                return df
+            
+            # Check if 'day_of_week' column exists
+            if 'day_of_week' not in df.columns:
+                print("Warning: 'day_of_week' column not found in dataframe. Skipping day_of_week to sin/cos conversion.")
+                print(f"Available columns: {list(df.columns)}")
+                return df
+            
+            # Use the logging method for detailed logging
+            with self.get_logger("convert_dayofweek_to_sincos.log", "convert_dayofweek_to_sincos", month_id) as logger:
+                try:
+                    logger.info(f"Starting day_of_week to sin/cos conversion for {len(df)} rows")
+                    
+                    # Debug: Check sample values
+                    print("\n--- DEBUGGING DAY_OF_WEEK COLUMN ---")
+                    sample_values = df['day_of_week'].dropna().head(5).tolist()
+                    print(f"Sample day_of_week values (first 5 non-null): {sample_values}")
+                    
+                    # Check for missing values
+                    missing_count = df['day_of_week'].isna().sum()
+                    valid_count = len(df) - missing_count
+                    print(f"Valid day_of_week values: {valid_count}")
+                    print(f"Missing day_of_week values: {missing_count}")
+                    
+                    # Check for invalid day_of_week values (not 1-7)
+                    invalid_days = df[(df['day_of_week'].notna()) & ((df['day_of_week'] < 1) | (df['day_of_week'] > 7))]
+                    invalid_count = len(invalid_days)
+                    
+                    if invalid_count > 0:
+                        print(f"Warning: Found {invalid_count} invalid day_of_week values (not 1-7)")
+                        print(f"Invalid values: {sorted(invalid_days['day_of_week'].unique())}")
+                        logger.warning(f"Found {invalid_count} invalid day_of_week values: {sorted(invalid_days['day_of_week'].unique())}")
+                    
+                    if valid_count == 0:
+                        print("Warning: All day_of_week values are missing. Cannot convert to sin/cos.")
+                        logger.warning("All day_of_week values are missing")
+                        return df
+                    
+                    print("--- END DEBUGGING ---\n")
+                    
+                    # Create sin/cos features using the cyclical transformation for 7-day cycle
+                    print("Creating day_of_week sin/cos cyclical features...")
+                    
+                    # Calculate sin and cos for the 7-day cycle
+                    # Formula: sin(2π × day_of_week / 7) and cos(2π × day_of_week / 7)
+                    # Note: We use the day_of_week values directly since they're already in 1-7 format
+                    df['day_week_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7.0)
+                    df['day_week_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7.0)
+                    
+                    # For missing day_of_week values, set sin/cos to 0 (neutral position on the unit circle)
+                    day_mask = df['day_of_week'].isna()
+                    df.loc[day_mask, 'day_week_sin'] = 0.0
+                    df.loc[day_mask, 'day_week_cos'] = 0.0
+                    
+                    # Count successfully converted values (non-missing original values)
+                    converted_count = df['day_of_week'].notna().sum()
+                    
+                    # Reorder columns to group temporal features: find day_of_week and place sin/cos after it
+                    print("Reordering columns to place day_week_sin and day_week_cos right after day_of_week...")
+                    
+                    # Get current column order
+                    current_cols = list(df.columns)
+                    
+                    # Find the position of day_of_week column
+                    if 'day_of_week' in current_cols:
+                        day_index = current_cols.index('day_of_week')
+                        
+                        # Remove day_week_sin and day_week_cos from their current positions
+                        cols_without_sincos = [col for col in current_cols if col not in ['day_week_sin', 'day_week_cos']]
+                        
+                        # Insert day_week_sin and day_week_cos right after day_of_week
+                        reordered_cols = (
+                            cols_without_sincos[:day_index + 1] +    # Everything up to and including day_of_week
+                            ['day_week_sin', 'day_week_cos'] +       # Our new weekly cyclical features
+                            cols_without_sincos[day_index + 1:]      # Everything after day_of_week
+                        )
+                        
+                        # Reorder the dataframe
+                        df = df[reordered_cols]
+                        
+                        print(f"✓ Columns reordered: day_week_sin and day_week_cos placed after day_of_week")
+                        logger.info("Columns reordered: day_week_sin and day_week_cos placed after day_of_week column")
+                    else:
+                        print("Warning: 'day_of_week' column not found during reordering (this shouldn't happen).")
+                        logger.warning("day_of_week column not found during reordering")
+                    
+                    print(f"Day of week to sin/cos conversion completed:")
+                    print(f"- Original day_of_week column preserved")
+                    print(f"- Added day_week_sin column (range: {df['day_week_sin'].min():.3f} to {df['day_week_sin'].max():.3f})")
+                    print(f"- Added day_week_cos column (range: {df['day_week_cos'].min():.3f} to {df['day_week_cos'].max():.3f})")
+                    print(f"- Successfully converted {converted_count} out of {len(df)} rows")
+                    print(f"- Temporal features order: month → month_sin → month_cos → day_of_week → day_week_sin → day_week_cos")
+                    
+                    # Show some examples of the conversion
+                    if converted_count > 0:
+                        print(f"\nExample weekly conversions:")
+                        # Try to show examples from different days if available
+                        day_names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+                        example_days = []
+                        for target_day in [1, 2, 6, 7]:  # Sunday, Monday, Friday, Saturday
+                            day_examples = df[df['day_of_week'] == target_day].head(1)
+                            if not day_examples.empty:
+                                example_days.extend(day_examples.index.tolist())
+                        
+                        # If we don't have examples from all target days, just show first few
+                        if not example_days:
+                            example_days = df[df['day_of_week'].notna()].head(3).index.tolist()
+                        
+                        for idx in example_days[:3]:  # Show max 3 examples
+                            day_val = df.loc[idx, 'day_of_week']
+                            sin_val = df.loc[idx, 'day_week_sin']
+                            cos_val = df.loc[idx, 'day_week_cos']
+                            
+                            # Get day name for context
+                            day_name = day_names[int(day_val) - 1] if 1 <= day_val <= 7 else f"Unknown({day_val})"
+                            print(f"  Index {idx}: Day {day_val} ({day_name}) -> sin={sin_val:.3f}, cos={cos_val:.3f}")
+                    
+                    logger.info(f"Day of week to sin/cos conversion completed successfully for {converted_count} rows")
+                    logger.info(f"Added columns: day_week_sin, day_week_cos")
+                    logger.info(f"Preserved column: day_of_week")
+                    
+                    return df
+                    
+                except Exception as e:
+                    error_msg = f"Error converting day_of_week to sin/cos: {e}"
+                    print(error_msg)
+                    logger.error(error_msg)
+                    logger.error(f"Exception details: {str(e)}")
+                    return dataframe  # Return original dataframe on error
+
+    def drop_original_temporal_columns(self, dataframe=None, month_id=None):
+        """
+        Drop the original temporal columns that have been converted to cyclical features.
+        
+        This method removes the original categorical temporal columns after they have been
+        converted to sin/cos cyclical features, keeping only the engineered features:
+        - Drops 'month' (already converted to month_sin, month_cos)
+        - Drops 'hour' (already converted to hour_sin, hour_cos)  
+        - Drops 'day_of_week' (categorical temporal feature)
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with original temporal columns removed.
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Dropping original temporal columns in dataframe with {len(df)} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Define columns to drop
+        columns_to_drop = ['month', 'hour', 'day_of_week']
+        
+        # Use the logging method for detailed logging
+        with self.get_logger("drop_original_temporal_columns.log", "drop_original_temporal_columns", month_id) as logger:
+            try:
+                logger.info(f"Starting original temporal columns drop for {len(df)} rows")
+                
+                # Check which columns exist and which are missing
+                existing_columns = []
+                missing_columns = []
+                
+                for col in columns_to_drop:
+                    if col in df.columns:
+                        existing_columns.append(col)
+                    else:
+                        missing_columns.append(col)
+                
+                print(f"\n--- TEMPORAL COLUMNS ANALYSIS ---")
+                print(f"Columns to drop: {columns_to_drop}")
+                print(f"Existing columns to drop: {existing_columns}")
+                if missing_columns:
+                    print(f"Missing columns (already dropped?): {missing_columns}")
+                print(f"--- END ANALYSIS ---\n")
+                
+                # Log the analysis
+                logger.info(f"Columns to drop: {columns_to_drop}")
+                logger.info(f"Existing columns: {existing_columns}")
+                if missing_columns:
+                    logger.warning(f"Missing columns: {missing_columns}")
+                
+                if not existing_columns:
+                    print("Info: None of the target temporal columns exist in the dataframe")
+                    logger.info("No temporal columns to drop - they may have been dropped already")
+                    return df
+                
+                # Drop the existing columns
+                print(f"Dropping {len(existing_columns)} temporal columns: {existing_columns}")
+                df = df.drop(columns=existing_columns)
+                
+                # Verify the columns were dropped
+                still_existing = [col for col in existing_columns if col in df.columns]
+                if still_existing:
+                    error_msg = f"Failed to drop columns: {still_existing}"
+                    print(f"Error: {error_msg}")
+                    logger.error(error_msg)
+                    return dataframe  # Return original on error
+                
+                print(f"Original temporal columns drop completed:")
+                print(f"- Dropped columns: {existing_columns}")
+                print(f"- Remaining columns: {len(df.columns)}")
+                print(f"- Final dataset shape: {df.shape}")
+                
+                # Log successful completion
+                logger.info(f"Successfully dropped {len(existing_columns)} temporal columns")
+                logger.info(f"Dropped columns: {existing_columns}")
+                logger.info(f"Final dataset shape: {df.shape}")
+                
+                return df
+                
+            except Exception as e:
+                error_msg = f"Error dropping original temporal columns: {e}"
                 print(error_msg)
                 logger.error(error_msg)
                 logger.error(f"Exception details: {str(e)}")

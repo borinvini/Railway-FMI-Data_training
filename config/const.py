@@ -31,6 +31,8 @@ PREPROCESSING_STATE_MACHINE = {
     "save_month_df_to_csv": True,
     "convert_hour_to_sincos": True,
     "convert_month_to_sincos": True,
+    "convert_dayofweek_to_sincos": True,
+    "drop_original_temporal_columns": True,
     "select_target": True,
     "filter_strong_weather_causes": True,
     "remove_duplicates": True,
