@@ -3,13 +3,9 @@ import os
 import pandas as pd
 import re
 import ast
-import joblib
 import logging
 import numpy as np
-from sklearn.tree import DecisionTreeClassifier
 from src.file_utils import generate_output_path
-from sklearn.model_selection import RandomizedSearchCV
-from sklearn.model_selection import StratifiedKFold
             
 
 from config.const import (
@@ -1907,33 +1903,22 @@ class TrainingPipeline:
                         if nulls_before > 0:
                             percentage = (nulls_before / len(df)) * 100
                             
-                            # Calculate median for each month
-                            monthly_medians = df.groupby('month')[col].median()
-                            
-                            # Show monthly medians for this column
+                            # Calculate single median for all data in the file
+                            file_median = df[col].median()
+
+                            # Show median for this column
                             print(f"\n  Processing '{col}' ({nulls_before} missing values, {percentage:.2f}%):")
-                            print(f"    Monthly medians:")
-                            for month, median_val in monthly_medians.items():
-                                month_count = df[df['month'] == month][col].isna().sum()
-                                if month_count > 0:
-                                    print(f"      Month {month}: {median_val:.2f} (filling {month_count} values)")
-                                else:
-                                    print(f"      Month {month}: {median_val:.2f} (no missing values)")
-                            
-                            # Fill missing values with month-specific medians
-                            def fill_with_month_median(row):
-                                if pd.isna(row[col]):
-                                    return monthly_medians[row['month']]
-                                return row[col]
-                            
-                            df[col] = df.apply(fill_with_month_median, axis=1)
+                            print(f"    File median: {file_median:.2f}")
+
+                            # Fill missing values with the single file median
+                            df[col] = df[col].fillna(file_median)
                             
                             # Verify the imputation worked
                             nulls_after = df[col].isna().sum()
                             filled_count = nulls_before - nulls_after
                             
-                            print(f"    Result: Filled {filled_count} missing values using month-specific medians")
-                            logger.info(f"Filled {filled_count} missing values in '{col}' using month-specific medians ({percentage:.2f}%)")
+                            print(f"    Result: Filled {filled_count} missing values using file median")
+                            logger.info(f"Filled {filled_count} missing values in '{col}' using file median ({percentage:.2f}%)")
                             
                             if nulls_after > 0:
                                 print(f"    Warning: {nulls_after} values still missing (possibly months with no data)")
