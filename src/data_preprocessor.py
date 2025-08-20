@@ -7,11 +7,11 @@ import re
 import ast
 import logging
 import numpy as np
+from sklearn.model_selection import train_test_split
 from src.file_utils import generate_output_path
             
 
 from config.const import (
-    ALL_PREPROCESSED_OUTPUT_FOLDER,
     ALL_WEATHER_FEATURES,
     DATA_FILE_PREFIX_FOR_TRAINING,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -52,7 +52,6 @@ class TrainingPipeline:
         self.project_root = os.path.dirname(self.script_dir)
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
-        self.all_preprocessed_dir = os.path.join(self.project_root, ALL_PREPROCESSED_OUTPUT_FOLDER)  # NEW LINE
         self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
         self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
@@ -3144,6 +3143,31 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ merge_data_files (disabled)")
+
+        if state_machine.get("split_dataset", False):
+            try:
+                print(f"    → split_dataset")
+                split_result = self.split_dataset(csv_files)
+                
+                if split_result and split_result.get("success", False):
+                    result["steps_executed"].append("split_dataset")
+                    result["file_info"]["processed_files"] = split_result.get("processed_files", 0)
+                    print(f"      ✓ Successfully split datasets into train/test sets")
+                    print(f"      ✓ Total train rows: {split_result.get('total_train_rows', 0):,}")
+                    print(f"      ✓ Total test rows: {split_result.get('total_test_rows', 0):,}")
+                    result["success"] = True
+                else:
+                    error_msg = split_result.get("error", "split_dataset returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"split_dataset failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ split_dataset (disabled)")
         
         return result
     
@@ -3357,6 +3381,208 @@ class TrainingPipeline:
         except Exception as e:
             error_msg = f"merge_data_files failed: {str(e)}"
             print(f"    merge_data_files: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+        
+    def split_dataset(self, csv_files=None, test_size=0.2, random_state=42, stratify_column=None):
+        """
+        Split merged training datasets into train and test sets.
+        
+        This method finds all merged data files in data/output/merged_training_ready,
+        splits each dataset into training and testing sets, and saves them as separate files.
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (currently not used - method discovers files automatically)
+        test_size : float, optional
+            Proportion of the dataset to include in the test split. Defaults to 0.2.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+        stratify_column : str, optional
+            Column name to use for stratified splitting. If None, performs simple random split.
+            
+        Returns:
+        --------
+        dict
+            Results of the split operation including success status and split info
+        """
+        try:
+            print(f"    split_dataset: Starting dataset splitting operation...")
+            
+            # Create/ensure output directory exists
+            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+            os.makedirs(merged_training_ready_dir, exist_ok=True)
+            
+            # Find all merged data files using glob pattern
+            merged_data_pattern = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*.csv")
+            merged_data_files = glob.glob(merged_data_pattern)
+            
+            # Filter out existing train/test files to avoid re-splitting them
+            merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+            
+            if not merged_data_files:
+                error_msg = "No merged data files found to split"
+                print(f"    split_dataset: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    split_dataset: Found {len(merged_data_files)} merged data files")
+            for file_path in merged_data_files:
+                print(f"      - {os.path.basename(file_path)}")
+            
+            # Initialize storage for processing results
+            split_results = []
+            total_train_rows = 0
+            total_test_rows = 0
+            
+            # Process each merged data file
+            for file_path in merged_data_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"    split_dataset: Processing {filename}...")
+                    
+                    # Read the merged dataset
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"    split_dataset: Warning - File {filename} is empty. Skipping.")
+                        continue
+                    
+                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
+                    
+                    # Prepare stratification if specified
+                    stratify = None
+                    if stratify_column and stratify_column in df.columns:
+                        stratify = df[stratify_column]
+                        print(f"      Using stratified split on column: {stratify_column}")
+                    else:
+                        print(f"      Using simple random split")
+                    
+                    # Perform train-test split
+                    try:
+                        train_df, test_df = train_test_split(
+                            df,
+                            test_size=test_size,
+                            random_state=random_state,
+                            stratify=stratify
+                        )
+                    except ValueError as e:
+                        if stratify is not None:
+                            print(f"      Warning: Stratified split failed ({str(e)}). Falling back to simple random split.")
+                            train_df, test_df = train_test_split(
+                                df,
+                                test_size=test_size,
+                                random_state=random_state
+                            )
+                        else:
+                            raise e
+                    
+                    print(f"      Split result: {len(train_df):,} train rows, {len(test_df):,} test rows")
+                    
+                    # Generate output filenames
+                    base_filename = filename.replace('.csv', '')
+                    train_filename = f"{base_filename}_train.csv"
+                    test_filename = f"{base_filename}_test.csv"
+                    
+                    train_path = os.path.join(merged_training_ready_dir, train_filename)
+                    test_path = os.path.join(merged_training_ready_dir, test_filename)
+                    
+                    # Save train and test datasets
+                    train_df.to_csv(train_path, index=False)
+                    test_df.to_csv(test_path, index=False)
+                    
+                    print(f"      Saved train set to: {train_filename}")
+                    print(f"      Saved test set to: {test_filename}")
+                    
+                    # Store results for this file
+                    split_results.append({
+                        'original_file': filename,
+                        'train_file': train_filename,
+                        'test_file': test_filename,
+                        'original_rows': len(df),
+                        'train_rows': len(train_df),
+                        'test_rows': len(test_df),
+                        'test_size_actual': len(test_df) / len(df)
+                    })
+                    
+                    total_train_rows += len(train_df)
+                    total_test_rows += len(test_df)
+                    
+                    print(f"      Successfully processed {filename}")
+                    
+                except Exception as e:
+                    print(f"    split_dataset: Error processing {filename}: {str(e)}")
+                    continue
+            
+            # Check if we processed any files successfully
+            if not split_results:
+                error_msg = "No files were successfully split"
+                print(f"    split_dataset: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    split_dataset: Split operation completed for {len(split_results)} files")
+            print(f"    split_dataset: Total train rows: {total_train_rows:,}")
+            print(f"    split_dataset: Total test rows: {total_test_rows:,}")
+            
+            # Save summary information
+            summary_filename = "split_summary.txt"
+            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write("Dataset Split Summary\n")
+                f.write("=" * 40 + "\n\n")
+                
+                f.write(f"Split timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Test size: {test_size}\n")
+                f.write(f"Random state: {random_state}\n")
+                f.write(f"Stratify column: {stratify_column if stratify_column else 'None'}\n")
+                f.write(f"Files processed: {len(split_results)}\n")
+                f.write(f"Total train rows: {total_train_rows:,}\n")
+                f.write(f"Total test rows: {total_test_rows:,}\n\n")
+                
+                # File details
+                f.write("Split details:\n")
+                f.write("-" * 30 + "\n")
+                for result in split_results:
+                    f.write(f"Original: {result['original_file']}\n")
+                    f.write(f"  Train: {result['train_file']} ({result['train_rows']:,} rows)\n")
+                    f.write(f"  Test: {result['test_file']} ({result['test_rows']:,} rows)\n")
+                    f.write(f"  Actual test ratio: {result['test_size_actual']:.3f}\n\n")
+            
+            print(f"    split_dataset: Summary saved to {summary_filename}")
+            
+            # Return success result following the pattern of other methods
+            result = {
+                "success": True,
+                "processed_files": len(split_results),
+                "total_train_rows": total_train_rows,
+                "total_test_rows": total_test_rows,
+                "test_size": test_size,
+                "split_details": split_results,
+                "summary_path": summary_path,
+                "message": f"Successfully split {len(split_results)} datasets into train/test sets"
+            }
+            
+            print(f"    split_dataset: Completed successfully - {len(split_results)} datasets split")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"split_dataset failed: {str(e)}"
+            print(f"    split_dataset: {error_msg}")
             import traceback
             traceback.print_exc()
             return {
