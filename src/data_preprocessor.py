@@ -195,7 +195,7 @@ class TrainingPipeline:
             
             try:
                 # Execute pipeline steps using the state machine
-                pipeline_result = self.execute_pipeline_steps(
+                pipeline_result = self.execute_preprocessing_pipeline_steps(
                     input_file_path=input_file_path,
                     file_id=file_id,
                     year=year,
@@ -288,7 +288,7 @@ class TrainingPipeline:
         
         return summary
 
-    def execute_pipeline_steps(self, input_file_path, file_id, year, state_machine):
+    def execute_preprocessing_pipeline_steps(self, input_file_path, file_id, year, state_machine):
         """
         Execute pipeline steps based on the state machine configuration.
         

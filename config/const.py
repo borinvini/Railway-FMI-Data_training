@@ -2,7 +2,8 @@ from scipy.stats import randint
 import numpy as np
 
 # Pipeline execution control flag
-EXECUTE_PREPROCESSING_DATA_PIPELINE = False  # Set to False to skip pipeline execution
+EXECUTE_PREPROCESSING_DATA_PIPELINE = False
+EXECUTE_TRAINING_PIPELINE = False
 
 # Constants for file processing
 FOLDER_NAME = "data"
