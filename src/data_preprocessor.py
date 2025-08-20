@@ -3083,3 +3083,95 @@ class TrainingPipeline:
         except Exception as e:
             print(f"Error saving training-ready dataframe for {month_id}: {e}")
             return False
+        
+    def execute_training_pipeline_steps(self, csv_files, state_machine):
+        """
+        Execute training pipeline steps based on the training state machine configuration.
+        
+        This method processes CSV files through the configured training pipeline steps,
+        maintaining data flow between steps and handling errors gracefully.
+        
+        Parameters:
+        -----------
+        csv_files : list
+            List of CSV file paths to process
+        state_machine : dict
+            Training state machine configuration defining which steps to execute
+            
+        Returns:
+        --------
+        dict
+            Results of training pipeline execution including success status and metadata
+        """
+        result = {
+            "success": False,
+            "data": None,
+            "steps_executed": [],
+            "errors": [],
+            "file_info": {
+                "total_files": len(csv_files),
+                "processed_files": 0
+            }
+        }
+        
+        print(f"  Executing training pipeline steps based on state machine configuration...")
+        print(f"  Training state machine: {state_machine}")
+        
+        # Execute merge_data_files if enabled
+        if state_machine.get("merge_data_files", False):
+            try:
+                print(f"    → merge_data_files")
+                merged_result = self.merge_data_files(csv_files)
+                
+                if merged_result and merged_result.get("success", False):
+                    result["data"] = merged_result.get("data")
+                    result["steps_executed"].append("merge_data_files")
+                    result["file_info"]["processed_files"] = merged_result.get("processed_files", 0)
+                    print(f"      ✓ Successfully merged data files")
+                    result["success"] = True
+                else:
+                    error_msg = merged_result.get("error", "merge_data_files returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"merge_data_files failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ merge_data_files (disabled)")
+        
+        return result
+
+    def merge_data_files(self, csv_files):
+        """
+        Merge multiple data files into a single dataset for training.
+        
+        This method will combine data from multiple CSV files into a unified dataset
+        suitable for machine learning training. The implementation will be added
+        in future iterations.
+        
+        Parameters:
+        -----------
+        csv_files : list
+            List of CSV file paths to merge
+            
+        Returns:
+        --------
+        dict
+            Results of the merge operation including success status and merged data
+        """
+        # TODO: Implement the merge logic
+        # This method is currently empty as requested - structure only
+        
+        print(f"    merge_data_files: Processing {len(csv_files)} files...")
+        print(f"    TODO: Implement merge logic for files: {[os.path.basename(f) for f in csv_files[:3]]}{'...' if len(csv_files) > 3 else ''}")
+        
+        # Placeholder return for now
+        return {
+            "success": True,
+            "data": None,
+            "processed_files": len(csv_files),
+            "message": "merge_data_files placeholder - implementation pending"
+        }

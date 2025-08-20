@@ -4,11 +4,12 @@ from src.data_preprocessor import TrainingPipeline  # Import the class
 from config.const import (
     DEFAULT_TARGET_FEATURE,
     EXECUTE_PREPROCESSING_DATA_PIPELINE, 
+    EXECUTE_TRAINING_PIPELINE,
     FILTER_TRAINS_BY_STATIONS, 
     IMPORTANCE_THRESHOLD, 
     REQUIRED_STATIONS,
     INPUT_FOLDER,
-    EXECUTE_PREPROCESSING_DATA_PIPELINE
+    TRAINING_STATE_MACHINE
 )
 
 
@@ -36,7 +37,8 @@ def main():
     
     print(f"Using target feature: '{DEFAULT_TARGET_FEATURE}'")
     print(f"Feature importance threshold: {IMPORTANCE_THRESHOLD}")
-    print(f"Pipeline execution enabled: {EXECUTE_PREPROCESSING_DATA_PIPELINE}")
+    print(f"Preprocessing pipeline execution enabled: {EXECUTE_PREPROCESSING_DATA_PIPELINE}")
+    print(f"Training pipeline execution enabled: {EXECUTE_TRAINING_PIPELINE}")
 
     # STEP 3: Display configuration warnings if applicable
     if FILTER_TRAINS_BY_STATIONS:
@@ -64,41 +66,87 @@ def main():
         print(f"  4. Then run: python main.py")
         return
     
-    # STEP 6: Check if pipeline execution is enabled
+    # STEP 6: Check if preprocessing pipeline execution is enabled
     if not EXECUTE_PREPROCESSING_DATA_PIPELINE:
         print("\n" + "="*60)
-        print("PIPELINE EXECUTION SKIPPED")
+        print("PREPROCESSING PIPELINE EXECUTION SKIPPED")
         print("="*60)
-        print("Pipeline execution is disabled in configuration.")
-        print("To enable pipeline execution, set EXECUTE_PIPELINE = True in config/const.py")
+        print("Preprocessing pipeline execution is disabled in configuration.")
+        print("To enable preprocessing pipeline execution, set EXECUTE_PREPROCESSING_DATA_PIPELINE = True in config/const.py")
         print(f"Found {len(csv_files)} CSV files ready for processing when enabled.")
-        return
-    
-    # STEP 7: Initialize and run the training pipeline
-    print(f"\nInitializing Training Pipeline...")
-    pipeline = TrainingPipeline()
-    
-    print(f"Starting pipeline execution with target feature: '{DEFAULT_TARGET_FEATURE}'")
-    
-    # Run the full pipeline on all CSV files with the default target feature
-    results = pipeline.run_pipeline(
-        csv_files, 
-        target_feature=DEFAULT_TARGET_FEATURE
-    )
-    
-    print("\n" + "="*60)
-    print("PIPELINE EXECUTION COMPLETED")
-    print("="*60)
-    
-    # Display final summary
-    if results:
-        success_rate = (results.get('successful_preprocessing', 0) / results.get('total_files', 1)) * 100
-        print(f"Overall success rate: {success_rate:.1f}%")
+    else:
+        # STEP 7: Initialize and run the preprocessing pipeline
+        print(f"\nInitializing Preprocessing Pipeline...")
+        pipeline = TrainingPipeline()
         
-        if results.get('failed_files', 0) > 0:
-            print(f"⚠️  {results.get('failed_files', 0)} months failed processing")
+        print(f"Starting preprocessing pipeline execution with target feature: '{DEFAULT_TARGET_FEATURE}'")
+        
+        # Run the full preprocessing pipeline on all CSV files with the default target feature
+        preprocessing_results = pipeline.run_pipeline(
+            csv_files, 
+            target_feature=DEFAULT_TARGET_FEATURE
+        )
+        
+        print("\n" + "="*60)
+        print("PREPROCESSING PIPELINE EXECUTION COMPLETED")
+        print("="*60)
+        
+        # Display preprocessing summary
+        if preprocessing_results:
+            success_rate = (preprocessing_results.get('successful_preprocessing', 0) / preprocessing_results.get('total_files', 1)) * 100
+            print(f"Preprocessing success rate: {success_rate:.1f}%")
+            
+            if preprocessing_results.get('failed_files', 0) > 0:
+                print(f"⚠️  {preprocessing_results.get('failed_files', 0)} months failed preprocessing")
+            else:
+                print("✓ All months preprocessed successfully!")
+
+    # STEP 8: Check if training pipeline execution is enabled
+    if not EXECUTE_TRAINING_PIPELINE:
+        print("\n" + "="*60)
+        print("TRAINING PIPELINE EXECUTION SKIPPED")
+        print("="*60)
+        print("Training pipeline execution is disabled in configuration.")
+        print("To enable training pipeline execution, set EXECUTE_TRAINING_PIPELINE = True in config/const.py")
+        return
+    else:
+        # STEP 9: Initialize and run the training pipeline
+        print("\n" + "="*60)
+        print("TRAINING PIPELINE INITIALIZATION")
+        print("="*60)
+        
+        print(f"Initializing Training Pipeline...")
+        pipeline = TrainingPipeline()
+        
+        print(f"Training state machine configuration: {TRAINING_STATE_MACHINE}")
+        print(f"Starting training pipeline execution...")
+        
+        # Run the training pipeline steps
+        training_results = pipeline.execute_training_pipeline_steps(
+            csv_files,
+            state_machine=TRAINING_STATE_MACHINE
+        )
+        
+        print("\n" + "="*60)
+        print("TRAINING PIPELINE EXECUTION COMPLETED")
+        print("="*60)
+        
+        # Display training summary
+        if training_results:
+            if training_results.get('success', False):
+                print("✓ Training pipeline completed successfully!")
+                print(f"Steps executed: {', '.join(training_results.get('steps_executed', []))}")
+                file_info = training_results.get('file_info', {})
+                print(f"Files processed: {file_info.get('processed_files', 0)}/{file_info.get('total_files', 0)}")
+            else:
+                print("✗ Training pipeline failed!")
+                errors = training_results.get('errors', [])
+                if errors:
+                    print("Errors encountered:")
+                    for error in errors:
+                        print(f"  - {error}")
         else:
-            print("✓ All months processed successfully!")
+            print("✗ Training pipeline returned no results!")
 
 
 if __name__ == "__main__":

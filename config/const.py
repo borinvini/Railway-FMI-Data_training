@@ -3,7 +3,7 @@ import numpy as np
 
 # Pipeline execution control flag
 EXECUTE_PREPROCESSING_DATA_PIPELINE = False
-EXECUTE_TRAINING_PIPELINE = False
+EXECUTE_TRAINING_PIPELINE = True
 
 # Constants for file processing
 FOLDER_NAME = "data"
@@ -41,6 +41,10 @@ PREPROCESSING_STATE_MACHINE = {
     "filter_strong_weather_causes": True,
     "remove_duplicates": True,
     "save_training_ready_csv": True
+}
+
+TRAINING_STATE_MACHINE = {
+    "merge_data_files": True
 }
 
 
