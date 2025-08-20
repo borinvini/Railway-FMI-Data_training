@@ -2,11 +2,13 @@ import os
 from src.file_utils import check_csv_files, extract_date_range, load_and_preview_csv, ensure_folder_structure
 from src.data_preprocessor import TrainingPipeline  # Import the class
 from config.const import (
-    DEFAULT_TARGET_FEATURE, 
+    DEFAULT_TARGET_FEATURE,
+    EXECUTE_PREPROCESSING_DATA_PIPELINE, 
     FILTER_TRAINS_BY_STATIONS, 
     IMPORTANCE_THRESHOLD, 
     REQUIRED_STATIONS,
-    INPUT_FOLDER
+    INPUT_FOLDER,
+    EXECUTE_PREPROCESSING_DATA_PIPELINE
 )
 
 
@@ -34,6 +36,7 @@ def main():
     
     print(f"Using target feature: '{DEFAULT_TARGET_FEATURE}'")
     print(f"Feature importance threshold: {IMPORTANCE_THRESHOLD}")
+    print(f"Pipeline execution enabled: {EXECUTE_PREPROCESSING_DATA_PIPELINE}")
 
     # STEP 3: Display configuration warnings if applicable
     if FILTER_TRAINS_BY_STATIONS:
@@ -61,7 +64,17 @@ def main():
         print(f"  4. Then run: python main.py")
         return
     
-    # STEP 6: Initialize and run the training pipeline
+    # STEP 6: Check if pipeline execution is enabled
+    if not EXECUTE_PREPROCESSING_DATA_PIPELINE:
+        print("\n" + "="*60)
+        print("PIPELINE EXECUTION SKIPPED")
+        print("="*60)
+        print("Pipeline execution is disabled in configuration.")
+        print("To enable pipeline execution, set EXECUTE_PIPELINE = True in config/const.py")
+        print(f"Found {len(csv_files)} CSV files ready for processing when enabled.")
+        return
+    
+    # STEP 7: Initialize and run the training pipeline
     print(f"\nInitializing Training Pipeline...")
     pipeline = TrainingPipeline()
     
