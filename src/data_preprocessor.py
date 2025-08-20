@@ -3258,9 +3258,8 @@ class TrainingPipeline:
             
             print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
             
-            # Generate output filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_filename = f"merged_training_ready_{timestamp}.csv"
+            # Generate output filename
+            output_filename = "merged_training_ready.csv"
             output_path = os.path.join(merged_training_ready_dir, output_filename)
             
             # Save merged dataset
