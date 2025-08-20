@@ -2,12 +2,14 @@ from contextlib import contextmanager
 from datetime import datetime
 import glob
 import os
+import joblib
 import pandas as pd
 import re
 import ast
 import logging
 import numpy as np
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import RobustScaler
 from src.file_utils import generate_output_path
             
 
@@ -17,6 +19,7 @@ from config.const import (
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
     BOOLEAN_FEATURES,
+    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
     MERGED_TRAINING_READY_OUTPUT_FOLDER, 
     OUTPUT_FOLDER,
     POSSIBLE_INDICATORS,
@@ -3169,6 +3172,32 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ split_dataset (disabled)")
+
+        if state_machine.get("scale_weather_features", False):
+            try:
+                print(f"    → scale_weather_features")
+                scaling_result = self.scale_weather_features(csv_files)
+                
+                if scaling_result and scaling_result.get("success", False):
+                    result["steps_executed"].append("scale_weather_features")
+                    result["file_info"]["processed_files"] = scaling_result.get("processed_files", 0)
+                    print(f"      ✓ Successfully scaled weather features")
+                    print(f"      ✓ Total train rows: {scaling_result.get('total_train_rows', 0):,}")
+                    print(f"      ✓ Total test rows: {scaling_result.get('total_test_rows', 0):,}")
+                    print(f"      ✓ Weather features scaled: {scaling_result.get('weather_features_available', [])}")
+                    result["success"] = True
+                else:
+                    error_msg = scaling_result.get("error", "scale_weather_features returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"scale_weather_features failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ scale_weather_features (disabled)")
         
         return result
     
@@ -3700,6 +3729,238 @@ class TrainingPipeline:
         except Exception as e:
             error_msg = f"split_dataset failed: {str(e)}"
             print(f"    split_dataset: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+        
+    def scale_weather_features(self, csv_files=None):
+        """
+        Scale and normalize weather features using RobustScaler.
+        
+        This method finds all train/test split files, fits a RobustScaler on the weather 
+        features from training data only, then transforms both train and test sets using 
+        the training parameters. Saves scaled datasets to the scaled output folder.
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (currently not used - method discovers files automatically)
+            
+        Returns:
+        --------
+        dict
+            Results of the scaling operation including success status and scaling info
+        """
+        try:
+            print(f"    scale_weather_features: Starting weather feature scaling operation...")
+            
+            # Create output directory
+            scaled_training_ready_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            os.makedirs(scaled_training_ready_dir, exist_ok=True)
+            
+            # Find all train/test split files
+            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+            train_pattern = os.path.join(merged_training_ready_dir, "merged_data_*_train.csv")
+            test_pattern = os.path.join(merged_training_ready_dir, "merged_data_*_test.csv")
+            
+            train_files = glob.glob(train_pattern)
+            test_files = glob.glob(test_pattern)
+            
+            if not train_files:
+                error_msg = "No training files found to scale"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            if not test_files:
+                error_msg = "No test files found to scale"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    scale_weather_features: Found {len(train_files)} train files and {len(test_files)} test files")
+            
+            # Initialize storage for processing results
+            scaling_results = []
+            total_train_rows = 0
+            total_test_rows = 0
+            
+            # Process each pair of train/test files
+            for train_file in train_files:
+                try:
+                    # Find corresponding test file
+                    train_filename = os.path.basename(train_file)
+                    test_filename = train_filename.replace('_train.csv', '_test.csv')
+                    test_file = os.path.join(merged_training_ready_dir, test_filename)
+                    
+                    if not os.path.exists(test_file):
+                        print(f"    scale_weather_features: Warning - No corresponding test file for {train_filename}. Skipping.")
+                        continue
+                    
+                    print(f"    scale_weather_features: Processing {train_filename} and {test_filename}...")
+                    
+                    # Read the datasets
+                    train_df = pd.read_csv(train_file)
+                    test_df = pd.read_csv(test_file)
+                    
+                    if train_df.empty or test_df.empty:
+                        print(f"    scale_weather_features: Warning - Empty datasets found. Skipping.")
+                        continue
+                    
+                    # Identify weather features that exist in the dataset
+                    available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
+                    
+                    if not available_weather_features:
+                        print(f"    scale_weather_features: Warning - No weather features found in {train_filename}. Skipping.")
+                        continue
+                    
+                    print(f"    scale_weather_features: Found {len(available_weather_features)} weather features to scale")
+                    print(f"      Weather features: {available_weather_features}")
+                    
+                    # Create and fit scaler on training data only
+                    scaler = RobustScaler()
+                    
+                    # Extract weather features for scaling
+                    train_weather_features = train_df[available_weather_features]
+                    test_weather_features = test_df[available_weather_features]
+                    
+                    # Fit scaler on training data only
+                    scaler.fit(train_weather_features)
+                    
+                    # Transform both train and test sets using training parameters
+                    train_weather_scaled = scaler.transform(train_weather_features)
+                    test_weather_scaled = scaler.transform(test_weather_features)
+                    
+                    # Create scaled DataFrames
+                    train_scaled_df = train_df.copy()
+                    test_scaled_df = test_df.copy()
+                    
+                    # Replace weather feature columns with scaled versions
+                    train_scaled_df[available_weather_features] = train_weather_scaled
+                    test_scaled_df[available_weather_features] = test_weather_scaled
+                    
+                    # Generate output filenames
+                    scaled_train_filename = train_filename.replace('.csv', '_scaled.csv')
+                    scaled_test_filename = test_filename.replace('.csv', '_scaled.csv')
+                    
+                    scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
+                    scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
+                    
+                    # Save scaled datasets
+                    train_scaled_df.to_csv(scaled_train_path, index=False)
+                    test_scaled_df.to_csv(scaled_test_path, index=False)
+                    
+                    # Save scaler for future use
+                    scaler_filename = train_filename.replace('_train.csv', '_weather_scaler.pkl')
+                    scaler_path = os.path.join(scaled_training_ready_dir, scaler_filename)
+                    joblib.dump(scaler, scaler_path)
+                    
+                    print(f"    scale_weather_features: ✓ Saved scaled train data to {scaled_train_filename}")
+                    print(f"    scale_weather_features: ✓ Saved scaled test data to {scaled_test_filename}")
+                    print(f"    scale_weather_features: ✓ Saved scaler to {scaler_filename}")
+                    
+                    # Store scaling statistics
+                    scaling_info = {
+                        "original_train_file": train_filename,
+                        "original_test_file": test_filename,
+                        "scaled_train_file": scaled_train_filename,
+                        "scaled_test_file": scaled_test_filename,
+                        "scaler_file": scaler_filename,
+                        "weather_features_scaled": available_weather_features,
+                        "train_rows": len(train_scaled_df),
+                        "test_rows": len(test_scaled_df),
+                        "features_count": len(available_weather_features),
+                        "scaler_stats": {
+                            "center_": scaler.center_.tolist() if hasattr(scaler, 'center_') else [],
+                            "scale_": scaler.scale_.tolist() if hasattr(scaler, 'scale_') else []
+                        }
+                    }
+                    
+                    scaling_results.append(scaling_info)
+                    total_train_rows += len(train_scaled_df)
+                    total_test_rows += len(test_scaled_df)
+                    
+                except Exception as e:
+                    error_msg = f"Failed to process {train_filename}: {str(e)}"
+                    print(f"    scale_weather_features: ✗ {error_msg}")
+                    scaling_results.append({
+                        "error": error_msg,
+                        "file": train_filename
+                    })
+                    continue
+            
+            # Save scaling summary
+            summary_filename = "scaling_summary.txt"
+            summary_path = os.path.join(scaled_training_ready_dir, summary_filename)
+            
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write("Weather Feature Scaling Summary\n")
+                f.write("=" * 40 + "\n\n")
+                
+                f.write(f"Scaling timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Scaler type: RobustScaler\n")
+                f.write(f"Total file pairs processed: {len([r for r in scaling_results if 'error' not in r])}\n")
+                f.write(f"Total train rows: {total_train_rows:,}\n")
+                f.write(f"Total test rows: {total_test_rows:,}\n\n")
+                
+                if scaling_results:
+                    f.write("Weather features scaled:\n")
+                    f.write("-" * 25 + "\n")
+                    for feature in ALL_WEATHER_FEATURES:
+                        feature_found = any(feature in result.get('weather_features_scaled', []) 
+                                        for result in scaling_results if 'error' not in result)
+                        status = "✓ Scaled" if feature_found else "✗ Not found"
+                        f.write(f"  {feature}: {status}\n")
+                    
+                    f.write("\nFile processing details:\n")
+                    f.write("-" * 25 + "\n")
+                    for result in scaling_results:
+                        if 'error' in result:
+                            f.write(f"  ✗ {result['file']}: {result['error']}\n")
+                        else:
+                            f.write(f"  ✓ {result['original_train_file']} -> {result['scaled_train_file']}\n")
+                            f.write(f"    Features: {len(result['weather_features_scaled'])}\n")
+                            f.write(f"    Train rows: {result['train_rows']:,}\n")
+                            f.write(f"    Test rows: {result['test_rows']:,}\n\n")
+            
+            print(f"    scale_weather_features: Summary saved to {summary_filename}")
+            
+            # Return success result
+            successful_files = len([r for r in scaling_results if 'error' not in r])
+            result = {
+                "success": True,
+                "processed_files": successful_files,
+                "total_train_rows": total_train_rows,
+                "total_test_rows": total_test_rows,
+                "scaling_results": scaling_results,
+                "weather_features_available": list(set([
+                    feature for result in scaling_results 
+                    for feature in result.get('weather_features_scaled', [])
+                    if 'error' not in result
+                ])),
+                "output_directory": scaled_training_ready_dir,
+                "summary_path": summary_path,
+                "message": f"Successfully scaled weather features for {successful_files} file pairs"
+            }
+            
+            print(f"    scale_weather_features: Completed successfully - {successful_files} file pairs processed")
+            print(f"    scale_weather_features: Total rows - Train: {total_train_rows:,}, Test: {total_test_rows:,}")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"scale_weather_features failed: {str(e)}"
+            print(f"    scale_weather_features: {error_msg}")
             import traceback
             traceback.print_exc()
             return {

@@ -12,6 +12,7 @@ OUTPUT_FOLDER = "data/output"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/1-preprocessed"
 TRAINING_READY_OUTPUT_FOLDER = "data/output/2-preprocessed_training_ready"
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/3-merged_training_ready"
+MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/4-merged_scaled_training_ready"
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
 DATA_FILE_PREFIX = "matched_data_"
@@ -45,7 +46,8 @@ PREPROCESSING_STATE_MACHINE = {
 
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
-    "split_dataset": True
+    "split_dataset": True,
+    "scale_weather_features": True
 }
 
 

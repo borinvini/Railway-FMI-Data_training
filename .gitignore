@@ -168,5 +168,6 @@ Desktop.ini
 
 # Machine learning model files
 *.joblib
+*.pkl
 
 *.txt
