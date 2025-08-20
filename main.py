@@ -1,6 +1,5 @@
-import os
-from src.file_utils import check_csv_files, extract_date_range, load_and_preview_csv, ensure_folder_structure
-from src.data_preprocessor import TrainingPipeline  # Import the class
+from src.file_utils import check_csv_files, extract_date_range, ensure_folder_structure
+from src.data_processor import TrainingPipeline
 from config.const import (
     DEFAULT_TARGET_FEATURE,
     EXECUTE_PREPROCESSING_DATA_PIPELINE, 

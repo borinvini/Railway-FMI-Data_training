@@ -3395,6 +3395,7 @@ class TrainingPipeline:
         
         This method finds all merged data files in data/output/merged_training_ready,
         splits each dataset into training and testing sets, and saves them as separate files.
+        Automatically uses stratified splitting for classification problems based on the target feature.
         
         Parameters:
         -----------
@@ -3405,7 +3406,7 @@ class TrainingPipeline:
         random_state : int, optional
             Random seed for reproducibility. Defaults to 42.
         stratify_column : str, optional
-            Column name to use for stratified splitting. If None, performs simple random split.
+            Column name to use for stratified splitting. If None, uses automatic detection based on target feature.
             
         Returns:
         --------
@@ -3459,12 +3460,50 @@ class TrainingPipeline:
                     
                     print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
                     
-                    # Prepare stratification if specified
-                    stratify = None
-                    if stratify_column and stratify_column in df.columns:
-                        stratify = df[stratify_column]
-                        print(f"      Using stratified split on column: {stratify_column}")
+                    # Determine target column and stratification logic
+                    target_column = DEFAULT_TARGET_FEATURE
+                    
+                    # Check if the default target feature exists in the dataset
+                    if target_column not in df.columns:
+                        # Try to find an alternative target from valid options
+                        target_options = VALID_TARGET_FEATURES
+                        target_column = None
+                        
+                        for option in target_options:
+                            if option in df.columns:
+                                target_column = option
+                                break
+                        
+                        if not target_column:
+                            print(f"      Warning: No target column found in {filename}. Skipping.")
+                            continue
+                    
+                    print(f"      Using target column: {target_column}")
+                    
+                    # Determine if this is a classification or regression problem
+                    is_classification = True
+                    if target_column in REGRESSION_PROBLEM:
+                        is_classification = False
+                        print(f"      Target '{target_column}' indicates a regression problem")
                     else:
+                        print(f"      Target '{target_column}' indicates a classification problem")
+                    
+                    # Prepare stratification
+                    stratify = None
+                    if stratify_column:
+                        # Use explicitly provided stratify column
+                        if stratify_column in df.columns:
+                            stratify = df[stratify_column]
+                            print(f"      Using explicit stratified split on column: {stratify_column}")
+                        else:
+                            print(f"      Warning: Specified stratify column '{stratify_column}' not found. Using automatic detection.")
+                            stratify = None
+                    
+                    # If no explicit stratify column, use automatic detection for classification
+                    if stratify is None and is_classification:
+                        stratify = df[target_column]
+                        print(f"      Using stratified split on target column: {target_column}")
+                    elif stratify is None:
                         print(f"      Using simple random split")
                     
                     # Perform train-test split
@@ -3488,6 +3527,13 @@ class TrainingPipeline:
                     
                     print(f"      Split result: {len(train_df):,} train rows, {len(test_df):,} test rows")
                     
+                    # Show distribution for classification problems
+                    if is_classification and target_column in train_df.columns:
+                        print(f"      Target distribution in train set:")
+                        train_dist = train_df[target_column].value_counts(normalize=True) * 100
+                        for value, percentage in train_dist.items():
+                            print(f"        {value}: {percentage:.1f}%")
+                    
                     # Generate output filenames
                     base_filename = filename.replace('.csv', '')
                     train_filename = f"{base_filename}_train.csv"
@@ -3508,6 +3554,9 @@ class TrainingPipeline:
                         'original_file': filename,
                         'train_file': train_filename,
                         'test_file': test_filename,
+                        'target_column': target_column,
+                        'is_classification': is_classification,
+                        'stratified': stratify is not None,
                         'original_rows': len(df),
                         'train_rows': len(train_df),
                         'test_rows': len(test_df),
@@ -3548,7 +3597,7 @@ class TrainingPipeline:
                 f.write(f"Split timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Test size: {test_size}\n")
                 f.write(f"Random state: {random_state}\n")
-                f.write(f"Stratify column: {stratify_column if stratify_column else 'None'}\n")
+                f.write(f"Default target feature: {DEFAULT_TARGET_FEATURE}\n")
                 f.write(f"Files processed: {len(split_results)}\n")
                 f.write(f"Total train rows: {total_train_rows:,}\n")
                 f.write(f"Total test rows: {total_test_rows:,}\n\n")
@@ -3558,6 +3607,9 @@ class TrainingPipeline:
                 f.write("-" * 30 + "\n")
                 for result in split_results:
                     f.write(f"Original: {result['original_file']}\n")
+                    f.write(f"  Target: {result['target_column']}\n")
+                    f.write(f"  Problem type: {'Classification' if result['is_classification'] else 'Regression'}\n")
+                    f.write(f"  Stratified: {'Yes' if result['stratified'] else 'No'}\n")
                     f.write(f"  Train: {result['train_file']} ({result['train_rows']:,} rows)\n")
                     f.write(f"  Test: {result['test_file']} ({result['test_rows']:,} rows)\n")
                     f.write(f"  Actual test ratio: {result['test_size_actual']:.3f}\n\n")
