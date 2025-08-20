@@ -3488,6 +3488,28 @@ class TrainingPipeline:
                     else:
                         print(f"      Target '{target_column}' indicates a classification problem")
                     
+                    # Calculate class distribution for classification problems (BEFORE split)
+                    class_distribution_before = None
+                    class_distribution_train = None
+                    class_distribution_test = None
+                    
+                    if is_classification:
+                        # Calculate class distribution before split
+                        value_counts = df[target_column].value_counts()
+                        total_samples = len(df)
+                        class_distribution_before = {}
+                        
+                        for class_value, count in value_counts.items():
+                            percentage = (count / total_samples) * 100
+                            class_distribution_before[class_value] = {
+                                'count': count,
+                                'percentage': percentage
+                            }
+                        
+                        print(f"      Class distribution before split:")
+                        for class_value, stats in class_distribution_before.items():
+                            print(f"        Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
+                    
                     # Prepare stratification
                     stratify = None
                     if stratify_column:
@@ -3497,42 +3519,54 @@ class TrainingPipeline:
                             print(f"      Using explicit stratified split on column: {stratify_column}")
                         else:
                             print(f"      Warning: Specified stratify column '{stratify_column}' not found. Using automatic detection.")
-                            stratify = None
                     
-                    # If no explicit stratify column, use automatic detection for classification
+                    # Auto-detect stratification for classification problems
                     if stratify is None and is_classification:
+                        # Use the target column for stratification in classification
                         stratify = df[target_column]
                         print(f"      Using stratified split on target column: {target_column}")
-                    elif stratify is None:
-                        print(f"      Using simple random split")
                     
-                    # Perform train-test split
-                    try:
-                        train_df, test_df = train_test_split(
-                            df,
-                            test_size=test_size,
-                            random_state=random_state,
-                            stratify=stratify
-                        )
-                    except ValueError as e:
-                        if stratify is not None:
-                            print(f"      Warning: Stratified split failed ({str(e)}). Falling back to simple random split.")
-                            train_df, test_df = train_test_split(
-                                df,
-                                test_size=test_size,
-                                random_state=random_state
-                            )
-                        else:
-                            raise e
+                    # Perform the train-test split
+                    train_df, test_df = train_test_split(
+                        df,
+                        test_size=test_size,
+                        random_state=random_state,
+                        stratify=stratify
+                    )
                     
-                    print(f"      Split result: {len(train_df):,} train rows, {len(test_df):,} test rows")
-                    
-                    # Show distribution for classification problems
-                    if is_classification and target_column in train_df.columns:
-                        print(f"      Target distribution in train set:")
-                        train_dist = train_df[target_column].value_counts(normalize=True) * 100
-                        for value, percentage in train_dist.items():
-                            print(f"        {value}: {percentage:.1f}%")
+                    # Calculate class distribution for classification problems (AFTER split)
+                    if is_classification:
+                        # Calculate class distribution for train set
+                        train_value_counts = train_df[target_column].value_counts()
+                        train_total = len(train_df)
+                        class_distribution_train = {}
+                        
+                        for class_value, count in train_value_counts.items():
+                            percentage = (count / train_total) * 100
+                            class_distribution_train[class_value] = {
+                                'count': count,
+                                'percentage': percentage
+                            }
+                        
+                        # Calculate class distribution for test set
+                        test_value_counts = test_df[target_column].value_counts()
+                        test_total = len(test_df)
+                        class_distribution_test = {}
+                        
+                        for class_value, count in test_value_counts.items():
+                            percentage = (count / test_total) * 100
+                            class_distribution_test[class_value] = {
+                                'count': count,
+                                'percentage': percentage
+                            }
+                        
+                        print(f"      Class distribution after split:")
+                        print(f"        Train set:")
+                        for class_value, stats in class_distribution_train.items():
+                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
+                        print(f"        Test set:")
+                        for class_value, stats in class_distribution_test.items():
+                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
                     
                     # Generate output filenames
                     base_filename = filename.replace('.csv', '')
@@ -3542,7 +3576,7 @@ class TrainingPipeline:
                     train_path = os.path.join(merged_training_ready_dir, train_filename)
                     test_path = os.path.join(merged_training_ready_dir, test_filename)
                     
-                    # Save train and test datasets
+                    # Save the train and test sets
                     train_df.to_csv(train_path, index=False)
                     test_df.to_csv(test_path, index=False)
                     
@@ -3550,7 +3584,7 @@ class TrainingPipeline:
                     print(f"      Saved test set to: {test_filename}")
                     
                     # Store results for this file
-                    split_results.append({
+                    result_data = {
                         'original_file': filename,
                         'train_file': train_filename,
                         'test_file': test_filename,
@@ -3561,7 +3595,15 @@ class TrainingPipeline:
                         'train_rows': len(train_df),
                         'test_rows': len(test_df),
                         'test_size_actual': len(test_df) / len(df)
-                    })
+                    }
+                    
+                    # Add class distribution data for classification problems
+                    if is_classification:
+                        result_data['class_distribution_before'] = class_distribution_before
+                        result_data['class_distribution_train'] = class_distribution_train
+                        result_data['class_distribution_test'] = class_distribution_test
+                    
+                    split_results.append(result_data)
                     
                     total_train_rows += len(train_df)
                     total_test_rows += len(test_df)
@@ -3586,7 +3628,7 @@ class TrainingPipeline:
             print(f"    split_dataset: Total train rows: {total_train_rows:,}")
             print(f"    split_dataset: Total test rows: {total_test_rows:,}")
             
-            # Save summary information
+            # Save enhanced summary information
             summary_filename = "split_summary.txt"
             summary_path = os.path.join(merged_training_ready_dir, summary_filename)
             
@@ -3602,7 +3644,7 @@ class TrainingPipeline:
                 f.write(f"Total train rows: {total_train_rows:,}\n")
                 f.write(f"Total test rows: {total_test_rows:,}\n\n")
                 
-                # File details
+                # File details with enhanced class distribution information
                 f.write("Split details:\n")
                 f.write("-" * 30 + "\n")
                 for result in split_results:
@@ -3612,7 +3654,29 @@ class TrainingPipeline:
                     f.write(f"  Stratified: {'Yes' if result['stratified'] else 'No'}\n")
                     f.write(f"  Train: {result['train_file']} ({result['train_rows']:,} rows)\n")
                     f.write(f"  Test: {result['test_file']} ({result['test_rows']:,} rows)\n")
-                    f.write(f"  Actual test ratio: {result['test_size_actual']:.3f}\n\n")
+                    f.write(f"  Actual test ratio: {result['test_size_actual']:.3f}\n")
+                    
+                    # Add class distribution information for classification problems
+                    if result['is_classification'] and 'class_distribution_before' in result:
+                        f.write(f"\n  Class Distribution Analysis:\n")
+                        f.write(f"  {'-' * 25}\n")
+                        
+                        # Before split
+                        f.write(f"  Before Split (Total: {result['original_rows']:,} samples):\n")
+                        for class_value, stats in result['class_distribution_before'].items():
+                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                        
+                        # After split - Train set
+                        f.write(f"\n  After Split - Train Set ({result['train_rows']:,} samples):\n")
+                        for class_value, stats in result['class_distribution_train'].items():
+                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                        
+                        # After split - Test set
+                        f.write(f"\n  After Split - Test Set ({result['test_rows']:,} samples):\n")
+                        for class_value, stats in result['class_distribution_test'].items():
+                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                    
+                    f.write(f"\n")
             
             print(f"    split_dataset: Summary saved to {summary_filename}")
             
