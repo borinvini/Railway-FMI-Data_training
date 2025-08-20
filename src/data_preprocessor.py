@@ -16,7 +16,8 @@ from config.const import (
     DATA_FILE_PREFIX_FOR_TRAINING,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
-    BOOLEAN_FEATURES, 
+    BOOLEAN_FEATURES,
+    MERGED_TRAINING_READY_OUTPUT_FOLDER, 
     OUTPUT_FOLDER,
     POSSIBLE_INDICATORS,
     PREPROCESSING_STATE_MACHINE,
@@ -3168,8 +3169,8 @@ class TrainingPipeline:
         try:
             print(f"    merge_data_files: Starting merge operation...")
             
-            # Create output directory using the constant (add this to config/const.py)
-            merged_training_ready_dir = os.path.join(self.project_root, "data", "output", "merged_training_ready")
+            # Create output directory using the constant from const.py
+            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
             os.makedirs(merged_training_ready_dir, exist_ok=True)
             
             # Find all training-ready CSV files using glob pattern
@@ -3251,56 +3252,62 @@ class TrainingPipeline:
                     "processed_files": 0
                 }
             
+            # Merge all dataframes
             print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")
-            
-            # Concatenate all dataframes
             merged_df = pd.concat(all_dataframes, ignore_index=True)
             
-            print(f"    merge_data_files: Merged dataset - {len(merged_df):,} rows, {len(merged_df.columns)} columns")
+            print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
             
-            # Create month distribution summary
-            month_distribution = merged_df['source_month'].value_counts().sort_index()
-            print(f"    merge_data_files: Month distribution:")
-            for month, count in month_distribution.items():
-                print(f"      Month {month:2d}: {count:,} rows")
-            
-            # Generate output filename
-            output_filename = "merged_training_data.csv"
+            # Generate output filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"merged_training_ready_{timestamp}.csv"
             output_path = os.path.join(merged_training_ready_dir, output_filename)
             
-            # Save the merged dataframe
-            print(f"    merge_data_files: Saving merged dataset to {output_filename}")
+            # Save merged dataset
             merged_df.to_csv(output_path, index=False)
+            print(f"    merge_data_files: Saved merged dataset to {output_path}")
             
-            # Create a detailed summary file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            summary_filename = f"merge_summary_{timestamp}.txt"
+            # Generate summary statistics
+            month_distribution = merged_df['source_month'].value_counts().sort_index()
+            year_distribution = merged_df['source_year'].value_counts().sort_index()
+            
+            # Save summary information
+            summary_filename = "merge_summary.txt"
             summary_path = os.path.join(merged_training_ready_dir, summary_filename)
             
             with open(summary_path, 'w') as f:
-                f.write(f"Training-Ready Files Merge Summary\n")
-                f.write("=" * 50 + "\n\n")
+                f.write("Merged Training Dataset Summary\n")
+                f.write("=" * 40 + "\n\n")
+                
                 f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Output file: {output_filename}\n")
                 f.write(f"Total rows: {len(merged_df):,}\n")
                 f.write(f"Total columns: {len(merged_df.columns)}\n")
-                f.write(f"Files merged: {len(all_dataframes)}\n")
-                f.write(f"Memory usage: {merged_df.memory_usage(deep=True).sum() / 1024**2:.2f} MB\n\n")
+                f.write(f"Files merged: {len(all_dataframes)}\n\n")
                 
-                f.write("Month Distribution:\n")
-                f.write("-" * 20 + "\n")
-                for month, count in month_distribution.items():
-                    f.write(f"Month {month:2d}: {count:,} rows\n")
-                
-                f.write("\nFile Details:\n")
+                # File details
+                f.write("Files processed:\n")
                 f.write("-" * 20 + "\n")
                 for info in file_info:
-                    f.write(f"{info['filename']}: {info['year']}-{info['month']:02d}, {info['rows']:,} rows, {info['columns']} columns\n")
+                    f.write(f"{info['filename']}: {info['rows']:,} rows, {info['columns']} columns\n")
                 
-                f.write("\nColumn Information:\n")
+                # Month distribution
+                f.write("\nMonth distribution:\n")
                 f.write("-" * 20 + "\n")
-                for i, col in enumerate(merged_df.columns, 1):
-                    f.write(f"{i:2d}. {col}\n")
+                for month, count in month_distribution.items():
+                    f.write(f"Month {month:02d}: {count:,} rows\n")
+                
+                # Year distribution
+                f.write("\nYear distribution:\n")
+                f.write("-" * 20 + "\n")
+                for year, count in year_distribution.items():
+                    f.write(f"Year {year}: {count:,} rows\n")
+                
+                # Column information
+                f.write("\nColumns in merged dataset:\n")
+                f.write("-" * 20 + "\n")
+                for col in merged_df.columns:
+                    f.write(f"{col}\n")
                 
                 # Data quality summary
                 f.write("\nData Quality Summary:\n")
