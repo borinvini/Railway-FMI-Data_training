@@ -1,4 +1,6 @@
 from contextlib import contextmanager
+from datetime import datetime
+import glob
 import os
 import pandas as pd
 import re
@@ -3143,35 +3145,204 @@ class TrainingPipeline:
             print(f"    ⊝ merge_data_files (disabled)")
         
         return result
-
+    
     def merge_data_files(self, csv_files):
         """
-        Merge multiple data files into a single dataset for training.
+        Merge multiple training-ready data files into a single dataset for training.
         
-        This method will combine data from multiple CSV files into a unified dataset
-        suitable for machine learning training. The implementation will be added
-        in future iterations.
+        This method loads all files from data/output/preprocessed_training_ready,
+        combines them into a unified dataset, and saves the result to 
+        data/output/merged_training_ready. It adds source tracking columns and 
+        creates detailed summary statistics.
         
         Parameters:
         -----------
         csv_files : list
-            List of CSV file paths to merge
+            List of CSV file paths to merge (currently not used - method discovers files automatically)
             
         Returns:
         --------
         dict
-            Results of the merge operation including success status and merged data
+            Results of the merge operation including success status and merged data info
         """
-        # TODO: Implement the merge logic
-        # This method is currently empty as requested - structure only
-        
-        print(f"    merge_data_files: Processing {len(csv_files)} files...")
-        print(f"    TODO: Implement merge logic for files: {[os.path.basename(f) for f in csv_files[:3]]}{'...' if len(csv_files) > 3 else ''}")
-        
-        # Placeholder return for now
-        return {
-            "success": True,
-            "data": None,
-            "processed_files": len(csv_files),
-            "message": "merge_data_files placeholder - implementation pending"
-        }
+        try:
+            print(f"    merge_data_files: Starting merge operation...")
+            
+            # Create output directory using the constant (add this to config/const.py)
+            merged_training_ready_dir = os.path.join(self.project_root, "data", "output", "merged_training_ready")
+            os.makedirs(merged_training_ready_dir, exist_ok=True)
+            
+            # Find all training-ready CSV files using glob pattern
+            training_ready_pattern = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER, "training_ready_*.csv")
+            training_ready_files = glob.glob(training_ready_pattern)
+            
+            if not training_ready_files:
+                error_msg = "No training-ready files found to merge"
+                print(f"    merge_data_files: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    merge_data_files: Found {len(training_ready_files)} training-ready files")
+            for file_path in training_ready_files:
+                print(f"      - {os.path.basename(file_path)}")
+            
+            # Initialize storage for dataframes and file information
+            all_dataframes = []
+            file_info = []
+            
+            # Process each training-ready file
+            for file_path in training_ready_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"    merge_data_files: Processing {filename}...")
+                    
+                    # Extract month information from filename using regex
+                    # Expected format: training_ready_YYYY_MM.csv
+                    month_match = re.search(r'training_ready_(\d{4})_(\d{2})\.csv$', filename)
+                    
+                    if not month_match:
+                        print(f"    merge_data_files: Warning - Could not extract date from {filename}. Skipping.")
+                        continue
+                    
+                    year = int(month_match.group(1))
+                    month_number = int(month_match.group(2))
+                    
+                    # Read the CSV file
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"    merge_data_files: Warning - File {filename} is empty. Skipping.")
+                        continue
+                    
+                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
+                    
+                    # Add source tracking columns
+                    df = df.copy()  # Avoid modifying the original dataframe
+                    df['source_month'] = month_number
+                    df['source_year'] = year
+                    df['source_file'] = filename
+                    
+                    # Store the dataframe and file info
+                    all_dataframes.append(df)
+                    file_info.append({
+                        'filename': filename,
+                        'year': year,
+                        'month': month_number,
+                        'rows': len(df),
+                        'columns': len(df.columns)
+                    })
+                    
+                    print(f"      Successfully processed {filename}")
+                    
+                except Exception as e:
+                    print(f"    merge_data_files: Error processing {filename}: {str(e)}")
+                    continue
+            
+            # Check if we have any dataframes to merge
+            if not all_dataframes:
+                error_msg = "No valid dataframes found to merge"
+                print(f"    merge_data_files: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")
+            
+            # Concatenate all dataframes
+            merged_df = pd.concat(all_dataframes, ignore_index=True)
+            
+            print(f"    merge_data_files: Merged dataset - {len(merged_df):,} rows, {len(merged_df.columns)} columns")
+            
+            # Create month distribution summary
+            month_distribution = merged_df['source_month'].value_counts().sort_index()
+            print(f"    merge_data_files: Month distribution:")
+            for month, count in month_distribution.items():
+                print(f"      Month {month:2d}: {count:,} rows")
+            
+            # Generate output filename
+            output_filename = "merged_training_data.csv"
+            output_path = os.path.join(merged_training_ready_dir, output_filename)
+            
+            # Save the merged dataframe
+            print(f"    merge_data_files: Saving merged dataset to {output_filename}")
+            merged_df.to_csv(output_path, index=False)
+            
+            # Create a detailed summary file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            summary_filename = f"merge_summary_{timestamp}.txt"
+            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write(f"Training-Ready Files Merge Summary\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Output file: {output_filename}\n")
+                f.write(f"Total rows: {len(merged_df):,}\n")
+                f.write(f"Total columns: {len(merged_df.columns)}\n")
+                f.write(f"Files merged: {len(all_dataframes)}\n")
+                f.write(f"Memory usage: {merged_df.memory_usage(deep=True).sum() / 1024**2:.2f} MB\n\n")
+                
+                f.write("Month Distribution:\n")
+                f.write("-" * 20 + "\n")
+                for month, count in month_distribution.items():
+                    f.write(f"Month {month:2d}: {count:,} rows\n")
+                
+                f.write("\nFile Details:\n")
+                f.write("-" * 20 + "\n")
+                for info in file_info:
+                    f.write(f"{info['filename']}: {info['year']}-{info['month']:02d}, {info['rows']:,} rows, {info['columns']} columns\n")
+                
+                f.write("\nColumn Information:\n")
+                f.write("-" * 20 + "\n")
+                for i, col in enumerate(merged_df.columns, 1):
+                    f.write(f"{i:2d}. {col}\n")
+                
+                # Data quality summary
+                f.write("\nData Quality Summary:\n")
+                f.write("-" * 20 + "\n")
+                missing_values = merged_df.isnull().sum()
+                if missing_values.sum() > 0:
+                    f.write(f"Missing values per column:\n")
+                    for col, missing_count in missing_values.items():
+                        if missing_count > 0:
+                            missing_pct = (missing_count / len(merged_df)) * 100
+                            f.write(f"  {col}: {missing_count:,} ({missing_pct:.2f}%)\n")
+                else:
+                    f.write("No missing values found\n")
+            
+            print(f"    merge_data_files: Summary saved to {summary_filename}")
+            
+            # Return success result following the pattern of other methods
+            result = {
+                "success": True,
+                "data": merged_df,  # Include the merged dataframe for potential chaining
+                "output_path": output_path,
+                "summary_path": summary_path,
+                "processed_files": len(all_dataframes),
+                "total_rows": len(merged_df),
+                "total_columns": len(merged_df.columns),
+                "files_merged": len(all_dataframes),
+                "month_distribution": month_distribution.to_dict(),
+                "file_details": file_info,
+                "message": f"Successfully merged {len(all_dataframes)} files into {len(merged_df):,} rows"
+            }
+            
+            print(f"    merge_data_files: Completed successfully - {len(all_dataframes)} files merged into {len(merged_df):,} rows")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"merge_data_files failed: {str(e)}"
+            print(f"    merge_data_files: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
