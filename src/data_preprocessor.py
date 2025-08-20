@@ -3257,19 +3257,31 @@ class TrainingPipeline:
             merged_df = pd.concat(all_dataframes, ignore_index=True)
             
             print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
+
+            # Generate summary statistics
+            month_distribution = merged_df['source_month'].value_counts().sort_index()
+            year_distribution = merged_df['source_year'].value_counts().sort_index()
+
+            # Remove source tracking columns before saving
+            columns_to_remove = ['source_month', 'source_year', 'source_file']
+            print(f"    merge_data_files: Dropping source tracking columns: {', '.join(columns_to_remove)}")
+            merged_df = merged_df.drop(columns=columns_to_remove, errors='ignore')
             
+            print(f"    merge_data_files: Removed source tracking columns. Final shape: {merged_df.shape}")
+
             # Generate output filename
-            output_filename = "merged_training_ready.csv"
+            sorted_files = sorted(file_info, key=lambda x: (x['year'], x['month']))
+            first_file = sorted_files[0]
+            last_file = sorted_files[-1]
+
+            # Format: merged_data_YYYY-MM_to_YYYY-MM.csv
+            output_filename = f"merged_data_{first_file['year']}-{first_file['month']:02d}_to_{last_file['year']}-{last_file['month']:02d}.csv"
             output_path = os.path.join(merged_training_ready_dir, output_filename)
             
             # Save merged dataset
             merged_df.to_csv(output_path, index=False)
             print(f"    merge_data_files: Saved merged dataset to {output_path}")
-            
-            # Generate summary statistics
-            month_distribution = merged_df['source_month'].value_counts().sort_index()
-            year_distribution = merged_df['source_year'].value_counts().sort_index()
-            
+
             # Save summary information
             summary_filename = "merge_summary.txt"
             summary_path = os.path.join(merged_training_ready_dir, summary_filename)
