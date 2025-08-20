@@ -28,6 +28,7 @@ from config.const import (
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     SCORE_METRIC,
     STRONG_INDICATORS,
+    TEST_SIZE,
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAINING_READY_OUTPUT_FOLDER,
@@ -3389,7 +3390,7 @@ class TrainingPipeline:
                 "processed_files": 0
             }
         
-    def split_dataset(self, csv_files=None, test_size=0.2, random_state=42, stratify_column=None):
+    def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
         """
         Split merged training datasets into train and test sets.
         
