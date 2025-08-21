@@ -5390,7 +5390,8 @@ class TrainingPipeline:
         
     def train_decision_tree(self):
         """
-        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
+        Train Decision Tree classifiers on scaled training data using RandomizedSearchCV.
+        
         This method trains on the scaled data from the previous pipeline stages.
         Uses the DEFAULT_TARGET_FEATURE and checks if it's a classification problem.
         Saves results and feature importance to data/output/decision_tree folder.
@@ -5561,6 +5562,9 @@ class TrainingPipeline:
                     y_pred = best_dt.predict(X_test)
                     y_pred_proba = best_dt.predict_proba(X_test)
                     
+                    # FIX: Define file_identifier BEFORE using it
+                    file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
+                    
                     # Calculate comprehensive metrics
                     metrics = self._calculate_classification_metrics(y_test, y_pred, y_pred_proba)
                     
@@ -5583,9 +5587,6 @@ class TrainingPipeline:
                     print(f"    train_decision_tree: Test {SCORE_METRIC}: {metrics.get(SCORE_METRIC, 'N/A'):.4f}")
                     print(f"    train_decision_tree: Test Accuracy: {metrics['accuracy']:.4f}")
                     print(f"    train_decision_tree: Test Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
-                    
-                    # Save results for this file
-                    file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
                     
                     # Save model
                     model_filename = f"decision_tree_model_{file_identifier}.joblib"
@@ -5719,6 +5720,7 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg
             }
+
 
     def _calculate_classification_metrics(self, y_true, y_pred, y_pred_proba=None):
         """
