@@ -50,6 +50,7 @@ TRAINING_STATE_MACHINE = {
     "scale_weather_features": True,
     "correlation_analysis": True,
     "non_weather_correlation_analysis": True,
+    "train_decision_tree": True
 }
 
 

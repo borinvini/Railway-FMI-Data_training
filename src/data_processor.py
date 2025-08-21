@@ -3,6 +3,7 @@ from datetime import datetime
 import glob
 import os
 import joblib
+import json
 import pandas as pd
 import re
 import ast
@@ -11,6 +12,14 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
 from src.file_utils import generate_output_path
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.metrics import (
+    accuracy_score, balanced_accuracy_score, roc_auc_score, 
+    average_precision_score, cohen_kappa_score, f1_score,
+    classification_report, confusion_matrix
+)
 
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -3256,227 +3265,42 @@ class TrainingPipeline:
                         return result
         else:
             print(f"    ⊝ non_weather_correlation_analysis (Non-Weather Features) (disabled)")
+
+
+        if state_machine.get("train_decision_tree", False):
+            try:
+                print(f"    → train_decision_tree")
+                dt_result = self.train_decision_tree()
+                
+                if dt_result and dt_result.get("success", False):
+                    result["steps_executed"].append("train_decision_tree")
+                    result["file_info"]["decision_tree_files"] = dt_result.get("files_processed", 0)
+                    print(f"      ✓ Successfully trained Decision Tree classifier")
+                    print(f"      ✓ Target feature: {dt_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ Files processed: {dt_result.get('files_processed', 0)}")
+                    print(f"      ✓ Total train samples: {dt_result.get('total_train_samples', 0):,}")
+                    print(f"      ✓ Total test samples: {dt_result.get('total_test_samples', 0):,}")
+                    print(f"      ✓ Average CV {dt_result.get('score_metric', 'score')}: {dt_result.get('avg_cv_score', 0):.4f}")
+                    print(f"      ✓ Average test {dt_result.get('score_metric', 'score')}: {dt_result.get('avg_test_score', 0):.4f}")
+                    print(f"      ✓ Average test accuracy: {dt_result.get('avg_accuracy', 0):.4f}")
+                    print(f"      ✓ Results saved to: {dt_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = dt_result.get("error", "train_decision_tree returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"train_decision_tree failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ train_decision_tree (disabled)")
+
         
         return result
     
-    def merge_data_files(self, csv_files):
-        """
-        Merge multiple training-ready data files into a single dataset for training.
-        
-        This method loads all files from data/output/preprocessed_training_ready,
-        combines them into a unified dataset, and saves the result to 
-        data/output/merged_training_ready. It adds source tracking columns and 
-        creates detailed summary statistics.
-        
-        Parameters:
-        -----------
-        csv_files : list
-            List of CSV file paths to merge (currently not used - method discovers files automatically)
-            
-        Returns:
-        --------
-        dict
-            Results of the merge operation including success status and merged data info
-        """
-        try:
-            print(f"    merge_data_files: Starting merge operation...")
-            
-            # Create output directory using the constant from const.py
-            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
-            os.makedirs(merged_training_ready_dir, exist_ok=True)
-            
-            # Find all training-ready CSV files using glob pattern
-            training_ready_pattern = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER, "training_ready_*.csv")
-            training_ready_files = glob.glob(training_ready_pattern)
-            
-            if not training_ready_files:
-                error_msg = "No training-ready files found to merge"
-                print(f"    merge_data_files: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            print(f"    merge_data_files: Found {len(training_ready_files)} training-ready files")
-            for file_path in training_ready_files:
-                print(f"      - {os.path.basename(file_path)}")
-            
-            # Initialize storage for dataframes and file information
-            all_dataframes = []
-            file_info = []
-            
-            # Process each training-ready file
-            for file_path in training_ready_files:
-                try:
-                    filename = os.path.basename(file_path)
-                    print(f"    merge_data_files: Processing {filename}...")
-                    
-                    # Extract month information from filename using regex
-                    # Expected format: training_ready_YYYY_MM.csv
-                    month_match = re.search(r'training_ready_(\d{4})_(\d{2})\.csv$', filename)
-                    
-                    if not month_match:
-                        print(f"    merge_data_files: Warning - Could not extract date from {filename}. Skipping.")
-                        continue
-                    
-                    year = int(month_match.group(1))
-                    month_number = int(month_match.group(2))
-                    
-                    # Read the CSV file
-                    df = pd.read_csv(file_path)
-                    
-                    if df.empty:
-                        print(f"    merge_data_files: Warning - File {filename} is empty. Skipping.")
-                        continue
-                    
-                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
-                    
-                    # Add source tracking columns
-                    df = df.copy()  # Avoid modifying the original dataframe
-                    df['source_month'] = month_number
-                    df['source_year'] = year
-                    df['source_file'] = filename
-                    
-                    # Store the dataframe and file info
-                    all_dataframes.append(df)
-                    file_info.append({
-                        'filename': filename,
-                        'year': year,
-                        'month': month_number,
-                        'rows': len(df),
-                        'columns': len(df.columns)
-                    })
-                    
-                    print(f"      Successfully processed {filename}")
-                    
-                except Exception as e:
-                    print(f"    merge_data_files: Error processing {filename}: {str(e)}")
-                    continue
-            
-            # Check if we have any dataframes to merge
-            if not all_dataframes:
-                error_msg = "No valid dataframes found to merge"
-                print(f"    merge_data_files: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            # Merge all dataframes
-            print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")
-            merged_df = pd.concat(all_dataframes, ignore_index=True)
-            
-            print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
-
-            # Generate summary statistics
-            month_distribution = merged_df['source_month'].value_counts().sort_index()
-            year_distribution = merged_df['source_year'].value_counts().sort_index()
-
-            # Remove source tracking columns before saving
-            columns_to_remove = ['source_month', 'source_year', 'source_file']
-            print(f"    merge_data_files: Dropping source tracking columns: {', '.join(columns_to_remove)}")
-            merged_df = merged_df.drop(columns=columns_to_remove, errors='ignore')
-            
-            print(f"    merge_data_files: Removed source tracking columns. Final shape: {merged_df.shape}")
-
-            # Generate output filename
-            sorted_files = sorted(file_info, key=lambda x: (x['year'], x['month']))
-            first_file = sorted_files[0]
-            last_file = sorted_files[-1]
-
-            # Format: merged_data_YYYY-MM_to_YYYY-MM.csv
-            output_filename = f"merged_data_{first_file['year']}-{first_file['month']:02d}_to_{last_file['year']}-{last_file['month']:02d}.csv"
-            output_path = os.path.join(merged_training_ready_dir, output_filename)
-            
-            # Save merged dataset
-            merged_df.to_csv(output_path, index=False)
-            print(f"    merge_data_files: Saved merged dataset to {output_path}")
-
-            # Save summary information
-            summary_filename = "merge_summary.txt"
-            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
-            
-            with open(summary_path, 'w') as f:
-                f.write("Merged Training Dataset Summary\n")
-                f.write("=" * 40 + "\n\n")
-                
-                f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Output file: {output_filename}\n")
-                f.write(f"Total rows: {len(merged_df):,}\n")
-                f.write(f"Total columns: {len(merged_df.columns)}\n")
-                f.write(f"Files merged: {len(all_dataframes)}\n\n")
-                
-                # File details
-                f.write("Files processed:\n")
-                f.write("-" * 20 + "\n")
-                for info in file_info:
-                    f.write(f"{info['filename']}: {info['rows']:,} rows, {info['columns']} columns\n")
-                
-                # Month distribution
-                f.write("\nMonth distribution:\n")
-                f.write("-" * 20 + "\n")
-                for month, count in month_distribution.items():
-                    f.write(f"Month {month:02d}: {count:,} rows\n")
-                
-                # Year distribution
-                f.write("\nYear distribution:\n")
-                f.write("-" * 20 + "\n")
-                for year, count in year_distribution.items():
-                    f.write(f"Year {year}: {count:,} rows\n")
-                
-                # Column information
-                f.write("\nColumns in merged dataset:\n")
-                f.write("-" * 20 + "\n")
-                for col in merged_df.columns:
-                    f.write(f"{col}\n")
-                
-                # Data quality summary
-                f.write("\nData Quality Summary:\n")
-                f.write("-" * 20 + "\n")
-                missing_values = merged_df.isnull().sum()
-                if missing_values.sum() > 0:
-                    f.write(f"Missing values per column:\n")
-                    for col, missing_count in missing_values.items():
-                        if missing_count > 0:
-                            missing_pct = (missing_count / len(merged_df)) * 100
-                            f.write(f"  {col}: {missing_count:,} ({missing_pct:.2f}%)\n")
-                else:
-                    f.write("No missing values found\n")
-            
-            print(f"    merge_data_files: Summary saved to {summary_filename}")
-            
-            # Return success result following the pattern of other methods
-            result = {
-                "success": True,
-                "data": merged_df,  # Include the merged dataframe for potential chaining
-                "output_path": output_path,
-                "summary_path": summary_path,
-                "processed_files": len(all_dataframes),
-                "total_rows": len(merged_df),
-                "total_columns": len(merged_df.columns),
-                "files_merged": len(all_dataframes),
-                "month_distribution": month_distribution.to_dict(),
-                "file_details": file_info,
-                "message": f"Successfully merged {len(all_dataframes)} files into {len(merged_df):,} rows"
-            }
-            
-            print(f"    merge_data_files: Completed successfully - {len(all_dataframes)} files merged into {len(merged_df):,} rows")
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"merge_data_files failed: {str(e)}"
-            print(f"    merge_data_files: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": error_msg,
-                "processed_files": 0
-            }
-        
     def correlation_analysis(self, csv_files=None):
         """
         Analyze Point-Biserial correlations between binary target feature and continuous weather features.
@@ -4796,6 +4620,224 @@ class TrainingPipeline:
         except Exception as e:
             print(f"    Error creating combined non-weather correlation analysis: {str(e)}")
 
+    def merge_data_files(self, csv_files):
+        """
+        Merge multiple training-ready data files into a single dataset for training.
+        
+        This method loads all files from data/output/preprocessed_training_ready,
+        combines them into a unified dataset, and saves the result to 
+        data/output/merged_training_ready. It adds source tracking columns and 
+        creates detailed summary statistics.
+        
+        Parameters:
+        -----------
+        csv_files : list
+            List of CSV file paths to merge (currently not used - method discovers files automatically)
+            
+        Returns:
+        --------
+        dict
+            Results of the merge operation including success status and merged data info
+        """
+        try:
+            print(f"    merge_data_files: Starting merge operation...")
+            
+            # Create output directory using the constant from const.py
+            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+            os.makedirs(merged_training_ready_dir, exist_ok=True)
+            
+            # Find all training-ready CSV files using glob pattern
+            training_ready_pattern = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER, "training_ready_*.csv")
+            training_ready_files = glob.glob(training_ready_pattern)
+            
+            if not training_ready_files:
+                error_msg = "No training-ready files found to merge"
+                print(f"    merge_data_files: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    merge_data_files: Found {len(training_ready_files)} training-ready files")
+            for file_path in training_ready_files:
+                print(f"      - {os.path.basename(file_path)}")
+            
+            # Initialize storage for dataframes and file information
+            all_dataframes = []
+            file_info = []
+            
+            # Process each training-ready file
+            for file_path in training_ready_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"    merge_data_files: Processing {filename}...")
+                    
+                    # Extract month information from filename using regex
+                    # Expected format: training_ready_YYYY_MM.csv
+                    month_match = re.search(r'training_ready_(\d{4})_(\d{2})\.csv$', filename)
+                    
+                    if not month_match:
+                        print(f"    merge_data_files: Warning - Could not extract date from {filename}. Skipping.")
+                        continue
+                    
+                    year = int(month_match.group(1))
+                    month_number = int(month_match.group(2))
+                    
+                    # Read the CSV file
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"    merge_data_files: Warning - File {filename} is empty. Skipping.")
+                        continue
+                    
+                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
+                    
+                    # Add source tracking columns
+                    df = df.copy()  # Avoid modifying the original dataframe
+                    df['source_month'] = month_number
+                    df['source_year'] = year
+                    df['source_file'] = filename
+                    
+                    # Store the dataframe and file info
+                    all_dataframes.append(df)
+                    file_info.append({
+                        'filename': filename,
+                        'year': year,
+                        'month': month_number,
+                        'rows': len(df),
+                        'columns': len(df.columns)
+                    })
+                    
+                    print(f"      Successfully processed {filename}")
+                    
+                except Exception as e:
+                    print(f"    merge_data_files: Error processing {filename}: {str(e)}")
+                    continue
+            
+            # Check if we have any dataframes to merge
+            if not all_dataframes:
+                error_msg = "No valid dataframes found to merge"
+                print(f"    merge_data_files: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Merge all dataframes
+            print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")
+            merged_df = pd.concat(all_dataframes, ignore_index=True)
+            
+            print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
+
+            # Generate summary statistics
+            month_distribution = merged_df['source_month'].value_counts().sort_index()
+            year_distribution = merged_df['source_year'].value_counts().sort_index()
+
+            # Remove source tracking columns before saving
+            columns_to_remove = ['source_month', 'source_year', 'source_file']
+            print(f"    merge_data_files: Dropping source tracking columns: {', '.join(columns_to_remove)}")
+            merged_df = merged_df.drop(columns=columns_to_remove, errors='ignore')
+            
+            print(f"    merge_data_files: Removed source tracking columns. Final shape: {merged_df.shape}")
+
+            # Generate output filename
+            sorted_files = sorted(file_info, key=lambda x: (x['year'], x['month']))
+            first_file = sorted_files[0]
+            last_file = sorted_files[-1]
+
+            # Format: merged_data_YYYY-MM_to_YYYY-MM.csv
+            output_filename = f"merged_data_{first_file['year']}-{first_file['month']:02d}_to_{last_file['year']}-{last_file['month']:02d}.csv"
+            output_path = os.path.join(merged_training_ready_dir, output_filename)
+            
+            # Save merged dataset
+            merged_df.to_csv(output_path, index=False)
+            print(f"    merge_data_files: Saved merged dataset to {output_path}")
+
+            # Save summary information
+            summary_filename = "merge_summary.txt"
+            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write("Merged Training Dataset Summary\n")
+                f.write("=" * 40 + "\n\n")
+                
+                f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Output file: {output_filename}\n")
+                f.write(f"Total rows: {len(merged_df):,}\n")
+                f.write(f"Total columns: {len(merged_df.columns)}\n")
+                f.write(f"Files merged: {len(all_dataframes)}\n\n")
+                
+                # File details
+                f.write("Files processed:\n")
+                f.write("-" * 20 + "\n")
+                for info in file_info:
+                    f.write(f"{info['filename']}: {info['rows']:,} rows, {info['columns']} columns\n")
+                
+                # Month distribution
+                f.write("\nMonth distribution:\n")
+                f.write("-" * 20 + "\n")
+                for month, count in month_distribution.items():
+                    f.write(f"Month {month:02d}: {count:,} rows\n")
+                
+                # Year distribution
+                f.write("\nYear distribution:\n")
+                f.write("-" * 20 + "\n")
+                for year, count in year_distribution.items():
+                    f.write(f"Year {year}: {count:,} rows\n")
+                
+                # Column information
+                f.write("\nColumns in merged dataset:\n")
+                f.write("-" * 20 + "\n")
+                for col in merged_df.columns:
+                    f.write(f"{col}\n")
+                
+                # Data quality summary
+                f.write("\nData Quality Summary:\n")
+                f.write("-" * 20 + "\n")
+                missing_values = merged_df.isnull().sum()
+                if missing_values.sum() > 0:
+                    f.write(f"Missing values per column:\n")
+                    for col, missing_count in missing_values.items():
+                        if missing_count > 0:
+                            missing_pct = (missing_count / len(merged_df)) * 100
+                            f.write(f"  {col}: {missing_count:,} ({missing_pct:.2f}%)\n")
+                else:
+                    f.write("No missing values found\n")
+            
+            print(f"    merge_data_files: Summary saved to {summary_filename}")
+            
+            # Return success result following the pattern of other methods
+            result = {
+                "success": True,
+                "data": merged_df,  # Include the merged dataframe for potential chaining
+                "output_path": output_path,
+                "summary_path": summary_path,
+                "processed_files": len(all_dataframes),
+                "total_rows": len(merged_df),
+                "total_columns": len(merged_df.columns),
+                "files_merged": len(all_dataframes),
+                "month_distribution": month_distribution.to_dict(),
+                "file_details": file_info,
+                "message": f"Successfully merged {len(all_dataframes)} files into {len(merged_df):,} rows"
+            }
+            
+            print(f"    merge_data_files: Completed successfully - {len(all_dataframes)} files merged into {len(merged_df):,} rows")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"merge_data_files failed: {str(e)}"
+            print(f"    merge_data_files: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+
     def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
         """
         Split merged training datasets into train and test sets.
@@ -5344,4 +5386,505 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg,
                 "processed_files": 0
+            }
+        
+    def train_decision_tree(self):
+        """
+        Train a Decision Tree classifier with hyperparameter tuning using RandomizedSearchCV.
+        This method trains on the scaled data from the previous pipeline stages.
+        Uses the DEFAULT_TARGET_FEATURE and checks if it's a classification problem.
+        Saves results and feature importance to data/output/decision_tree folder.
+        
+        Returns:
+        --------
+        dict
+            A summary of the training results, including model performance metrics.
+        """
+        try:
+            print(f"    train_decision_tree: Starting Decision Tree training...")
+            
+            # Import constants
+            from config.const import (
+                DEFAULT_TARGET_FEATURE, CLASSIFICATION_PROBLEM, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
+                DECISION_TREE_PARAM_DISTRIBUTIONS, RANDOM_SEARCH_ITERATIONS, RANDOM_SEARCH_CV_FOLDS,
+                SCORE_METRIC, WEIGHT_DELAY_COLUMN, MAX_SAMPLE_WEIGHT_CLASSIFICATION, TRAIN_DELAY_MINUTES
+            )
+            
+            # Check if target feature is a classification problem
+            if DEFAULT_TARGET_FEATURE not in CLASSIFICATION_PROBLEM:
+                error_msg = f"Target feature '{DEFAULT_TARGET_FEATURE}' is not a classification problem. Expected one of: {CLASSIFICATION_PROBLEM}"
+                print(f"    train_decision_tree: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"    train_decision_tree: Using target feature '{DEFAULT_TARGET_FEATURE}' for classification")
+            
+            # Create output directory
+            output_dir = os.path.join(self.project_root, "data/output/decision_tree")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Find train and test files
+            scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train_scaled.csv")
+            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test_scaled.csv")
+            
+            train_files = glob.glob(train_pattern)
+            test_files = glob.glob(test_pattern)
+            
+            if not train_files:
+                error_msg = f"No training files found matching pattern: {train_pattern}"
+                print(f"    train_decision_tree: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            if not test_files:
+                error_msg = f"No test files found matching pattern: {test_pattern}"
+                print(f"    train_decision_tree: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"    train_decision_tree: Found {len(train_files)} training files and {len(test_files)} test files")
+            
+            # Process all train/test file pairs
+            all_results = []
+            total_train_samples = 0
+            total_test_samples = 0
+            
+            for train_file in train_files:
+                try:
+                    # Find corresponding test file
+                    train_filename = os.path.basename(train_file)
+                    test_filename = train_filename.replace('_train_scaled.csv', '_test_scaled.csv')
+                    test_file = os.path.join(scaled_data_dir, test_filename)
+                    
+                    if not os.path.exists(test_file):
+                        print(f"    train_decision_tree: Warning - No corresponding test file for {train_filename}. Skipping.")
+                        continue
+                    
+                    print(f"    train_decision_tree: Processing {train_filename} and {test_filename}")
+                    
+                    # Load data
+                    train_df = pd.read_csv(train_file)
+                    test_df = pd.read_csv(test_file)
+                    
+                    # Check if target column exists
+                    if DEFAULT_TARGET_FEATURE not in train_df.columns:
+                        print(f"    train_decision_tree: Warning - Target feature '{DEFAULT_TARGET_FEATURE}' not found in {train_filename}. Skipping.")
+                        continue
+                    
+                    # Prepare features and target
+                    X_train = train_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                    y_train = train_df[DEFAULT_TARGET_FEATURE]
+                    X_test = test_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                    y_test = test_df[DEFAULT_TARGET_FEATURE]
+                    
+                    # Remove any non-numeric columns
+                    numeric_cols = X_train.select_dtypes(include=[np.number]).columns
+                    X_train = X_train[numeric_cols]
+                    X_test = X_test[numeric_cols]
+                    
+                    print(f"    train_decision_tree: Using {len(numeric_cols)} numeric features")
+                    print(f"    train_decision_tree: Train samples: {len(X_train)}, Test samples: {len(X_test)}")
+                    
+                    # Create sample weights based on delay magnitude if weight column exists
+                    sample_weights = None
+                    if WEIGHT_DELAY_COLUMN and WEIGHT_DELAY_COLUMN in train_df.columns:
+                        print(f"    train_decision_tree: Creating sample weights based on '{WEIGHT_DELAY_COLUMN}'")
+                        sample_weights = np.ones(len(y_train))
+                        
+                        # Get delay values for each training sample
+                        delays = train_df[WEIGHT_DELAY_COLUMN].values
+                        
+                        # Apply weights - higher delays get higher weights
+                        delayed_idx = (delays > TRAIN_DELAY_MINUTES)
+                        if np.any(delayed_idx):
+                            # Normalize delay values by mean positive delay
+                            mean_delay = delays[delayed_idx].mean()
+                            # Use configured maximum weight
+                            sample_weights[delayed_idx] = np.minimum(
+                                MAX_SAMPLE_WEIGHT_CLASSIFICATION, 
+                                1 + delays[delayed_idx]/mean_delay
+                            )
+                        
+                        print(f"    train_decision_tree: Sample weights range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
+                    
+                    # Set up cross-validation strategy
+                    cv_strategy = StratifiedKFold(
+                        n_splits=RANDOM_SEARCH_CV_FOLDS,
+                        shuffle=True,
+                        random_state=42
+                    )
+                    
+                    # Initialize Decision Tree and RandomizedSearchCV
+                    dt = DecisionTreeClassifier(random_state=42)
+                    
+                    print(f"    train_decision_tree: Starting RandomizedSearchCV with {RANDOM_SEARCH_ITERATIONS} iterations and {RANDOM_SEARCH_CV_FOLDS}-fold CV...")
+                    
+                    random_search = RandomizedSearchCV(
+                        dt, 
+                        param_distributions=DECISION_TREE_PARAM_DISTRIBUTIONS,
+                        n_iter=RANDOM_SEARCH_ITERATIONS,
+                        cv=cv_strategy,
+                        scoring=SCORE_METRIC,
+                        random_state=42,
+                        n_jobs=-1,
+                        verbose=0
+                    )
+                    
+                    # Fit RandomizedSearchCV with sample weights if available
+                    if sample_weights is not None:
+                        random_search.fit(X_train, y_train, sample_weight=sample_weights)
+                    else:
+                        random_search.fit(X_train, y_train)
+                    
+                    best_params = random_search.best_params_
+                    best_cv_score = random_search.best_score_
+                    
+                    print(f"    train_decision_tree: Best CV Score ({SCORE_METRIC}): {best_cv_score:.4f}")
+                    print(f"    train_decision_tree: Best Parameters: {best_params}")
+                    
+                    # Train final model with best parameters
+                    best_dt = DecisionTreeClassifier(**best_params, random_state=42)
+                    
+                    if sample_weights is not None:
+                        best_dt.fit(X_train, y_train, sample_weight=sample_weights)
+                    else:
+                        best_dt.fit(X_train, y_train)
+                    
+                    # Make predictions
+                    y_pred = best_dt.predict(X_test)
+                    y_pred_proba = best_dt.predict_proba(X_test)
+                    
+                    # Calculate comprehensive metrics
+                    metrics = self._calculate_classification_metrics(y_test, y_pred, y_pred_proba)
+                    
+                    # Add CV score to metrics
+                    metrics['best_cv_score'] = best_cv_score
+                    metrics['optimized_metric_name'] = SCORE_METRIC
+                    
+                    # Generate and save confusion matrix
+                    conf_matrix = confusion_matrix(y_test, y_pred)
+                    conf_matrix_result = self._save_confusion_matrix(
+                        conf_matrix, y_test, y_pred, file_identifier, output_dir
+                    )
+                    
+                    # Get feature importance
+                    feature_importance = pd.DataFrame({
+                        'feature': X_train.columns,
+                        'importance': best_dt.feature_importances_
+                    }).sort_values('importance', ascending=False)
+                    
+                    print(f"    train_decision_tree: Test {SCORE_METRIC}: {metrics.get(SCORE_METRIC, 'N/A'):.4f}")
+                    print(f"    train_decision_tree: Test Accuracy: {metrics['accuracy']:.4f}")
+                    print(f"    train_decision_tree: Test Balanced Accuracy: {metrics['balanced_accuracy']:.4f}")
+                    
+                    # Save results for this file
+                    file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
+                    
+                    # Save model
+                    model_filename = f"decision_tree_model_{file_identifier}.joblib"
+                    model_path = os.path.join(output_dir, model_filename)
+                    joblib.dump(best_dt, model_path)
+                    
+                    # Save feature importance
+                    importance_filename = f"feature_importance_{file_identifier}.csv"
+                    importance_path = os.path.join(output_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    
+                    print(f"    train_decision_tree: Saved model, feature importance, and confusion matrix for {file_identifier}")
+                    
+                    # Save detailed metrics
+                    metrics_filename = f"metrics_{file_identifier}.json"
+                    metrics_path = os.path.join(output_dir, metrics_filename)
+                    
+                    # Prepare metrics for JSON serialization
+                    json_metrics = {
+                        'file_identifier': file_identifier,
+                        'train_file': train_filename,
+                        'test_file': test_filename,
+                        'train_samples': len(X_train),
+                        'test_samples': len(X_test),
+                        'features_used': len(X_train.columns),
+                        'target_feature': DEFAULT_TARGET_FEATURE,
+                        'best_parameters': best_params,
+                        'best_cv_score': float(best_cv_score),
+                        'score_metric': SCORE_METRIC,
+                        'sample_weights_used': sample_weights is not None,
+                        'confusion_matrix': conf_matrix.tolist(),
+                        'confusion_matrix_files': conf_matrix_result,
+                        'timestamp': datetime.now().isoformat(),
+                        **{k: float(v) if isinstance(v, (int, float, np.number)) else v 
+                        for k, v in metrics.items()}
+                    }
+                    
+                    with open(metrics_path, 'w') as f:
+                        json.dump(json_metrics, f, indent=2)
+                    
+                    # Add to results summary
+                    all_results.append({
+                        'file_identifier': file_identifier,
+                        'train_samples': len(X_train),
+                        'test_samples': len(X_test),
+                        'best_cv_score': best_cv_score,
+                        'test_score': metrics.get(SCORE_METRIC, 0),
+                        'test_accuracy': metrics['accuracy'],
+                        'test_balanced_accuracy': metrics['balanced_accuracy']
+                    })
+                    
+                    total_train_samples += len(X_train)
+                    total_test_samples += len(X_test)
+                    
+                    print(f"    train_decision_tree: Completed processing {file_identifier}")
+                    
+                except Exception as e:
+                    print(f"    train_decision_tree: Error processing {train_file}: {str(e)}")
+                    continue
+            
+            # Save overall summary
+            if all_results:
+                summary_filename = "decision_tree_training_summary.json"
+                summary_path = os.path.join(output_dir, summary_filename)
+                
+                # Calculate aggregate metrics
+                avg_cv_score = np.mean([r['best_cv_score'] for r in all_results])
+                avg_test_score = np.mean([r['test_score'] for r in all_results])
+                avg_accuracy = np.mean([r['test_accuracy'] for r in all_results])
+                avg_balanced_accuracy = np.mean([r['test_balanced_accuracy'] for r in all_results])
+                
+                summary = {
+                    'training_completed': datetime.now().isoformat(),
+                    'target_feature': DEFAULT_TARGET_FEATURE,
+                    'score_metric': SCORE_METRIC,
+                    'total_files_processed': len(all_results),
+                    'total_train_samples': total_train_samples,
+                    'total_test_samples': total_test_samples,
+                    'hyperparameter_search': {
+                        'method': 'RandomizedSearchCV',
+                        'iterations': RANDOM_SEARCH_ITERATIONS,
+                        'cv_folds': RANDOM_SEARCH_CV_FOLDS,
+                        'param_distributions': str(DECISION_TREE_PARAM_DISTRIBUTIONS)
+                    },
+                    'aggregate_metrics': {
+                        f'avg_cv_{SCORE_METRIC}': float(avg_cv_score),
+                        f'avg_test_{SCORE_METRIC}': float(avg_test_score),
+                        'avg_test_accuracy': float(avg_accuracy),
+                        'avg_test_balanced_accuracy': float(avg_balanced_accuracy)
+                    },
+                    'file_results': all_results
+                }
+                
+                with open(summary_path, 'w') as f:
+                    json.dump(summary, f, indent=2)
+                
+                print(f"    train_decision_tree: Training completed successfully!")
+                print(f"    train_decision_tree: Processed {len(all_results)} file pairs")
+                print(f"    train_decision_tree: Average CV {SCORE_METRIC}: {avg_cv_score:.4f}")
+                print(f"    train_decision_tree: Average Test {SCORE_METRIC}: {avg_test_score:.4f}")
+                print(f"    train_decision_tree: Generated models, feature importance, and confusion matrices")
+                print(f"    train_decision_tree: Results saved to: {output_dir}")
+                
+                return {
+                    "success": True,
+                    "files_processed": len(all_results),
+                    "total_train_samples": total_train_samples,
+                    "total_test_samples": total_test_samples,
+                    "avg_cv_score": avg_cv_score,
+                    "avg_test_score": avg_test_score,
+                    "avg_accuracy": avg_accuracy,
+                    "avg_balanced_accuracy": avg_balanced_accuracy,
+                    "output_directory": output_dir,
+                    "target_feature": DEFAULT_TARGET_FEATURE,
+                    "score_metric": SCORE_METRIC
+                }
+            else:
+                error_msg = "No files were successfully processed"
+                print(f"    train_decision_tree: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except Exception as e:
+            error_msg = f"Error in Decision Tree training: {str(e)}"
+            print(f"    train_decision_tree: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    def _calculate_classification_metrics(self, y_true, y_pred, y_pred_proba=None):
+        """
+        Calculate comprehensive classification metrics.
+        
+        Parameters:
+        -----------
+        y_true : array-like
+            True labels
+        y_pred : array-like  
+            Predicted labels
+        y_pred_proba : array-like, optional
+            Predicted probabilities for positive class
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing various classification metrics
+        """
+        metrics = {}
+        
+        # Basic metrics
+        metrics['accuracy'] = accuracy_score(y_true, y_pred)
+        metrics['balanced_accuracy'] = balanced_accuracy_score(y_true, y_pred)
+        metrics['f1'] = f1_score(y_true, y_pred, average='binary')
+        metrics['cohen_kappa'] = cohen_kappa_score(y_true, y_pred)
+        
+        # Classification report metrics
+        report = classification_report(y_true, y_pred, output_dict=True)
+        metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
+        metrics['weighted_avg_precision'] = report['weighted avg']['precision']
+        metrics['weighted_avg_recall'] = report['weighted avg']['recall']
+        
+        # Probability-based metrics (if available)
+        if y_pred_proba is not None and len(np.unique(y_true)) == 2:
+            try:
+                # For binary classification, use positive class probabilities
+                if y_pred_proba.ndim > 1:
+                    pos_proba = y_pred_proba[:, 1]
+                else:
+                    pos_proba = y_pred_proba
+                    
+                metrics['roc_auc'] = roc_auc_score(y_true, pos_proba)
+                metrics['pr_auc'] = average_precision_score(y_true, pos_proba)
+            except:
+                metrics['roc_auc'] = None
+                metrics['pr_auc'] = None
+        else:
+            metrics['roc_auc'] = None
+            metrics['pr_auc'] = None
+        
+        # Class-specific metrics
+        for class_label in report:
+            if class_label not in ['weighted avg', 'macro avg', 'accuracy']:
+                metrics[f'class_{class_label}_f1'] = report[class_label]['f1-score']
+                metrics[f'class_{class_label}_precision'] = report[class_label]['precision']
+                metrics[f'class_{class_label}_recall'] = report[class_label]['recall']
+                metrics[f'class_{class_label}_support'] = report[class_label]['support']
+        
+        # Class distribution
+        unique, counts = np.unique(y_true, return_counts=True)
+        for class_val, count in zip(unique, counts):
+            metrics[f'class_{class_val}_test_count'] = count
+            metrics[f'class_{class_val}_test_percentage'] = (count / len(y_true)) * 100
+        
+        return metrics
+
+    def _save_confusion_matrix(self, conf_matrix, y_test, y_pred, file_identifier, output_dir):
+        """
+        Save confusion matrix as both CSV data and visualization plot.
+        
+        Parameters:
+        -----------
+        conf_matrix : array-like
+            Confusion matrix from sklearn.metrics.confusion_matrix
+        y_test : array-like
+            True labels
+        y_pred : array-like
+            Predicted labels  
+        file_identifier : str
+            Identifier for the file being processed
+        output_dir : str
+            Directory to save the confusion matrix files
+            
+        Returns:
+        --------
+        dict
+            Dictionary with paths to saved confusion matrix files
+        """
+        try:
+            # Get unique class labels
+            unique_labels = np.unique(np.concatenate([y_test, y_pred]))
+            
+            # Create confusion matrix DataFrame
+            conf_df = pd.DataFrame(
+                conf_matrix,
+                index=[f'True_{label}' for label in unique_labels],
+                columns=[f'Pred_{label}' for label in unique_labels]
+            )
+            
+            # Save confusion matrix as CSV
+            csv_filename = f"confusion_matrix_{file_identifier}.csv"
+            csv_path = os.path.join(output_dir, csv_filename)
+            conf_df.to_csv(csv_path)
+            
+            # Create and save confusion matrix visualization
+            plt.figure(figsize=(8, 6))
+            
+            # Create heatmap
+            sns.heatmap(
+                conf_matrix, 
+                annot=True, 
+                fmt='d', 
+                cmap='Blues',
+                xticklabels=[f'Predicted {label}' for label in unique_labels],
+                yticklabels=[f'Actual {label}' for label in unique_labels],
+                cbar_kws={'label': 'Count'}
+            )
+            
+            plt.title(f'Confusion Matrix - {file_identifier}', fontsize=14, fontweight='bold')
+            plt.xlabel('Predicted Label', fontsize=12)
+            plt.ylabel('Actual Label', fontsize=12)
+            
+            # Add classification metrics as text
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+            
+            accuracy = accuracy_score(y_test, y_pred)
+            
+            # Handle binary vs multiclass metrics
+            if len(unique_labels) == 2:
+                precision = precision_score(y_test, y_pred, average='binary')
+                recall = recall_score(y_test, y_pred, average='binary')
+                f1 = f1_score(y_test, y_pred, average='binary')
+            else:
+                precision = precision_score(y_test, y_pred, average='weighted')
+                recall = recall_score(y_test, y_pred, average='weighted')
+                f1 = f1_score(y_test, y_pred, average='weighted')
+            
+            # Add metrics text box
+            metrics_text = f'Accuracy: {accuracy:.3f}\nPrecision: {precision:.3f}\nRecall: {recall:.3f}\nF1-Score: {f1:.3f}'
+            plt.figtext(0.02, 0.02, metrics_text, fontsize=10, 
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.7))
+            
+            plt.tight_layout()
+            
+            # Save plot
+            plot_filename = f"confusion_matrix_{file_identifier}.png"
+            plot_path = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()  # Close the figure to free memory
+            
+            print(f"    train_decision_tree: Saved confusion matrix to {csv_filename} and {plot_filename}")
+            
+            return {
+                'csv_file': csv_filename,
+                'plot_file': plot_filename,
+                'csv_path': csv_path,
+                'plot_path': plot_path
+            }
+            
+        except Exception as e:
+            print(f"    train_decision_tree: Warning - Failed to save confusion matrix: {str(e)}")
+            return {
+                'csv_file': None,
+                'plot_file': None,
+                'csv_path': None,
+                'plot_path': None,
+                'error': str(e)
             }
