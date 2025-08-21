@@ -131,6 +131,7 @@ dist
 
 # CSV files
 *.csv
+*.json
 
 # Python
 __pycache__/
