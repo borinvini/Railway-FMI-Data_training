@@ -11,6 +11,9 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
 from src.file_utils import generate_output_path
+
+import matplotlib.pyplot as plt
+import seaborn as sns
             
 
 from config.const import (
@@ -3198,6 +3201,33 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ scale_weather_features (disabled)")
+
+        if state_machine.get("correlation_analysis", False):
+            try:
+                print(f"    → correlation_analysis (Point-Biserial)")
+                correlation_result = self.correlation_analysis(csv_files)
+                
+                if correlation_result and correlation_result.get("success", False):
+                    result["steps_executed"].append("correlation_analysis")
+                    result["file_info"]["processed_files"] = correlation_result.get("processed_files", 0)
+                    print(f"      ✓ Successfully completed Point-Biserial correlation analysis")
+                    print(f"      ✓ Files analyzed: {correlation_result.get('processed_files', 0)}")
+                    print(f"      ✓ Weather features: {correlation_result.get('total_weather_features', 0)}")
+                    print(f"      ✓ Analysis type: {correlation_result.get('analysis_type', 'Point-Biserial Correlation')}")
+                    print(f"      ✓ Results saved to: {correlation_result.get('output_path', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = correlation_result.get("error", "Point-Biserial correlation_analysis returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"Point-Biserial correlation_analysis failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ correlation_analysis (Point-Biserial) (disabled)")
         
         return result
     
@@ -3419,6 +3449,798 @@ class TrainingPipeline:
                 "processed_files": 0
             }
         
+    def correlation_analysis(self, csv_files=None):
+        """
+        Analyze Point-Biserial correlations between binary target feature and continuous weather features.
+        
+        This method finds all merged scaled training data files in data/output/4-merged_scaled_training_ready,
+        calculates Point-Biserial correlations between the target feature (trainDelayed - binary) 
+        and all weather features (continuous and scaled), and creates Point-Biserial correlation visualizations.
+        
+        Point-Biserial correlation is the appropriate correlation measure when one variable 
+        is binary (trainDelayed: True/False) and the other is continuous (weather measurements).
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (currently not used - method discovers files automatically)
+            
+        Returns:
+        --------
+        dict
+            Results of the Point-Biserial correlation analysis including success status and analysis info
+        """
+        try:
+            print(f"    correlation_analysis: Starting Point-Biserial correlation analysis on scaled training data...")
+            
+            # Create output directory for correlation analysis results
+            correlation_output_dir = os.path.join(self.project_root, "data/output/correlation_analysis")
+            os.makedirs(correlation_output_dir, exist_ok=True)
+            
+            # Find all merged scaled training data files using glob pattern
+            merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
+            merged_data_files = glob.glob(merged_data_pattern)
+            
+            if not merged_data_files:
+                error_msg = "No merged scaled training data files found for Point-Biserial correlation analysis"
+                print(f"    correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    correlation_analysis: Found {len(merged_data_files)} merged scaled training data files")
+            for file_path in merged_data_files:
+                print(f"      - {os.path.basename(file_path)}")
+            
+            # Initialize storage for results
+            correlation_results = []
+            all_correlations = []
+            total_files_processed = 0
+            
+            # Process each merged data file
+            for file_path in merged_data_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"    correlation_analysis: Processing {filename}...")
+                    
+                    # Read the merged dataset
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"    correlation_analysis: Warning - File {filename} is empty. Skipping.")
+                        continue
+                    
+                    # Check if target feature exists and is binary
+                    if DEFAULT_TARGET_FEATURE not in df.columns:
+                        print(f"    correlation_analysis: Warning - Target feature '{DEFAULT_TARGET_FEATURE}' not found in {filename}. Skipping.")
+                        continue
+                    
+                    # Verify target is binary for Point-Biserial correlation
+                    target_unique_values = df[DEFAULT_TARGET_FEATURE].dropna().unique()
+                    if len(target_unique_values) > 2:
+                        print(f"    correlation_analysis: Warning - Target feature has more than 2 unique values. Point-Biserial correlation assumes binary target.")
+                    
+                    # Filter for available weather features in the dataset
+                    available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in df.columns]
+                    
+                    if not available_weather_features:
+                        print(f"    correlation_analysis: Warning - No weather features found in {filename}. Skipping.")
+                        continue
+                    
+                    print(f"      Found {len(available_weather_features)} weather features for Point-Biserial analysis")
+                    
+                    # Calculate Point-Biserial correlations between binary target and continuous weather features
+                    target_series = df[DEFAULT_TARGET_FEATURE]
+                    correlations = {}
+                    
+                    for weather_feature in available_weather_features:
+                        try:
+                            # Calculate Point-Biserial correlation (using Pearson's formula which is equivalent)
+                            weather_series = df[weather_feature]
+                            
+                            # Only calculate correlation if both series have valid data
+                            mask = pd.notna(target_series) & pd.notna(weather_series)
+                            if mask.sum() < 10:  # Need at least 10 valid pairs
+                                print(f"        Warning: Insufficient valid data for {weather_feature} Point-Biserial correlation")
+                                correlations[weather_feature] = np.nan
+                                continue
+                            
+                            # Point-Biserial correlation (mathematically equivalent to Pearson when one variable is binary)
+                            correlation = target_series[mask].corr(weather_series[mask])
+                            correlations[weather_feature] = correlation
+                            
+                            print(f"        {weather_feature}: r_pb = {correlation:.4f}")
+                            
+                        except Exception as e:
+                            print(f"        Warning: Failed to calculate Point-Biserial correlation for {weather_feature}: {str(e)}")
+                            correlations[weather_feature] = np.nan
+                    
+                    # Store results for this file
+                    target_proportion = target_series.mean() if target_series.dtype in [bool, int, float] else None
+                    file_result = {
+                        'filename': filename,
+                        'correlations': correlations,
+                        'available_features': available_weather_features,
+                        'total_samples': len(df),
+                        'target_proportion': target_proportion,  # Proportion of positive cases
+                        'target_name': DEFAULT_TARGET_FEATURE
+                    }
+                    correlation_results.append(file_result)
+                    all_correlations.append(correlations)
+                    
+                    # Create individual Point-Biserial correlation plot for this file
+                    self._create_correlation_plot(
+                        correlations, 
+                        filename,
+                        correlation_output_dir,
+                        f"Point-Biserial Correlation: {DEFAULT_TARGET_FEATURE} vs Weather Features\nFile: {filename}"
+                    )
+                    
+                    # Create distribution plots for this file
+                    self._create_distribution_plots(
+                        df,
+                        available_weather_features,
+                        filename,
+                        correlation_output_dir
+                    )
+                    
+                    total_files_processed += 1
+                    print(f"      Successfully processed Point-Biserial correlation analysis for {filename}")
+                    
+                except Exception as e:
+                    print(f"    correlation_analysis: Error processing {filename}: {str(e)}")
+                    continue
+            
+            # Check if we processed any files successfully
+            if not correlation_results:
+                error_msg = "No files were successfully processed for Point-Biserial correlation analysis"
+                print(f"    correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Create combined Point-Biserial correlation analysis across all files
+            if len(correlation_results) > 1:
+                self._create_combined_correlation_analysis(correlation_results, correlation_output_dir)
+            
+            # Save detailed Point-Biserial correlation summary
+            summary_filename = "point_biserial_analysis_summary.txt"
+            summary_path = os.path.join(correlation_output_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write("Point-Biserial Correlation Analysis Summary\n")
+                f.write("=" * 55 + "\n\n")
+                
+                f.write(f"Analysis timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Target feature: {DEFAULT_TARGET_FEATURE} (Binary variable)\n")
+                f.write(f"Weather features analyzed: {len(ALL_WEATHER_FEATURES)} (Continuous variables)\n")
+                f.write(f"Files processed: {total_files_processed}\n\n")
+                
+                f.write("Analysis Components Generated:\n")
+                f.write("• Point-Biserial correlation plots for each scaled training file\n")
+                f.write("• Feature distribution plots for each scaled training file\n")
+                f.write("• Comparative distribution plots (delayed vs not delayed) using scaled features\n")
+                f.write("• Combined correlation analysis across all scaled training files\n\n")
+                
+                f.write("Point-Biserial Correlation Overview:\n")
+                f.write("This analysis measures the correlation between a binary variable\n")
+                f.write(f"({DEFAULT_TARGET_FEATURE}: True/False) and continuous scaled variables (weather measurements).\n")
+                f.write("The correlation coefficient ranges from -1 to +1, where:\n")
+                f.write("• Positive values: Higher scaled weather values associate with more train delays\n")
+                f.write("• Negative values: Higher scaled weather values associate with fewer train delays\n")
+                f.write("• Values near 0: Little to no linear relationship\n\n")
+                
+                # File-by-file results
+                f.write("File-by-file Analysis:\n")
+                f.write("-" * 30 + "\n")
+                for result in correlation_results:
+                    f.write(f"\nFile: {result['filename']}\n")
+                    f.write(f"  Total samples: {result['total_samples']:,}\n")
+                    if result['target_proportion'] is not None:
+                        f.write(f"  Delay proportion: {result['target_proportion']:.4f} ({result['target_proportion']*100:.2f}%)\n")
+                    f.write(f"  Weather features available: {len(result['available_features'])}\n")
+                    
+                    f.write(f"  Point-Biserial Correlations:\n")
+                    sorted_correlations = sorted(
+                        [(k, v) for k, v in result['correlations'].items() if not pd.isna(v)],
+                        key=lambda x: abs(x[1]),
+                        reverse=True
+                    )
+                    
+                    for feature, corr in sorted_correlations:
+                        f.write(f"    {feature}: r_pb = {corr:+.4f}\n")
+                    
+                    # Identify strongest correlations
+                    if sorted_correlations:
+                        strongest = sorted_correlations[0]
+                        f.write(f"  Strongest correlation: {strongest[0]} (r_pb = {strongest[1]:+.4f})\n")
+            
+            print(f"    correlation_analysis: Point-Biserial analysis on scaled training data completed for {total_files_processed} files")
+            print(f"    correlation_analysis: Results saved to {correlation_output_dir}")
+            
+            # Return success result
+            result = {
+                "success": True,
+                "processed_files": total_files_processed,
+                "output_path": correlation_output_dir,
+                "summary_path": summary_path,
+                "correlation_results": correlation_results,
+                "total_weather_features": len(ALL_WEATHER_FEATURES),
+                "analysis_type": "Point-Biserial Correlation",
+                "message": f"Successfully analyzed Point-Biserial correlations for {total_files_processed} scaled training files"
+            }
+            
+            print(f"    correlation_analysis: Completed successfully - {total_files_processed} scaled training files analyzed")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"Point-Biserial correlation_analysis failed: {str(e)}"
+            print(f"    correlation_analysis: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+
+    def _create_correlation_plot(self, correlations, filename, output_dir, title):
+        """
+        Create a Point-Biserial Correlation Analysis plot for a single file.
+        
+        Parameters:
+        -----------
+        correlations : dict
+            Dictionary of feature names and their correlation values
+        filename : str
+            Name of the source file
+        output_dir : str
+            Directory to save the plot
+        title : str
+            Title for the plot
+        """
+        try:
+            # Filter out NaN correlations
+            valid_correlations = {k: v for k, v in correlations.items() if not pd.isna(v)}
+            
+            if not valid_correlations:
+                print(f"        No valid correlations to plot for {filename}")
+                return
+            
+            # Sort correlations by absolute value for better visualization
+            sorted_correlations = sorted(valid_correlations.items(), key=lambda x: abs(x[1]), reverse=True)
+            features = [item[0] for item in sorted_correlations]
+            corr_values = [item[1] for item in sorted_correlations]
+            
+            # Create figure with single plot
+            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+            
+            # Horizontal bar chart of Point-Biserial correlations
+            colors = ['red' if val < 0 else 'steelblue' for val in corr_values]
+            bars = ax.barh(range(len(features)), corr_values, color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+            
+            # Customize plot
+            ax.set_yticks(range(len(features)))
+            ax.set_yticklabels(features, fontsize=11)
+            ax.set_xlabel('Point-Biserial Correlation Coefficient (r_pb)', fontsize=12)
+            ax.set_title(f'Point-Biserial Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Weather Features', fontsize=14, pad=20)
+            ax.axvline(x=0, color='black', linestyle='-', linewidth=1)
+            ax.grid(axis='x', alpha=0.3)
+            ax.set_xlim(-1, 1)
+            
+            # Add value labels on bars
+            for i, (bar, value) in enumerate(zip(bars, corr_values)):
+                label_x = value + (0.02 if value >= 0 else -0.02)
+                ha = 'left' if value >= 0 else 'right'
+                ax.text(label_x, bar.get_y() + bar.get_height()/2, f'{value:.3f}', 
+                        ha=ha, va='center', fontsize=10, fontweight='bold')
+            
+            # Add interpretation guide
+            interpretation_text = (
+                "Interpretation Guide:\n"
+                "• |r_pb| ≥ 0.7: Very Strong relationship\n"
+                "• 0.5 ≤ |r_pb| < 0.7: Strong relationship\n"
+                "• 0.3 ≤ |r_pb| < 0.5: Moderate relationship\n"
+                "• 0.1 ≤ |r_pb| < 0.3: Weak relationship\n"
+                "• |r_pb| < 0.1: Very weak/no relationship\n\n"
+                "Positive: Higher weather values → More delays\n"
+                "Negative: Higher weather values → Fewer delays"
+            )
+            
+            fig.text(0.02, 0.02, interpretation_text, fontsize=10, 
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8),
+                    verticalalignment='bottom')
+            
+            plt.suptitle(f'Point-Biserial Correlation Analysis: {filename}', fontsize=15, y=0.95)
+            plt.tight_layout()
+            plt.subplots_adjust(bottom=0.25)
+            
+            # Save plot
+            safe_filename = filename.replace('.csv', '').replace(' ', '_')
+            plot_filename = f"point_biserial_correlation_{safe_filename}.png"
+            plot_path = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"        Saved point-biserial correlation plot: {plot_filename}")
+            
+        except Exception as e:
+            print(f"        Warning: Failed to create plot for {filename}: {str(e)}")
+
+    def _create_distribution_plots(self, df, weather_features, filename, output_dir):
+        """
+        Create distribution plots for target feature and weather features.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            The dataset containing all features
+        weather_features : list
+            List of weather feature column names
+        filename : str
+            Name of the source file
+        output_dir : str
+            Directory to save the plots
+        """
+        try:
+            print(f"        Creating distribution plots for {filename}...")
+            
+            # Check if target feature exists
+            if DEFAULT_TARGET_FEATURE not in df.columns:
+                print(f"        Warning: Target feature '{DEFAULT_TARGET_FEATURE}' not found for distribution plots")
+                return
+            
+            # Filter weather features that exist in the dataframe
+            valid_weather_features = [col for col in weather_features if col in df.columns]
+            
+            if not valid_weather_features:
+                print(f"        Warning: No valid weather features found for distribution plots")
+                return
+            
+            # Create comprehensive distribution analysis
+            n_features = len(valid_weather_features)
+            n_cols = 3
+            n_rows = max(2, (n_features + n_cols - 1) // n_cols + 1)  # +1 for target distribution
+            
+            fig = plt.figure(figsize=(18, 6 * n_rows))
+            gs = fig.add_gridspec(n_rows, n_cols, hspace=0.4, wspace=0.3)
+            
+            # 1. Target feature distribution (first row, span all columns)
+            ax_target = fig.add_subplot(gs[0, :])
+            target_counts = df[DEFAULT_TARGET_FEATURE].value_counts()
+            target_proportions = df[DEFAULT_TARGET_FEATURE].value_counts(normalize=True)
+            
+            bars = ax_target.bar(
+                ['Not Delayed (False)', 'Delayed (True)'], 
+                [target_counts.get(False, 0), target_counts.get(True, 0)],
+                color=['lightgreen', 'lightcoral'], 
+                alpha=0.7,
+                edgecolor='black',
+                linewidth=1
+            )
+            
+            ax_target.set_title(f'{DEFAULT_TARGET_FEATURE} Distribution\nTotal samples: {len(df):,}', 
+                            fontsize=14, fontweight='bold')
+            ax_target.set_ylabel('Count', fontsize=12)
+            
+            # Add percentage labels on bars
+            for i, (bar, count) in enumerate(zip(bars, [target_counts.get(False, 0), target_counts.get(True, 0)])):
+                percentage = (count / len(df)) * 100
+                ax_target.text(bar.get_x() + bar.get_width()/2, bar.get_height() + len(df)*0.01,
+                            f'{count:,}\n({percentage:.1f}%)', 
+                            ha='center', va='bottom', fontweight='bold', fontsize=11)
+            
+            ax_target.grid(axis='y', alpha=0.3)
+            
+            # 2. Weather feature distributions and comparative box plots
+            for i, feature in enumerate(valid_weather_features):
+                row = (i // n_cols) + 1
+                col = i % n_cols
+                
+                # Create subplot for this feature
+                ax = fig.add_subplot(gs[row, col])
+                
+                # Get feature data, handling missing values
+                feature_data = df[feature].dropna()
+                if len(feature_data) == 0:
+                    ax.text(0.5, 0.5, f'No valid data\nfor {feature}', 
+                        ha='center', va='center', transform=ax.transAxes,
+                        fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    ax.set_title(feature, fontsize=12, fontweight='bold')
+                    continue
+                
+                # Create combined plot: histogram + box plot comparison
+                # Top: Histogram of the feature
+                ax_hist = ax
+                ax_hist.hist(feature_data, bins=30, alpha=0.7, color='steelblue', 
+                            edgecolor='black', linewidth=0.5)
+                ax_hist.set_title(f'{feature} Distribution', fontsize=11, fontweight='bold')
+                ax_hist.set_xlabel(feature, fontsize=10)
+                ax_hist.set_ylabel('Frequency', fontsize=10)
+                ax_hist.grid(axis='y', alpha=0.3)
+                
+                # Add statistics text
+                stats_text = (f'Mean: {feature_data.mean():.2f}\n'
+                            f'Std: {feature_data.std():.2f}\n'
+                            f'Missing: {df[feature].isna().sum():,}')
+                ax_hist.text(0.02, 0.98, stats_text, transform=ax_hist.transAxes,
+                            verticalalignment='top', fontsize=9,
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            plt.suptitle(f'Feature Distributions Analysis: {filename}', fontsize=16, y=0.98)
+            plt.tight_layout()
+            
+            # Save distribution plot
+            safe_filename = filename.replace('.csv', '').replace(' ', '_')
+            dist_plot_filename = f"distributions_{safe_filename}.png"
+            dist_plot_path = os.path.join(output_dir, dist_plot_filename)
+            plt.savefig(dist_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Create separate comparative box plots (delayed vs non-delayed)
+            self._create_comparative_distributions(df, valid_weather_features, filename, output_dir)
+            
+            print(f"        Saved distribution plots: {dist_plot_filename}")
+            
+        except Exception as e:
+            print(f"        Warning: Failed to create distribution plots for {filename}: {str(e)}")
+
+    def _create_comparative_distributions(self, df, weather_features, filename, output_dir):
+        """
+        Create comparative distribution plots showing weather features for delayed vs non-delayed trains.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            The dataset containing all features
+        weather_features : list
+            List of weather feature column names
+        filename : str
+            Name of the source file
+        output_dir : str
+            Directory to save the plots
+        """
+        try:
+            print(f"        Creating comparative distribution plots for {filename}...")
+            
+            # Separate data by target feature
+            delayed_data = df[df[DEFAULT_TARGET_FEATURE] == True]
+            not_delayed_data = df[df[DEFAULT_TARGET_FEATURE] == False]
+            
+            if len(delayed_data) == 0 or len(not_delayed_data) == 0:
+                print(f"        Warning: Insufficient data for comparative analysis")
+                return
+            
+            n_features = len(weather_features)
+            n_cols = 2
+            n_rows = (n_features + n_cols - 1) // n_cols
+            
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 5 * n_rows))
+            if n_rows == 1:
+                axes = axes.reshape(1, -1)
+            elif n_cols == 1:
+                axes = axes.reshape(-1, 1)
+            
+            for i, feature in enumerate(weather_features):
+                row = i // n_cols
+                col = i % n_cols
+                ax = axes[row, col] if n_rows > 1 else axes[col]
+                
+                # Get feature data for both groups
+                delayed_feature = delayed_data[feature].dropna()
+                not_delayed_feature = not_delayed_data[feature].dropna()
+                
+                if len(delayed_feature) == 0 or len(not_delayed_feature) == 0:
+                    ax.text(0.5, 0.5, f'Insufficient data\nfor {feature}', 
+                        ha='center', va='center', transform=ax.transAxes,
+                        fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    ax.set_title(feature, fontsize=12, fontweight='bold')
+                    continue
+                
+                # Create box plot comparison
+                box_data = [not_delayed_feature, delayed_feature]
+                box_labels = ['Not Delayed', 'Delayed']
+                
+                bp = ax.boxplot(box_data, labels=box_labels, patch_artist=True)
+                bp['boxes'][0].set_facecolor('lightgreen')
+                bp['boxes'][0].set_alpha(0.7)
+                bp['boxes'][1].set_facecolor('lightcoral')
+                bp['boxes'][1].set_alpha(0.7)
+                
+                ax.set_title(f'{feature}\nDelayed vs Not Delayed', fontsize=11, fontweight='bold')
+                ax.set_ylabel(feature, fontsize=10)
+                ax.grid(axis='y', alpha=0.3)
+                
+                # Add statistical comparison
+                mean_not_delayed = not_delayed_feature.mean()
+                mean_delayed = delayed_feature.mean()
+                difference = mean_delayed - mean_not_delayed
+                
+                stats_text = (f'Not Delayed: μ={mean_not_delayed:.2f}\n'
+                            f'Delayed: μ={mean_delayed:.2f}\n'
+                            f'Difference: {difference:+.2f}')
+                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                    verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+            
+            # Hide empty subplots
+            for i in range(n_features, n_rows * n_cols):
+                row = i // n_cols
+                col = i % n_cols
+                axes[row, col].set_visible(False)
+            
+            plt.suptitle(f'Comparative Distributions: Delayed vs Not Delayed Trains\n{filename}', 
+                        fontsize=14, y=0.98)
+            plt.tight_layout()
+            
+            # Save comparative plot
+            safe_filename = filename.replace('.csv', '').replace(' ', '_')
+            comp_plot_filename = f"comparative_distributions_{safe_filename}.png"
+            comp_plot_path = os.path.join(output_dir, comp_plot_filename)
+            plt.savefig(comp_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"        Saved comparative distribution plot: {comp_plot_filename}")
+            
+        except Exception as e:
+            print(f"        Warning: Failed to create comparative distribution plots for {filename}: {str(e)}")
+
+    def _create_combined_correlation_analysis(self, correlation_results, output_dir):
+        """
+        Create combined Point-Biserial correlation analysis across all files.
+        
+        Parameters:
+        -----------
+        correlation_results : list
+            List of correlation result dictionaries from each file
+        output_dir : str
+            Directory to save the combined analysis
+        """
+        try:
+            print("    correlation_analysis: Creating combined point-biserial correlation analysis...")
+            
+            # Collect all unique weather features
+            all_features = set()
+            for result in correlation_results:
+                all_features.update(result['correlations'].keys())
+            all_features = sorted(list(all_features))
+            
+            # Calculate average correlations across files
+            avg_correlations = {}
+            correlation_ranges = {}
+            
+            for feature in all_features:
+                feature_values = []
+                for result in correlation_results:
+                    corr_value = result['correlations'].get(feature, np.nan)
+                    if not pd.isna(corr_value):
+                        feature_values.append(corr_value)
+                
+                if feature_values:
+                    avg_correlations[feature] = {
+                        'mean': np.mean(feature_values),
+                        'std': np.std(feature_values),
+                        'min': np.min(feature_values),
+                        'max': np.max(feature_values),
+                        'count': len(feature_values)
+                    }
+                    correlation_ranges[feature] = (np.min(feature_values), np.max(feature_values))
+            
+            # Sort by absolute mean correlation
+            sorted_features = sorted(avg_correlations.keys(), 
+                                key=lambda x: abs(avg_correlations[x]['mean']), 
+                                reverse=True)
+            
+            # Create comprehensive combined plot
+            fig = plt.figure(figsize=(20, 12))
+            gs = fig.add_gridspec(2, 3, height_ratios=[2, 1], width_ratios=[2, 2, 1])
+            
+            # Main plot: Average correlations with error bars
+            ax1 = fig.add_subplot(gs[0, 0])
+            
+            y_positions = range(len(sorted_features))
+            means = [avg_correlations[f]['mean'] for f in sorted_features]
+            stds = [avg_correlations[f]['std'] for f in sorted_features]
+            colors = ['red' if val < 0 else 'steelblue' for val in means]
+            
+            bars = ax1.barh(y_positions, means, xerr=stds, color=colors, alpha=0.7, 
+                        capsize=5, edgecolor='black', linewidth=0.5)
+            
+            ax1.set_yticks(y_positions)
+            ax1.set_yticklabels(sorted_features, fontsize=10)
+            ax1.set_xlabel('Average Point-Biserial Correlation', fontsize=12)
+            ax1.set_title('Average Point-Biserial Correlations\n(with Standard Deviation)', fontsize=12)
+            ax1.axvline(x=0, color='black', linestyle='-', linewidth=1)
+            ax1.grid(axis='x', alpha=0.3)
+            ax1.set_xlim(-1, 1)
+            
+            # Add value labels
+            for i, (bar, mean_val, std_val) in enumerate(zip(bars, means, stds)):
+                label_x = mean_val + (0.05 if mean_val >= 0 else -0.05)
+                ha = 'left' if mean_val >= 0 else 'right'
+                ax1.text(label_x, bar.get_y() + bar.get_height()/2, 
+                        f'{mean_val:.3f}±{std_val:.3f}', 
+                        ha=ha, va='center', fontsize=8, fontweight='bold')
+            
+            # Range analysis plot
+            ax2 = fig.add_subplot(gs[0, 1])
+            
+            for i, feature in enumerate(sorted_features):
+                min_val, max_val = correlation_ranges[feature]
+                mean_val = avg_correlations[feature]['mean']
+                
+                # Plot range as line
+                ax2.plot([min_val, max_val], [i, i], 'k-', linewidth=2, alpha=0.6)
+                # Plot min and max as points
+                ax2.plot(min_val, i, 'ro', markersize=6, alpha=0.8)
+                ax2.plot(max_val, i, 'bo', markersize=6, alpha=0.8)
+                # Plot mean as diamond
+                ax2.plot(mean_val, i, 'gD', markersize=8, alpha=0.9)
+            
+            ax2.set_yticks(y_positions)
+            ax2.set_yticklabels(sorted_features, fontsize=10)
+            ax2.set_xlabel('Correlation Range Across Files', fontsize=12)
+            ax2.set_title('Correlation Variability\n(Min-Max Range)', fontsize=12)
+            ax2.axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+            ax2.grid(axis='x', alpha=0.3)
+            ax2.set_xlim(-1, 1)
+            ax2.legend(['Range', 'Minimum', 'Maximum', 'Mean'], loc='lower right', fontsize=9)
+            
+            # Strength classification plot
+            ax3 = fig.add_subplot(gs[0, 2])
+            
+            strength_categories = {'Very Strong (≥0.7)': [], 'Strong (0.5-0.7)': [], 
+                                'Moderate (0.3-0.5)': [], 'Weak (0.1-0.3)': [], 
+                                'Very Weak (<0.1)': []}
+            
+            for feature in sorted_features:
+                abs_mean = abs(avg_correlations[feature]['mean'])
+                if abs_mean >= 0.7:
+                    strength_categories['Very Strong (≥0.7)'].append(feature)
+                elif abs_mean >= 0.5:
+                    strength_categories['Strong (0.5-0.7)'].append(feature)
+                elif abs_mean >= 0.3:
+                    strength_categories['Moderate (0.3-0.5)'].append(feature)
+                elif abs_mean >= 0.1:
+                    strength_categories['Weak (0.1-0.3)'].append(feature)
+                else:
+                    strength_categories['Very Weak (<0.1)'].append(feature)
+            
+            category_counts = [len(features) for features in strength_categories.values()]
+            category_labels = list(strength_categories.keys())
+            colors_pie = ['darkred', 'red', 'orange', 'yellow', 'lightgray']
+            
+            wedges, texts, autotexts = ax3.pie(category_counts, labels=category_labels, autopct='%1.0f%%', 
+                                            colors=colors_pie, startangle=90)
+            ax3.set_title('Correlation Strength\nDistribution', fontsize=12)
+            
+            # File-by-file heatmap
+            ax4 = fig.add_subplot(gs[1, :2])
+            
+            # Create matrix for heatmap
+            heatmap_data = []
+            file_labels = []
+            
+            for result in correlation_results:
+                row_data = []
+                for feature in sorted_features:
+                    corr_value = result['correlations'].get(feature, np.nan)
+                    row_data.append(corr_value)
+                heatmap_data.append(row_data)
+                file_labels.append(result['filename'].replace('.csv', ''))
+            
+            heatmap_matrix = np.array(heatmap_data)
+            mask = np.isnan(heatmap_matrix)
+            
+            im = ax4.imshow(heatmap_matrix, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
+            
+            # Add colorbar
+            cbar = plt.colorbar(im, ax=ax4, orientation='horizontal', pad=0.1, shrink=0.8)
+            cbar.set_label('Point-Biserial Correlation Coefficient', fontsize=10)
+            
+            ax4.set_xticks(range(len(sorted_features)))
+            ax4.set_xticklabels(sorted_features, rotation=45, ha='right', fontsize=9)
+            ax4.set_yticks(range(len(file_labels)))
+            ax4.set_yticklabels(file_labels, fontsize=9)
+            ax4.set_title('Point-Biserial Correlations Across All Files', fontsize=12)
+            
+            # Add text annotations for non-NaN values
+            for i in range(len(file_labels)):
+                for j in range(len(sorted_features)):
+                    if not mask[i, j]:
+                        text_color = 'white' if abs(heatmap_matrix[i, j]) > 0.5 else 'black'
+                        ax4.text(j, i, f'{heatmap_matrix[i, j]:.2f}', 
+                                ha='center', va='center', color=text_color, fontsize=7)
+            
+            # Summary statistics text
+            ax5 = fig.add_subplot(gs[1, 2])
+            ax5.axis('off')
+            
+            summary_text = "Summary Statistics:\n\n"
+            summary_text += f"Total Features: {len(sorted_features)}\n"
+            summary_text += f"Files Analyzed: {len(correlation_results)}\n\n"
+            
+            if sorted_features:
+                strongest_feature = sorted_features[0]
+                strongest_corr = avg_correlations[strongest_feature]['mean']
+                summary_text += f"Strongest Correlation:\n{strongest_feature}\n(r = {strongest_corr:.3f})\n\n"
+            
+            # Count by strength
+            for category, features in strength_categories.items():
+                if features:
+                    summary_text += f"{category}: {len(features)}\n"
+            
+            ax5.text(0.1, 0.9, summary_text, transform=ax5.transAxes, fontsize=10,
+                    verticalalignment='top', bbox=dict(boxstyle="round,pad=0.5", 
+                    facecolor="lightblue", alpha=0.8))
+            
+            plt.suptitle(f'Comprehensive Point-Biserial Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Weather Features', 
+                        fontsize=16, y=0.98)
+            plt.tight_layout()
+            
+            # Save combined plot
+            combined_plot_path = os.path.join(output_dir, "combined_point_biserial_analysis.png")
+            plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Save detailed average correlations summary
+            avg_summary_path = os.path.join(output_dir, "point_biserial_summary.txt")
+            with open(avg_summary_path, 'w') as f:
+                f.write("Point-Biserial Correlation Analysis Summary\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(f"Target Variable: {DEFAULT_TARGET_FEATURE} (Binary)\n")
+                f.write(f"Weather Features: {len(all_features)} (Continuous)\n")
+                f.write(f"Files Analyzed: {len(correlation_results)}\n\n")
+                
+                f.write("Correlation Strength Interpretation:\n")
+                f.write("• |r_pb| ≥ 0.7: Very Strong relationship\n")
+                f.write("• 0.5 ≤ |r_pb| < 0.7: Strong relationship\n")
+                f.write("• 0.3 ≤ |r_pb| < 0.5: Moderate relationship\n")
+                f.write("• 0.1 ≤ |r_pb| < 0.3: Weak relationship\n")
+                f.write("• |r_pb| < 0.1: Very weak/no relationship\n\n")
+                
+                f.write("Weather Features (sorted by absolute correlation strength):\n")
+                f.write("-" * 70 + "\n")
+                for i, feature in enumerate(sorted_features, 1):
+                    stats = avg_correlations[feature]
+                    strength = ""
+                    abs_mean = abs(stats['mean'])
+                    if abs_mean >= 0.7:
+                        strength = "Very Strong"
+                    elif abs_mean >= 0.5:
+                        strength = "Strong"
+                    elif abs_mean >= 0.3:
+                        strength = "Moderate"
+                    elif abs_mean >= 0.1:
+                        strength = "Weak"
+                    else:
+                        strength = "Very Weak"
+                    
+                    f.write(f"{i:2d}. {feature}:\n")
+                    f.write(f"    Mean correlation: {stats['mean']:+.4f} ({strength})\n")
+                    f.write(f"    Std deviation: {stats['std']:.4f}\n")
+                    f.write(f"    Range: [{stats['min']:+.4f}, {stats['max']:+.4f}]\n")
+                    f.write(f"    Files available: {stats['count']}/{len(correlation_results)}\n")
+                    
+                    # Interpretation
+                    if stats['mean'] > 0:
+                        direction = "Higher values → More train delays"
+                    elif stats['mean'] < 0:
+                        direction = "Higher values → Fewer train delays"
+                    else:
+                        direction = "No clear relationship"
+                    f.write(f"    Interpretation: {direction}\n\n")
+            
+            print(f"        Saved comprehensive point-biserial correlation analysis")
+            
+        except Exception as e:
+            print(f"        Warning: Failed to create combined analysis: {str(e)}")
+
     def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
         """
         Split merged training datasets into train and test sets.

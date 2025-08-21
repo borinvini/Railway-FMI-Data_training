@@ -47,7 +47,8 @@ PREPROCESSING_STATE_MACHINE = {
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
     "split_dataset": True,
-    "scale_weather_features": True
+    "scale_weather_features": True,
+    "correlation_analysis": True
 }
 
 
