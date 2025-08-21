@@ -48,7 +48,8 @@ TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
     "split_dataset": True,
     "scale_weather_features": True,
-    "correlation_analysis": True
+    "correlation_analysis": True,
+    "non_weather_correlation_analysis": True,
 }
 
 

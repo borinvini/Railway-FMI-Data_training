@@ -3228,6 +3228,34 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ correlation_analysis (Point-Biserial) (disabled)")
+
+        if state_machine.get("non_weather_correlation_analysis", False):
+                    try:
+                        print(f"    → non_weather_correlation_analysis (Non-Weather Features)")
+                        non_weather_correlation_result = self.non_weather_correlation_analysis(csv_files)
+                        
+                        if non_weather_correlation_result and non_weather_correlation_result.get("success", False):
+                            result["steps_executed"].append("non_weather_correlation_analysis")
+                            result["file_info"]["non_weather_processed_files"] = non_weather_correlation_result.get("processed_files", 0)
+                            print(f"      ✓ Successfully completed non-weather correlation analysis")
+                            print(f"      ✓ Files analyzed: {non_weather_correlation_result.get('processed_files', 0)}")
+                            print(f"      ✓ Boolean features: {non_weather_correlation_result.get('total_boolean_features', 0)}")
+                            print(f"      ✓ Temporal features: {non_weather_correlation_result.get('total_temporal_features', 0)}")
+                            print(f"      ✓ Analysis type: {non_weather_correlation_result.get('analysis_type', 'Non-Weather Features Correlation')}")
+                            print(f"      ✓ Results saved to: {non_weather_correlation_result.get('output_path', 'N/A')}")
+                            result["success"] = True
+                        else:
+                            error_msg = non_weather_correlation_result.get("error", "Non-weather correlation_analysis returned unsuccessful result")
+                            result["errors"].append(error_msg)
+                            print(f"      ✗ Failed - {error_msg}")
+                            return result
+                            
+                    except Exception as e:
+                        result["errors"].append(f"Non-weather correlation_analysis failed: {str(e)}")
+                        print(f"      ✗ Failed - {str(e)}")
+                        return result
+        else:
+            print(f"    ⊝ non_weather_correlation_analysis (Non-Weather Features) (disabled)")
         
         return result
     
@@ -4240,6 +4268,533 @@ class TrainingPipeline:
             
         except Exception as e:
             print(f"        Warning: Failed to create combined analysis: {str(e)}")
+
+    def non_weather_correlation_analysis(self, csv_files=None):
+        """
+        Analyze correlations between trainDelayed (binary target) and non-weather features.
+        
+        This method finds all merged scaled training data files in data/output/4-merged_scaled_training_ready,
+        calculates correlations between the target feature (trainDelayed - binary) and:
+        - Boolean features: trainStopping, commercialStop (using Phi coefficient)
+        - Temporal sin-cos features: month_sin, month_cos, hour_sin, hour_cos, day_week_sin, day_week_cos (using Point-Biserial)
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (currently not used - method discovers files automatically)
+            
+        Returns:
+        --------
+        dict
+            Results of the non-weather correlation analysis including success status and analysis info
+        """
+        try:
+            print(f"    non_weather_correlation_analysis: Starting correlation analysis for non-weather features...")
+            
+            # Create output directory for non-weather correlation analysis results
+            output_dir = os.path.join(self.project_root, "data/output/correlation_analysis")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Define feature categories to analyze
+            BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']
+            TEMPORAL_SINCOS_FEATURES = [
+                'month_sin', 'month_cos', 
+                'hour_sin', 'hour_cos', 
+                'day_week_sin', 'day_week_cos'
+            ]
+            ALL_NON_WEATHER_FEATURES = BOOLEAN_FEATURES + TEMPORAL_SINCOS_FEATURES
+            
+            # Find all merged scaled training data files using glob pattern
+            merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
+            merged_data_files = glob.glob(merged_data_pattern)
+            
+            if not merged_data_files:
+                error_msg = "No merged scaled training data files found for non-weather correlation analysis"
+                print(f"    non_weather_correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    non_weather_correlation_analysis: Found {len(merged_data_files)} merged scaled training data files")
+            for file_path in merged_data_files:
+                print(f"      - {os.path.basename(file_path)}")
+            
+            # Initialize storage for results
+            correlation_results = []
+            total_files_processed = 0
+            
+            # Process each merged data file
+            for file_path in merged_data_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"    non_weather_correlation_analysis: Processing {filename}...")
+                    
+                    # Read the merged dataset
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"    non_weather_correlation_analysis: Warning - File {filename} is empty. Skipping.")
+                        continue
+                    
+                    # Check if target feature exists and is binary
+                    if DEFAULT_TARGET_FEATURE not in df.columns:
+                        print(f"    non_weather_correlation_analysis: Warning - Target feature '{DEFAULT_TARGET_FEATURE}' not found in {filename}. Skipping.")
+                        continue
+                    
+                    # Verify target is binary
+                    target_unique_values = df[DEFAULT_TARGET_FEATURE].dropna().unique()
+                    if len(target_unique_values) > 2:
+                        print(f"    non_weather_correlation_analysis: Warning - Target feature has more than 2 unique values.")
+                    
+                    # Filter for available non-weather features in the dataset
+                    available_boolean_features = [col for col in BOOLEAN_FEATURES if col in df.columns]
+                    available_temporal_features = [col for col in TEMPORAL_SINCOS_FEATURES if col in df.columns]
+                    
+                    if not available_boolean_features and not available_temporal_features:
+                        print(f"    non_weather_correlation_analysis: Warning - No non-weather features found in {filename}. Skipping.")
+                        continue
+                    
+                    print(f"      Found {len(available_boolean_features)} boolean features and {len(available_temporal_features)} temporal features")
+                    
+                    # Calculate correlations for different feature types
+                    target_series = df[DEFAULT_TARGET_FEATURE]
+                    correlations = {}
+                    correlation_types = {}
+                    
+                    # Boolean features - using Point-Biserial (equivalent to Phi coefficient for binary variables)
+                    for feature in available_boolean_features:
+                        try:
+                            feature_series = df[feature]
+                            
+                            # Check if feature is actually boolean/binary
+                            unique_vals = feature_series.dropna().unique()
+                            if len(unique_vals) > 2:
+                                print(f"        Warning: {feature} has more than 2 unique values, treating as categorical")
+                            
+                            # Only calculate correlation if both series have valid data
+                            mask = pd.notna(target_series) & pd.notna(feature_series)
+                            if mask.sum() < 10:  # Need at least 10 valid pairs
+                                print(f"        Warning: Insufficient valid data for {feature}")
+                                correlations[feature] = np.nan
+                                correlation_types[feature] = "Boolean (insufficient data)"
+                                continue
+                            
+                            # Point-Biserial correlation (mathematically equivalent to Phi when both variables are binary)
+                            correlation = target_series[mask].corr(feature_series[mask])
+                            correlations[feature] = correlation
+                            correlation_types[feature] = "Boolean (Phi coefficient)"
+                            
+                            print(f"        {feature}: φ = {correlation:.4f}")
+                            
+                        except Exception as e:
+                            print(f"        Warning: Failed to calculate correlation for {feature}: {str(e)}")
+                            correlations[feature] = np.nan
+                            correlation_types[feature] = "Boolean (error)"
+                    
+                    # Temporal sin-cos features - using Point-Biserial correlation
+                    for feature in available_temporal_features:
+                        try:
+                            feature_series = df[feature]
+                            
+                            # Only calculate correlation if both series have valid data
+                            mask = pd.notna(target_series) & pd.notna(feature_series)
+                            if mask.sum() < 10:  # Need at least 10 valid pairs
+                                print(f"        Warning: Insufficient valid data for {feature}")
+                                correlations[feature] = np.nan
+                                correlation_types[feature] = "Temporal (insufficient data)"
+                                continue
+                            
+                            # Point-Biserial correlation
+                            correlation = target_series[mask].corr(feature_series[mask])
+                            correlations[feature] = correlation
+                            correlation_types[feature] = "Temporal (Point-Biserial)"
+                            
+                            print(f"        {feature}: r_pb = {correlation:.4f}")
+                            
+                        except Exception as e:
+                            print(f"        Warning: Failed to calculate correlation for {feature}: {str(e)}")
+                            correlations[feature] = np.nan
+                            correlation_types[feature] = "Temporal (error)"
+                    
+                    # Calculate target proportion for context
+                    target_proportion = None
+                    if DEFAULT_TARGET_FEATURE in df.columns:
+                        target_count = df[DEFAULT_TARGET_FEATURE].sum()
+                        total_count = len(df)
+                        target_proportion = target_count / total_count if total_count > 0 else 0
+                    
+                    # Store results for this file
+                    file_result = {
+                        'filename': filename,
+                        'total_samples': len(df),
+                        'target_proportion': target_proportion,
+                        'available_boolean_features': available_boolean_features,
+                        'available_temporal_features': available_temporal_features,
+                        'correlations': correlations,
+                        'correlation_types': correlation_types
+                    }
+                    correlation_results.append(file_result)
+                    
+                    # Create visualization for this file
+                    self._create_non_weather_correlation_plot(
+                        correlations, correlation_types, filename, output_dir, 
+                        f'Non-Weather Features Correlation Analysis - {filename}'
+                    )
+                    
+                    total_files_processed += 1
+                    
+                except Exception as e:
+                    print(f"    non_weather_correlation_analysis: Error processing file {filename}: {str(e)}")
+                    continue
+            
+            # Check if we processed any files successfully
+            if not correlation_results:
+                error_msg = "No files were successfully processed for non-weather correlation analysis"
+                print(f"    non_weather_correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Create combined analysis across all files
+            if len(correlation_results) > 1:
+                self._create_combined_non_weather_correlation_analysis(correlation_results, output_dir)
+            
+            # Save detailed summary
+            summary_filename = "non_weather_correlation_summary.txt"
+            summary_path = os.path.join(output_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write("Non-Weather Features Correlation Analysis Summary\n")
+                f.write("=" * 60 + "\n\n")
+                
+                f.write(f"Analysis timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Target feature: {DEFAULT_TARGET_FEATURE} (Binary variable)\n")
+                f.write(f"Boolean features analyzed: {len(BOOLEAN_FEATURES)}\n")
+                f.write(f"Temporal features analyzed: {len(TEMPORAL_SINCOS_FEATURES)}\n")
+                f.write(f"Files processed: {total_files_processed}\n\n")
+                
+                f.write("Analysis Components Generated:\n")
+                f.write("• Correlation plots for each scaled training file\n")
+                f.write("• Feature distribution comparisons (delayed vs not delayed)\n")
+                f.write("• Combined correlation analysis across all files\n\n")
+                
+                f.write("Correlation Types Used:\n")
+                f.write("• Boolean features (trainStopping, commercialStop): Phi coefficient\n")
+                f.write("• Temporal features (sin-cos encoded): Point-Biserial correlation\n\n")
+                
+                f.write("Interpretation Guide:\n")
+                f.write("• Positive values: Higher feature values associate with more train delays\n")
+                f.write("• Negative values: Higher feature values associate with fewer train delays\n")
+                f.write("• Values near 0: Little to no linear relationship\n\n")
+                
+                # File-by-file results
+                f.write("File-by-file Analysis:\n")
+                f.write("-" * 30 + "\n")
+                for result in correlation_results:
+                    f.write(f"\nFile: {result['filename']}\n")
+                    f.write(f"  Total samples: {result['total_samples']:,}\n")
+                    if result['target_proportion'] is not None:
+                        f.write(f"  Delay proportion: {result['target_proportion']:.4f} ({result['target_proportion']*100:.2f}%)\n")
+                    f.write(f"  Boolean features available: {len(result['available_boolean_features'])}\n")
+                    f.write(f"  Temporal features available: {len(result['available_temporal_features'])}\n")
+                    
+                    f.write(f"  Correlations:\n")
+                    sorted_correlations = sorted(
+                        [(k, v, result['correlation_types'][k]) for k, v in result['correlations'].items() if not pd.isna(v)],
+                        key=lambda x: abs(x[1]),
+                        reverse=True
+                    )
+                    
+                    for feature, corr, corr_type in sorted_correlations:
+                        f.write(f"    {feature}: {corr:+.4f} ({corr_type})\n")
+                    
+                    # Identify strongest correlations
+                    if sorted_correlations:
+                        strongest = sorted_correlations[0]
+                        f.write(f"  Strongest correlation: {strongest[0]} ({strongest[1]:+.4f})\n")
+            
+            print(f"    non_weather_correlation_analysis: Analysis completed for {total_files_processed} files")
+            print(f"    non_weather_correlation_analysis: Results saved to {output_dir}")
+            
+            # Return success result
+            result = {
+                "success": True,
+                "processed_files": total_files_processed,
+                "output_path": output_dir,
+                "summary_path": summary_path,
+                "correlation_results": correlation_results,
+                "total_boolean_features": len(BOOLEAN_FEATURES),
+                "total_temporal_features": len(TEMPORAL_SINCOS_FEATURES),
+                "analysis_type": "Non-Weather Features Correlation",
+                "message": f"Successfully analyzed non-weather correlations for {total_files_processed} scaled training files"
+            }
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"Non-weather correlation analysis failed: {str(e)}"
+            print(f"    non_weather_correlation_analysis: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+
+    def _create_non_weather_correlation_plot(self, correlations, correlation_types, filename, output_dir, title):
+        """
+        Create a Non-Weather Features Correlation Analysis plot for a single file.
+        
+        This creates separate subplots for boolean and temporal features with their correlations.
+        """
+        try:
+            # Separate correlations by type
+            boolean_correlations = {}
+            temporal_correlations = {}
+            
+            for feature, corr in correlations.items():
+                if pd.isna(corr):
+                    continue
+                corr_type = correlation_types.get(feature, "")
+                if "Boolean" in corr_type:
+                    boolean_correlations[feature] = corr
+                elif "Temporal" in corr_type:
+                    temporal_correlations[feature] = corr
+            
+            # Calculate subplot layout
+            n_plots = 0
+            if boolean_correlations:
+                n_plots += 1
+            if temporal_correlations:
+                n_plots += 1
+            
+            if n_plots == 0:
+                print(f"      No valid correlations to plot for {filename}")
+                return
+            
+            fig, axes = plt.subplots(n_plots, 1, figsize=(12, 6 * n_plots))
+            if n_plots == 1:
+                axes = [axes]
+            
+            plot_idx = 0
+            
+            # Plot boolean features
+            if boolean_correlations:
+                ax = axes[plot_idx]
+                features = list(boolean_correlations.keys())
+                values = list(boolean_correlations.values())
+                colors = ['darkblue' if v >= 0 else 'darkred' for v in values]
+                
+                bars = ax.bar(features, values, color=colors, alpha=0.7, edgecolor='black')
+                ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                ax.set_title(f'Boolean Features - Phi Coefficient\n({len(features)} features)')
+                ax.set_ylabel('Phi Coefficient (φ)')
+                ax.grid(True, alpha=0.3)
+                
+                # Add value labels on bars
+                for bar, value in zip(bars, values):
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.01),
+                        f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                        fontsize=10, fontweight='bold')
+                
+                # Rotate x-labels if needed
+                if len(features) > 3:
+                    ax.tick_params(axis='x', rotation=45)
+                
+                plot_idx += 1
+            
+            # Plot temporal features
+            if temporal_correlations:
+                ax = axes[plot_idx]
+                features = list(temporal_correlations.keys())
+                values = list(temporal_correlations.values())
+                colors = ['steelblue' if v >= 0 else 'crimson' for v in values]
+                
+                bars = ax.bar(features, values, color=colors, alpha=0.7, edgecolor='black')
+                ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                ax.set_title(f'Temporal Features (Sin-Cos) - Point-Biserial Correlation\n({len(features)} features)')
+                ax.set_ylabel('Point-Biserial Correlation (r_pb)')
+                ax.grid(True, alpha=0.3)
+                
+                # Add value labels on bars
+                for bar, value in zip(bars, values):
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.01),
+                        f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                        fontsize=10, fontweight='bold')
+                
+                # Rotate x-labels if needed
+                if len(features) > 3:
+                    ax.tick_params(axis='x', rotation=45)
+            
+            plt.suptitle(title, fontsize=14, y=0.98)
+            plt.tight_layout()
+            
+            # Save plot
+            plot_filename = f"non_weather_correlation_{filename.replace('.csv', '.png')}"
+            plot_path = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"      Saved non-weather correlation plot: {plot_filename}")
+            
+        except Exception as e:
+            print(f"      Error creating non-weather correlation plot: {str(e)}")
+
+    def _create_combined_non_weather_correlation_analysis(self, correlation_results, output_dir):
+        """
+        Create combined analysis across all non-weather correlation results.
+        """
+        try:
+            print(f"    Creating combined non-weather correlation analysis...")
+            
+            # Aggregate correlations across all files
+            all_features = set()
+            for result in correlation_results:
+                all_features.update(result['correlations'].keys())
+            
+            all_features = sorted(list(all_features))
+            
+            # Calculate average correlations
+            avg_correlations = {}
+            for feature in all_features:
+                values = []
+                for result in correlation_results:
+                    if feature in result['correlations'] and not pd.isna(result['correlations'][feature]):
+                        values.append(result['correlations'][feature])
+                
+                if values:
+                    avg_correlations[feature] = {
+                        'mean': np.mean(values),
+                        'std': np.std(values),
+                        'count': len(values),
+                        'min': np.min(values),
+                        'max': np.max(values)
+                    }
+            
+            # Create combined plot
+            if avg_correlations:
+                # Sort features by absolute correlation strength
+                sorted_features = sorted(avg_correlations.keys(), 
+                                    key=lambda x: abs(avg_correlations[x]['mean']), 
+                                    reverse=True)
+                
+                # Separate by feature type for plotting
+                boolean_features = [f for f in sorted_features if f in ['trainStopping', 'commercialStop']]
+                temporal_features = [f for f in sorted_features if f not in boolean_features]
+                
+                fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+                
+                # Plot boolean features
+                if boolean_features:
+                    ax = axes[0]
+                    values = [avg_correlations[f]['mean'] for f in boolean_features]
+                    errors = [avg_correlations[f]['std'] for f in boolean_features]
+                    colors = ['darkblue' if v >= 0 else 'darkred' for v in values]
+                    
+                    bars = ax.bar(boolean_features, values, yerr=errors, color=colors, 
+                                alpha=0.7, edgecolor='black', capsize=5)
+                    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                    ax.set_title(f'Boolean Features - Average Phi Coefficient Across All Files\n({len(boolean_features)} features)')
+                    ax.set_ylabel('Average Phi Coefficient (φ)')
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Add value labels
+                    for bar, value, error in zip(bars, values, errors):
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + (error + 0.01 if height >= 0 else -error - 0.01),
+                            f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                            fontsize=10, fontweight='bold')
+                else:
+                    axes[0].text(0.5, 0.5, 'No Boolean Features Available', 
+                            ha='center', va='center', transform=axes[0].transAxes, fontsize=14)
+                    axes[0].set_title('Boolean Features - No Data')
+                
+                # Plot temporal features
+                if temporal_features:
+                    ax = axes[1]
+                    values = [avg_correlations[f]['mean'] for f in temporal_features]
+                    errors = [avg_correlations[f]['std'] for f in temporal_features]
+                    colors = ['steelblue' if v >= 0 else 'crimson' for v in values]
+                    
+                    bars = ax.bar(temporal_features, values, yerr=errors, color=colors, 
+                                alpha=0.7, edgecolor='black', capsize=5)
+                    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                    ax.set_title(f'Temporal Features - Average Point-Biserial Correlation Across All Files\n({len(temporal_features)} features)')
+                    ax.set_ylabel('Average Point-Biserial Correlation (r_pb)')
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Add value labels
+                    for bar, value, error in zip(bars, values, errors):
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + (error + 0.01 if height >= 0 else -error - 0.01),
+                            f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                            fontsize=10, fontweight='bold')
+                    
+                    # Rotate x-labels for temporal features
+                    ax.tick_params(axis='x', rotation=45)
+                else:
+                    axes[1].text(0.5, 0.5, 'No Temporal Features Available', 
+                            ha='center', va='center', transform=axes[1].transAxes, fontsize=14)
+                    axes[1].set_title('Temporal Features - No Data')
+                
+                plt.suptitle(f'Combined Non-Weather Features Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Non-Weather Features', 
+                            fontsize=16, y=0.98)
+                plt.tight_layout()
+                
+                # Save combined plot
+                combined_plot_path = os.path.join(output_dir, "combined_non_weather_correlation_analysis.png")
+                plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                # Save detailed average correlations summary
+                avg_summary_path = os.path.join(output_dir, "non_weather_correlation_summary.txt")
+                with open(avg_summary_path, 'w') as f:
+                    f.write("Combined Non-Weather Features Correlation Analysis\n")
+                    f.write("=" * 65 + "\n\n")
+                    f.write(f"Target Variable: {DEFAULT_TARGET_FEATURE} (Binary)\n")
+                    f.write(f"Non-Weather Features: {len(all_features)}\n")
+                    f.write(f"Files Analyzed: {len(correlation_results)}\n\n")
+                    
+                    f.write("Correlation Strength Interpretation:\n")
+                    f.write("• |correlation| ≥ 0.7: Very Strong relationship\n")
+                    f.write("• 0.5 ≤ |correlation| < 0.7: Strong relationship\n")
+                    f.write("• 0.3 ≤ |correlation| < 0.5: Moderate relationship\n")
+                    f.write("• 0.1 ≤ |correlation| < 0.3: Weak relationship\n")
+                    f.write("• |correlation| < 0.1: Very weak/no relationship\n\n")
+                    
+                    f.write("Non-Weather Features (sorted by absolute correlation strength):\n")
+                    f.write("-" * 80 + "\n")
+                    for i, feature in enumerate(sorted_features, 1):
+                        stats = avg_correlations[feature]
+                        strength = ""
+                        abs_mean = abs(stats['mean'])
+                        if abs_mean >= 0.7:
+                            strength = "Very Strong"
+                        elif abs_mean >= 0.5:
+                            strength = "Strong"
+                        elif abs_mean >= 0.3:
+                            strength = "Moderate"
+                        elif abs_mean >= 0.1:
+                            strength = "Weak"
+                        else:
+                            strength = "Very Weak"
+                        
+                        feature_type = "Boolean" if feature in ['trainStopping', 'commercialStop'] else "Temporal"
+                        
+                        f.write(f"{i:2d}. {feature:20s} | {stats['mean']:+.4f} ± {stats['std']:.4f} | {strength:12s} | {feature_type}\n")
+                        f.write(f"    Files: {stats['count']}/{len(correlation_results)} | Range: [{stats['min']:+.4f}, {stats['max']:+.4f}]\n\n")
+                
+                print(f"    Combined non-weather correlation analysis saved")
+            
+        except Exception as e:
+            print(f"    Error creating combined non-weather correlation analysis: {str(e)}")
 
     def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
         """
