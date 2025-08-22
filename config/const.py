@@ -212,14 +212,10 @@ MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Put 1 to disable the weights for regre
 
 # Parameter distributions for RandomizedSearchCV
 DECISION_TREE_PARAM_DISTRIBUTIONS = {
-    'max_depth': randint(3, 20),  
-    'min_samples_split': randint(10, 50),
-    'min_samples_leaf': randint(5, 25),   
-    'criterion': ['gini', 'entropy'],
-    'max_features': [None, 'sqrt', 'log2', 0.5, 0.7],
-    'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
-    'ccp_alpha': [0.0, 0.001, 0.01, 0.05],
-    'class_weight': ['balanced', {False:1, True:5}, {False:1, True:10}, {False:1, True:15}, None] 
+    'max_depth': randint(5, 12),  
+    'min_samples_split': randint(10, 30),
+    'ccp_alpha': [0.0, 0.001, 0.01],
+    'class_weight': ['balanced', {False:1, True:5}, {False:1, True:10}]
 }
 
 # Parameter distributions for Random Forest with RandomizedSearchCV
@@ -265,11 +261,11 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
 # - If balanced binary: Use 'accuracy' or 'f1' 
 # - If very rare events: Use 'average_precision'
 # ===================================================================================================================
-SCORE_METRIC = 'roc_auc'
+SCORE_METRIC = 'f1'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 20
+RANDOM_SEARCH_ITERATIONS = 100
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration

@@ -11,7 +11,7 @@ import logging
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import RobustScaler
-from src.file_utils import generate_output_path
+from src.file_utils import format_param_distributions_for_json, generate_output_path
 
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
@@ -27,7 +27,9 @@ import seaborn as sns
 
 from config.const import (
     ALL_WEATHER_FEATURES,
+    CLASSIFICATION_PROBLEM,
     DATA_FILE_PREFIX_FOR_TRAINING,
+    DECISION_TREE_PARAM_DISTRIBUTIONS,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
     BOOLEAN_FEATURES,
@@ -38,6 +40,8 @@ from config.const import (
     PREPROCESSING_STATE_MACHINE,
     PREPROCESSED_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    RANDOM_SEARCH_CV_FOLDS,
+    RANDOM_SEARCH_ITERATIONS,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     REGRESSION_PROBLEM,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
@@ -3280,9 +3284,6 @@ class TrainingPipeline:
                     print(f"      ✓ Files processed: {dt_result.get('files_processed', 0)}")
                     print(f"      ✓ Total train samples: {dt_result.get('total_train_samples', 0):,}")
                     print(f"      ✓ Total test samples: {dt_result.get('total_test_samples', 0):,}")
-                    print(f"      ✓ Average CV {dt_result.get('score_metric', 'score')}: {dt_result.get('avg_cv_score', 0):.4f}")
-                    print(f"      ✓ Average test {dt_result.get('score_metric', 'score')}: {dt_result.get('avg_test_score', 0):.4f}")
-                    print(f"      ✓ Average test accuracy: {dt_result.get('avg_accuracy', 0):.4f}")
                     print(f"      ✓ Results saved to: {dt_result.get('output_directory', 'N/A')}")
                     result["success"] = True
                 else:
@@ -5404,13 +5405,6 @@ class TrainingPipeline:
         try:
             print(f"    train_decision_tree: Starting Decision Tree training...")
             
-            # Import constants
-            from config.const import (
-                DEFAULT_TARGET_FEATURE, CLASSIFICATION_PROBLEM, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
-                DECISION_TREE_PARAM_DISTRIBUTIONS, RANDOM_SEARCH_ITERATIONS, RANDOM_SEARCH_CV_FOLDS,
-                SCORE_METRIC, WEIGHT_DELAY_COLUMN, MAX_SAMPLE_WEIGHT_CLASSIFICATION, TRAIN_DELAY_MINUTES
-            )
-            
             # Check if target feature is a classification problem
             if DEFAULT_TARGET_FEATURE not in CLASSIFICATION_PROBLEM:
                 error_msg = f"Target feature '{DEFAULT_TARGET_FEATURE}' is not a classification problem. Expected one of: {CLASSIFICATION_PROBLEM}"
@@ -5652,12 +5646,6 @@ class TrainingPipeline:
                 summary_filename = "decision_tree_training_summary.json"
                 summary_path = os.path.join(output_dir, summary_filename)
                 
-                # Calculate aggregate metrics
-                avg_cv_score = np.mean([r['best_cv_score'] for r in all_results])
-                avg_test_score = np.mean([r['test_score'] for r in all_results])
-                avg_accuracy = np.mean([r['test_accuracy'] for r in all_results])
-                avg_balanced_accuracy = np.mean([r['test_balanced_accuracy'] for r in all_results])
-                
                 summary = {
                     'training_completed': datetime.now().isoformat(),
                     'target_feature': DEFAULT_TARGET_FEATURE,
@@ -5669,15 +5657,8 @@ class TrainingPipeline:
                         'method': 'RandomizedSearchCV',
                         'iterations': RANDOM_SEARCH_ITERATIONS,
                         'cv_folds': RANDOM_SEARCH_CV_FOLDS,
-                        'param_distributions': str(DECISION_TREE_PARAM_DISTRIBUTIONS)
-                    },
-                    'aggregate_metrics': {
-                        f'avg_cv_{SCORE_METRIC}': float(avg_cv_score),
-                        f'avg_test_{SCORE_METRIC}': float(avg_test_score),
-                        'avg_test_accuracy': float(avg_accuracy),
-                        'avg_test_balanced_accuracy': float(avg_balanced_accuracy)
-                    },
-                    'file_results': all_results
+                        'param_distributions': format_param_distributions_for_json(DECISION_TREE_PARAM_DISTRIBUTIONS)
+                    }
                 }
                 
                 with open(summary_path, 'w') as f:
@@ -5685,8 +5666,6 @@ class TrainingPipeline:
                 
                 print(f"    train_decision_tree: Training completed successfully!")
                 print(f"    train_decision_tree: Processed {len(all_results)} file pairs")
-                print(f"    train_decision_tree: Average CV {SCORE_METRIC}: {avg_cv_score:.4f}")
-                print(f"    train_decision_tree: Average Test {SCORE_METRIC}: {avg_test_score:.4f}")
                 print(f"    train_decision_tree: Generated models, feature importance, and confusion matrices")
                 print(f"    train_decision_tree: Results saved to: {output_dir}")
                 
@@ -5695,10 +5674,6 @@ class TrainingPipeline:
                     "files_processed": len(all_results),
                     "total_train_samples": total_train_samples,
                     "total_test_samples": total_test_samples,
-                    "avg_cv_score": avg_cv_score,
-                    "avg_test_score": avg_test_score,
-                    "avg_accuracy": avg_accuracy,
-                    "avg_balanced_accuracy": avg_balanced_accuracy,
                     "output_directory": output_dir,
                     "target_feature": DEFAULT_TARGET_FEATURE,
                     "score_metric": SCORE_METRIC

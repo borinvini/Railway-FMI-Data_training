@@ -288,3 +288,41 @@ def verify_folder_structure():
         print("Run the main script to auto-create missing directories.")
     
     return verification_results
+
+def format_param_distributions_for_json(param_distributions):
+    """
+    Convert parameter distributions to a JSON-serializable format that's human readable.
+    
+    Args:
+        param_distributions (dict): Dictionary containing parameter distributions
+        
+    Returns:
+        dict: JSON-serializable version of the parameter distributions
+    """
+    formatted_params = {}
+    
+    for key, value in param_distributions.items():
+        if hasattr(value, '__class__') and 'scipy.stats' in str(type(value)):
+            # Handle scipy.stats distributions
+            if hasattr(value, 'args') and hasattr(value, 'kwds'):
+                if 'randint' in str(type(value)):
+                    # For randint distributions, extract the range
+                    low = value.args[0] if value.args else value.kwds.get('low', 'unknown')
+                    high = value.args[1] if len(value.args) > 1 else value.kwds.get('high', 'unknown')
+                    formatted_params[key] = f"randint({low}, {high})"
+                elif 'uniform' in str(type(value)):
+                    # For uniform distributions
+                    loc = value.args[0] if value.args else value.kwds.get('loc', 'unknown')
+                    scale = value.args[1] if len(value.args) > 1 else value.kwds.get('scale', 'unknown')
+                    formatted_params[key] = f"uniform({loc}, {loc + scale})"
+                else:
+                    # For other scipy distributions, just show the type and args
+                    type_name = str(type(value)).split('.')[-1].replace("'>", "")
+                    formatted_params[key] = f"{type_name}{value.args}"
+            else:
+                formatted_params[key] = str(type(value))
+        else:
+            # For non-scipy objects (lists, strings, etc.), keep as-is
+            formatted_params[key] = value
+    
+    return formatted_params
