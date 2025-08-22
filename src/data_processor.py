@@ -5659,6 +5659,18 @@ class TrainingPipeline:
                                             for k, v in best_params.items()},
                             "best_cv_score": float(best_cv_score)
                         },
+                        "notation": {
+                            "TP": "True Positive",
+                            "TN": "True Negative",
+                            "FP": "False Positive",
+                            "FN": "False Negative",
+                            "Accuracy": "(TP + TN) / (TP + FP + FN + TN) -> Overall proportion of correct predictions",
+                            "Balanced Accuracy": "(TP/(TP+FN) + TN/(TN+FP)) / 2 -> Average of per-class accuracies",
+                            "Recall": "TP / (TP + FN) -> Known as True Positive Rate",
+                            "Specificity": "TN / (FP + TN) -> Known as True Negative Rate",
+                            "Precision": "TP / (TP + FP)",
+                            "F1_Score": "2 * (Precision * Recall) / (Precision + Recall)"
+                        },
                         "performance_metrics": {
                             k: float(v) if isinstance(v, (int, float, np.number)) else v 
                             for k, v in metrics.items()
@@ -5809,9 +5821,9 @@ class TrainingPipeline:
         
         # Classification report metrics
         report = classification_report(y_true, y_pred, output_dict=True)
-        metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
-        metrics['weighted_avg_precision'] = report['weighted avg']['precision']
-        metrics['weighted_avg_recall'] = report['weighted avg']['recall']
+        #metrics['weighted_avg_f1'] = report['weighted avg']['f1-score']
+        #metrics['weighted_avg_precision'] = report['weighted avg']['precision']
+        #metrics['weighted_avg_recall'] = report['weighted avg']['recall']
         
         # Probability-based metrics (if available)
         if y_pred_proba is not None and len(np.unique(y_true)) == 2:
