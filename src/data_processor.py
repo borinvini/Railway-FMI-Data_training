@@ -5396,6 +5396,7 @@ class TrainingPipeline:
         This method trains on the scaled data from the previous pipeline stages.
         Uses the DEFAULT_TARGET_FEATURE and checks if it's a classification problem.
         Saves results and feature importance to data/output/decision_tree folder.
+        Now generates a single consolidated JSON file instead of separate files.
         
         Returns:
         --------
@@ -5446,10 +5447,50 @@ class TrainingPipeline:
             
             print(f"    train_decision_tree: Found {len(train_files)} training files and {len(test_files)} test files")
             
+            # Initialize consolidated results structure
+            consolidated_results = {
+                "training_overview": {
+                    "training_completed": datetime.now().isoformat(),
+                    "target_feature": DEFAULT_TARGET_FEATURE,
+                    "score_metric": SCORE_METRIC,
+                    "total_files_processed": 0,
+                    "total_train_samples": 0,
+                    "total_test_samples": 0,
+                    "successful_files": 0,
+                    "failed_files": 0
+                },
+                "hyperparameter_search": {
+                    "method": "RandomizedSearchCV",
+                    "iterations": RANDOM_SEARCH_ITERATIONS,
+                    "cv_folds": RANDOM_SEARCH_CV_FOLDS,
+                    "param_distributions": format_param_distributions_for_json(DECISION_TREE_PARAM_DISTRIBUTIONS)
+                },
+                "file_results": [],
+                "aggregate_metrics": {
+                    "average_accuracy": 0.0,
+                    "average_f1": 0.0,
+                    "average_balanced_accuracy": 0.0,
+                    "average_roc_auc": 0.0,
+                    "best_performing_file": None,
+                    "worst_performing_file": None
+                }
+            }
+            
             # Process all train/test file pairs
-            all_results = []
             total_train_samples = 0
             total_test_samples = 0
+            successful_files = 0
+            failed_files = 0
+            
+            # Metrics for aggregation
+            all_accuracies = []
+            all_f1_scores = []
+            all_balanced_accuracies = []
+            all_roc_aucs = []
+            best_f1 = -1
+            worst_f1 = 2
+            best_file = None
+            worst_file = None
             
             for train_file in train_files:
                 try:
@@ -5460,6 +5501,7 @@ class TrainingPipeline:
                     
                     if not os.path.exists(test_file):
                         print(f"    train_decision_tree: Warning - No corresponding test file for {train_filename}. Skipping.")
+                        failed_files += 1
                         continue
                     
                     print(f"    train_decision_tree: Processing {train_filename} and {test_filename}")
@@ -5471,6 +5513,7 @@ class TrainingPipeline:
                     # Check if target column exists
                     if DEFAULT_TARGET_FEATURE not in train_df.columns:
                         print(f"    train_decision_tree: Warning - Target feature '{DEFAULT_TARGET_FEATURE}' not found in {train_filename}. Skipping.")
+                        failed_files += 1
                         continue
                     
                     # Prepare features and target
@@ -5556,7 +5599,7 @@ class TrainingPipeline:
                     y_pred = best_dt.predict(X_test)
                     y_pred_proba = best_dt.predict_proba(X_test)
                     
-                    # FIX: Define file_identifier BEFORE using it
+                    # Define file_identifier
                     file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
                     
                     # Calculate comprehensive metrics
@@ -5594,89 +5637,130 @@ class TrainingPipeline:
                     
                     print(f"    train_decision_tree: Saved model, feature importance, and confusion matrix for {file_identifier}")
                     
-                    # Save detailed metrics
-                    metrics_filename = f"metrics_{file_identifier}.json"
-                    metrics_path = os.path.join(output_dir, metrics_filename)
-                    
-                    # Prepare metrics for JSON serialization
-                    json_metrics = {
-                        'file_identifier': file_identifier,
-                        'train_file': train_filename,
-                        'test_file': test_filename,
-                        'train_samples': len(X_train),
-                        'test_samples': len(X_test),
-                        'features_used': len(X_train.columns),
-                        'target_feature': DEFAULT_TARGET_FEATURE,
-                        'best_parameters': best_params,
-                        'best_cv_score': float(best_cv_score),
-                        'score_metric': SCORE_METRIC,
-                        'sample_weights_used': sample_weights is not None,
-                        'confusion_matrix': conf_matrix.tolist(),
-                        'confusion_matrix_files': conf_matrix_result,
-                        'timestamp': datetime.now().isoformat(),
-                        **{k: float(v) if isinstance(v, (int, float, np.number)) else v 
-                        for k, v in metrics.items()}
+                    # Prepare individual file result for consolidated JSON
+                    file_result = {
+                        "file_identifier": file_identifier,
+                        "files": {
+                            "train_file": train_filename,
+                            "test_file": test_filename,
+                            "model_file": model_filename,
+                            "feature_importance_file": importance_filename,
+                            "confusion_matrix_plot": conf_matrix_result.get('plot_file', '')
+                        },
+                        "data_info": {
+                            "train_samples": len(X_train),
+                            "test_samples": len(X_test),
+                            "features_used": len(X_train.columns),
+                            "feature_names": X_train.columns.tolist(),
+                            "sample_weights_used": sample_weights is not None
+                        },
+                        "hyperparameters": {
+                            "best_parameters": {k: float(v) if isinstance(v, (int, float, np.number)) else v 
+                                            for k, v in best_params.items()},
+                            "best_cv_score": float(best_cv_score)
+                        },
+                        "performance_metrics": {
+                            k: float(v) if isinstance(v, (int, float, np.number)) else v 
+                            for k, v in metrics.items()
+                        },
+                        "confusion_matrix": {
+                            "matrix": conf_matrix.tolist(),
+                            "labels": ["Not Delayed", "Delayed"],
+                            "true_negatives": int(conf_matrix[0, 0]),
+                            "false_positives": int(conf_matrix[0, 1]),
+                            "false_negatives": int(conf_matrix[1, 0]),
+                            "true_positives": int(conf_matrix[1, 1])
+                        },
+                        "feature_importance_top_10": [
+                            {
+                                "feature": row['feature'],
+                                "importance": float(row['importance'])
+                            }
+                            for _, row in feature_importance.head(10).iterrows()
+                        ]
                     }
                     
-                    with open(metrics_path, 'w') as f:
-                        json.dump(json_metrics, f, indent=2)
+                    # Add to consolidated results
+                    consolidated_results["file_results"].append(file_result)
                     
-                    # Add to results summary
-                    all_results.append({
-                        'file_identifier': file_identifier,
-                        'train_samples': len(X_train),
-                        'test_samples': len(X_test),
-                        'best_cv_score': best_cv_score,
-                        'test_score': metrics.get(SCORE_METRIC, 0),
-                        'test_accuracy': metrics['accuracy'],
-                        'test_balanced_accuracy': metrics['balanced_accuracy']
-                    })
-                    
+                    # Update aggregates
                     total_train_samples += len(X_train)
                     total_test_samples += len(X_test)
+                    successful_files += 1
+                    
+                    # Track metrics for averaging
+                    current_accuracy = metrics['accuracy']
+                    current_f1 = metrics.get('f1', metrics.get(SCORE_METRIC, 0))
+                    current_balanced_accuracy = metrics['balanced_accuracy']
+                    current_roc_auc = metrics.get('roc_auc', 0)
+                    
+                    all_accuracies.append(current_accuracy)
+                    all_f1_scores.append(current_f1)
+                    all_balanced_accuracies.append(current_balanced_accuracy)
+                    all_roc_aucs.append(current_roc_auc)
+                    
+                    # Track best/worst performing files
+                    if current_f1 > best_f1:
+                        best_f1 = current_f1
+                        best_file = file_identifier
+                    if current_f1 < worst_f1:
+                        worst_f1 = current_f1
+                        worst_file = file_identifier
                     
                     print(f"    train_decision_tree: Completed processing {file_identifier}")
                     
                 except Exception as e:
                     print(f"    train_decision_tree: Error processing {train_file}: {str(e)}")
+                    failed_files += 1
                     continue
             
-            # Save overall summary
-            if all_results:
-                summary_filename = "decision_tree_training_summary.json"
-                summary_path = os.path.join(output_dir, summary_filename)
+            # Finalize consolidated results
+            if successful_files > 0:
+                consolidated_results["training_overview"].update({
+                    "total_files_processed": successful_files + failed_files,
+                    "total_train_samples": total_train_samples,
+                    "total_test_samples": total_test_samples,
+                    "successful_files": successful_files,
+                    "failed_files": failed_files
+                })
                 
-                summary = {
-                    'training_completed': datetime.now().isoformat(),
-                    'target_feature': DEFAULT_TARGET_FEATURE,
-                    'score_metric': SCORE_METRIC,
-                    'total_files_processed': len(all_results),
-                    'total_train_samples': total_train_samples,
-                    'total_test_samples': total_test_samples,
-                    'hyperparameter_search': {
-                        'method': 'RandomizedSearchCV',
-                        'iterations': RANDOM_SEARCH_ITERATIONS,
-                        'cv_folds': RANDOM_SEARCH_CV_FOLDS,
-                        'param_distributions': format_param_distributions_for_json(DECISION_TREE_PARAM_DISTRIBUTIONS)
-                    }
-                }
+                consolidated_results["aggregate_metrics"].update({
+                    "average_accuracy": float(np.mean(all_accuracies)),
+                    "average_f1": float(np.mean(all_f1_scores)),
+                    "average_balanced_accuracy": float(np.mean(all_balanced_accuracies)),
+                    "average_roc_auc": float(np.mean(all_roc_aucs)),
+                    "best_performing_file": {
+                        "file_identifier": best_file,
+                        "f1_score": float(best_f1)
+                    } if best_file else None,
+                    "worst_performing_file": {
+                        "file_identifier": worst_file,
+                        "f1_score": float(worst_f1)
+                    } if worst_file else None
+                })
                 
-                with open(summary_path, 'w') as f:
-                    json.dump(summary, f, indent=2)
+                # Save consolidated results to single JSON file
+                consolidated_filename = "decision_tree_training_results.json"
+                consolidated_path = os.path.join(output_dir, consolidated_filename)
                 
-                print(f"    train_decision_tree: Training completed successfully!")
-                print(f"    train_decision_tree: Processed {len(all_results)} file pairs")
+                with open(consolidated_path, 'w') as f:
+                    json.dump(consolidated_results, f, indent=2)
+                
+                print(f"    train_decision_tree: Processed {successful_files} file pairs")
                 print(f"    train_decision_tree: Generated models, feature importance, and confusion matrices")
+                print(f"    train_decision_tree: Consolidated results saved to: {consolidated_filename}")
                 print(f"    train_decision_tree: Results saved to: {output_dir}")
+                print(f"    train_decision_tree: Training completed successfully!")
                 
                 return {
                     "success": True,
-                    "files_processed": len(all_results),
+                    "files_processed": successful_files,
                     "total_train_samples": total_train_samples,
                     "total_test_samples": total_test_samples,
                     "output_directory": output_dir,
                     "target_feature": DEFAULT_TARGET_FEATURE,
-                    "score_metric": SCORE_METRIC
+                    "score_metric": SCORE_METRIC,
+                    "consolidated_results_file": consolidated_filename
                 }
             else:
                 error_msg = "No files were successfully processed"
