@@ -5021,285 +5021,310 @@ class TrainingPipeline:
             }
 
     def threshold_optimization_decision_tree(self):
-            """
-            Optimize decision tree classification thresholds using ROC analysis.
+        """
+        Optimize decision tree classification thresholds using ROC analysis.
+        
+        This method loads trained decision tree models from the previous stage,
+        analyzes ROC curves to find optimal thresholds, and retrains models
+        with optimized thresholds. Results are saved to decision_tree_threshold_optimized folder.
+        
+        Returns:
+        --------
+        dict
+            A summary of the threshold optimization results including optimal thresholds and performance metrics.
+        """
+        try:
+            print(f"    threshold_optimization_decision_tree: Starting threshold optimization...")
             
-            This method loads trained decision tree models from the previous stage,
-            analyzes ROC curves to find optimal thresholds, and retrains models
-            with optimized thresholds. Results are saved to decishin_tree_threshold_optimized folder.
+            # Create output directory
+            output_dir = os.path.join(self.project_root, DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
             
-            Returns:
-            --------
-            dict
-                A summary of the threshold optimization results including optimal thresholds and performance metrics.
-            """
-            try:
-                print(f"    threshold_optimization_decision_tree: Starting threshold optimization...")
-                
-                # Create output directory
-                output_dir = os.path.join(self.project_root, DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER)
-                os.makedirs(output_dir, exist_ok=True)
-                
-                # Check if decision tree results exist from previous stage
-                dt_output_dir = os.path.join(self.project_root, "data/output/decision_tree")
-                dt_results_file = os.path.join(dt_output_dir, "decision_tree_training_results.json")
-                
-                if not os.path.exists(dt_results_file):
-                    error_msg = "Decision tree training results not found. Run train_decision_tree stage first."
-                    print(f"    threshold_optimization_decision_tree: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg
-                    }
-                
-                # Load decision tree training results
-                with open(dt_results_file, 'r') as f:
-                    dt_results = json.load(f)
-                
-                print(f"    threshold_optimization_decision_tree: Found {len(dt_results.get('file_results', []))} trained models")
-                
-                # Find train and test files
-                scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
-                train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train_scaled.csv")
-                test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test_scaled.csv")
-                
-                train_files = glob.glob(train_pattern)
-                test_files = glob.glob(test_pattern)
-                
-                if not train_files or not test_files:
-                    error_msg = f"Training/test files not found in {scaled_data_dir}"
-                    print(f"    threshold_optimization_decision_tree: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg
-                    }
-                
-                # Initialize results structure
-                optimization_results = {
-                    "optimization_overview": {
-                        "optimization_completed": datetime.now().isoformat(),
-                        "target_feature": DEFAULT_TARGET_FEATURE,
-                        "optimization_metric": THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"],
-                        "total_models_optimized": 0,
-                        "successful_optimizations": 0,
-                        "failed_optimizations": 0
-                    },
-                    "threshold_optimization_config": THRESHOLD_OPTIMIZATION_CONFIG,
-                    "file_results": [],
-                    "aggregate_metrics": {
-                        "average_optimal_threshold": 0.0,
-                        "average_optimized_f1": 0.0,
-                        "average_optimized_precision": 0.0,
-                        "average_optimized_recall": 0.0,
-                        "best_performing_file": None
-                    }
-                }
-                
-                successful_optimizations = 0
-                failed_optimizations = 0
-                all_optimal_thresholds = []
-                all_optimized_f1_scores = []
-                all_optimized_precisions = []
-                all_optimized_recalls = []
-                best_f1 = -1
-                best_file = None
-                
-                # Process each train/test file pair
-                for train_file in train_files:
-                    try:
-                        # Find corresponding test file and model
-                        train_filename = os.path.basename(train_file)
-                        test_filename = train_filename.replace('_train_scaled.csv', '_test_scaled.csv')
-                        test_file = os.path.join(scaled_data_dir, test_filename)
-                        
-                        if not os.path.exists(test_file):
-                            print(f"    threshold_optimization_decision_tree: Warning - No test file for {train_filename}. Skipping.")
-                            continue
-                        
-                        # Find corresponding trained model
-                        file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
-                        model_file = os.path.join(dt_output_dir, f"decision_tree_model_{file_identifier}.joblib")
-                        
-                        if not os.path.exists(model_file):
-                            print(f"    threshold_optimization_decision_tree: Warning - No model file for {file_identifier}. Skipping.")
-                            continue
-                        
-                        print(f"    threshold_optimization_decision_tree: Optimizing threshold for {file_identifier}")
-                        
-                        # Load the trained model
-                        model = joblib.load(model_file)
-                        
-                        # Load test data
-                        test_df = pd.read_csv(test_file)
-                        
-                        if DEFAULT_TARGET_FEATURE not in test_df.columns:
-                            print(f"    threshold_optimization_decision_tree: Target feature '{DEFAULT_TARGET_FEATURE}' not found in {test_filename}")
-                            failed_optimizations += 1
-                            continue
-                        
-                        # Prepare test features and target
-                        y_test = test_df[DEFAULT_TARGET_FEATURE]
-                        X_test = test_df.drop(columns=[DEFAULT_TARGET_FEATURE])
-                        
-                        # Get probability predictions for positive class
-                        y_proba = model.predict_proba(X_test)[:, 1]
-                        
-                        # Calculate ROC curve
-                        fpr, tpr, thresholds = roc_curve(y_test, y_proba)
-                        roc_auc = auc(fpr, tpr)
-                        
-                        # Calculate Precision-Recall curve
-                        precision, recall, pr_thresholds = precision_recall_curve(y_test, y_proba)
-                        pr_auc = average_precision_score(y_test, y_proba)
-                        
-                        # Find optimal threshold based on different metrics
-                        optimal_thresholds = self._find_optimal_thresholds(
-                            y_test, y_proba, fpr, tpr, thresholds, precision, recall, pr_thresholds
-                        )
-                        
-                        # Use the metric specified in config
-                        optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
-                        optimal_threshold = optimal_thresholds[optimization_metric]
-                        
-                        # Make predictions with optimal threshold
-                        y_pred_optimized = (y_proba >= optimal_threshold).astype(int)
-                        
-                        # Calculate optimized performance metrics
-                        optimized_precision = precision_score(y_test, y_pred_optimized)
-                        optimized_recall = recall_score(y_test, y_pred_optimized)
-                        optimized_f1 = f1_score(y_test, y_pred_optimized)
-                        optimized_accuracy = accuracy_score(y_test, y_pred_optimized)
-                        
-                        # Create and save plots
-                        if THRESHOLD_OPTIMIZATION_CONFIG["plot_roc_curve"]:
-                            self._plot_roc_curve(fpr, tpr, roc_auc, optimal_threshold, 
-                                            file_identifier, output_dir)
-                        
-                        if THRESHOLD_OPTIMIZATION_CONFIG["plot_precision_recall"]:
-                            self._plot_precision_recall_curve(precision, recall, pr_auc, optimal_threshold,
-                                                            file_identifier, output_dir)
-                        
-                        # Plot threshold analysis
-                        self._plot_threshold_analysis(thresholds, fpr, tpr, precision[:-1], recall[:-1],
-                                                    file_identifier, output_dir)
-                        
-                        # Save optimized model if configured
-                        if THRESHOLD_OPTIMIZATION_CONFIG["save_optimized_models"]:
-                            optimized_model_data = {
-                                "original_model": model,
-                                "optimal_threshold": optimal_threshold,
-                                "optimization_metric": optimization_metric,
-                                "roc_auc": roc_auc,
-                                "pr_auc": pr_auc
-                            }
-                            optimized_model_file = os.path.join(output_dir, f"optimized_decision_tree_{file_identifier}.joblib")
-                            joblib.dump(optimized_model_data, optimized_model_file)
-                        
-                        # Store results
-                        file_result = {
-                            "file_identifier": file_identifier,
-                            "optimization_successful": True,
-                            "optimal_thresholds": optimal_thresholds,
-                            "used_threshold": optimal_threshold,
-                            "used_optimization_metric": optimization_metric,
-                            "performance_metrics": {
-                                "roc_auc": float(roc_auc),
-                                "pr_auc": float(pr_auc),
-                                "optimized_precision": float(optimized_precision),
-                                "optimized_recall": float(optimized_recall),
-                                "optimized_f1": float(optimized_f1),
-                                "optimized_accuracy": float(optimized_accuracy)
-                            },
-                            "test_samples": len(y_test)
-                        }
-                        
-                        optimization_results["file_results"].append(file_result)
-                        
-                        # Update tracking variables
-                        all_optimal_thresholds.append(optimal_threshold)
-                        all_optimized_f1_scores.append(optimized_f1)
-                        all_optimized_precisions.append(optimized_precision)
-                        all_optimized_recalls.append(optimized_recall)
-                        
-                        if optimized_f1 > best_f1:
-                            best_f1 = optimized_f1
-                            best_file = file_identifier
-                        
-                        successful_optimizations += 1
-                        print(f"    threshold_optimization_decision_tree: ✓ {file_identifier} - Optimal threshold: {optimal_threshold:.3f}, F1: {optimized_f1:.3f}")
-                        
-                    except Exception as e:
-                        print(f"    threshold_optimization_decision_tree: Error processing {train_file}: {str(e)}")
-                        failed_optimizations += 1
-                        
-                        # Add failed result
-                        file_identifier = os.path.basename(train_file).replace('_train_scaled.csv', '')
-                        optimization_results["file_results"].append({
-                            "file_identifier": file_identifier,
-                            "optimization_successful": False,
-                            "error": str(e)
-                        })
-                        continue
-                
-                # Finalize results
-                if successful_optimizations > 0:
-                    optimization_results["optimization_overview"].update({
-                        "total_models_optimized": successful_optimizations + failed_optimizations,
-                        "successful_optimizations": successful_optimizations,
-                        "failed_optimizations": failed_optimizations
-                    })
-                    
-                    optimization_results["aggregate_metrics"].update({
-                        "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
-                        "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
-                        "average_optimized_precision": float(np.mean(all_optimized_precisions)),
-                        "average_optimized_recall": float(np.mean(all_optimized_recalls)),
-                        "best_performing_file": {
-                            "file_identifier": best_file,
-                            "f1_score": float(best_f1)
-                        } if best_file else None
-                    })
-                    
-                    # Save consolidated results
-                    results_file = os.path.join(output_dir, "threshold_optimization_results.json")
-                    with open(results_file, 'w') as f:
-                        json.dump(optimization_results, f, indent=2)
-                    
-                    # Create summary plot showing all optimal thresholds
-                    self._plot_threshold_summary(all_optimal_thresholds, all_optimized_f1_scores, output_dir)
-                    
-                    print(f"    threshold_optimization_decision_tree: Completed successfully!")
-                    print(f"    threshold_optimization_decision_tree: Optimized {successful_optimizations} models")
-                    print(f"    threshold_optimization_decision_tree: Average optimal threshold: {np.mean(all_optimal_thresholds):.3f}")
-                    print(f"    threshold_optimization_decision_tree: Average optimized F1: {np.mean(all_optimized_f1_scores):.3f}")
-                    print(f"    threshold_optimization_decision_tree: Results saved to: {output_dir}")
-                    
-                    return {
-                        "success": True,
-                        "models_optimized": successful_optimizations,
-                        "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
-                        "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
-                        "output_directory": output_dir,
-                        "results_file": results_file,
-                        "target_feature": DEFAULT_TARGET_FEATURE
-                    }
-                else:
-                    error_msg = "No models were successfully optimized"
-                    print(f"    threshold_optimization_decision_tree: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg
-                    }
-                    
-            except Exception as e:
-                error_msg = f"threshold_optimization_decision_tree failed: {str(e)}"
+            # Check if decision tree results exist from previous stage
+            dt_output_dir = os.path.join(self.project_root, "data/output/decision_tree")
+            dt_results_file = os.path.join(dt_output_dir, "decision_tree_training_results.json")
+            
+            if not os.path.exists(dt_results_file):
+                error_msg = "Decision tree training results not found. Run train_decision_tree stage first."
                 print(f"    threshold_optimization_decision_tree: {error_msg}")
-                import traceback
-                traceback.print_exc()
                 return {
                     "success": False,
                     "error": error_msg
                 }
+            
+            # Load decision tree training results
+            with open(dt_results_file, 'r') as f:
+                dt_results = json.load(f)
+            
+            print(f"    threshold_optimization_decision_tree: Found {len(dt_results.get('file_results', []))} trained models")
+            
+            # Find train and test files
+            scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train_scaled.csv")
+            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test_scaled.csv")
+            
+            train_files = glob.glob(train_pattern)
+            test_files = glob.glob(test_pattern)
+            
+            if not train_files or not test_files:
+                error_msg = f"Training/test files not found in {scaled_data_dir}"
+                print(f"    threshold_optimization_decision_tree: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Initialize results structure
+            optimization_results = {
+                "optimization_overview": {
+                    "optimization_completed": datetime.now().isoformat(),
+                    "target_feature": DEFAULT_TARGET_FEATURE,
+                    "optimization_metric": THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"],
+                    "total_models_optimized": 0,
+                    "successful_optimizations": 0,
+                    "failed_optimizations": 0
+                },
+                "threshold_optimization_config": THRESHOLD_OPTIMIZATION_CONFIG,
+                "file_results": [],
+                "aggregate_metrics": {
+                    "average_optimal_threshold": 0.0,
+                    "average_optimized_f1": 0.0,
+                    "average_optimized_precision": 0.0,
+                    "average_optimized_recall": 0.0,
+                    "best_performing_file": None
+                }
+            }
+            
+            successful_optimizations = 0
+            failed_optimizations = 0
+            all_optimal_thresholds = []
+            all_optimized_f1_scores = []
+            all_optimized_precisions = []
+            all_optimized_recalls = []
+            best_f1 = -1
+            best_file = None
+            
+            # Process each train/test file pair
+            for train_file in train_files:
+                try:
+                    # Find corresponding test file and model
+                    train_filename = os.path.basename(train_file)
+                    test_filename = train_filename.replace('_train_scaled.csv', '_test_scaled.csv')
+                    test_file = os.path.join(scaled_data_dir, test_filename)
+                    
+                    if not os.path.exists(test_file):
+                        print(f"    threshold_optimization_decision_tree: Warning - No test file for {train_filename}. Skipping.")
+                        continue
+                    
+                    # Find corresponding trained model
+                    file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
+                    model_file = os.path.join(dt_output_dir, f"decision_tree_model_{file_identifier}.joblib")
+                    
+                    if not os.path.exists(model_file):
+                        print(f"    threshold_optimization_decision_tree: Warning - No model file for {file_identifier}. Skipping.")
+                        continue
+                    
+                    print(f"    threshold_optimization_decision_tree: Optimizing threshold for {file_identifier}")
+                    
+                    # Load the trained model
+                    model = joblib.load(model_file)
+                    
+                    # Load test data
+                    test_df = pd.read_csv(test_file)
+                    
+                    if DEFAULT_TARGET_FEATURE not in test_df.columns:
+                        print(f"    threshold_optimization_decision_tree: Target feature '{DEFAULT_TARGET_FEATURE}' not found in {test_filename}")
+                        failed_optimizations += 1
+                        continue
+                    
+                    # Prepare test features and target
+                    y_test = test_df[DEFAULT_TARGET_FEATURE]
+                    X_test = test_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                    
+                    # Get probability predictions for positive class
+                    y_proba = model.predict_proba(X_test)[:, 1]
+                    
+                    # Calculate ROC curve
+                    fpr, tpr, thresholds = roc_curve(y_test, y_proba)
+                    roc_auc = auc(fpr, tpr)
+                    
+                    # Calculate Precision-Recall curve
+                    precision, recall, pr_thresholds = precision_recall_curve(y_test, y_proba)
+                    pr_auc = average_precision_score(y_test, y_proba)
+                    
+                    # Find optimal threshold based on different metrics
+                    optimal_thresholds = self._find_optimal_thresholds(
+                        y_test, y_proba, fpr, tpr, thresholds, precision, recall, pr_thresholds
+                    )
+                    
+                    # Use the metric specified in config
+                    optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
+                    optimal_threshold = optimal_thresholds[optimization_metric]
+                    
+                    # Make predictions with optimal threshold
+                    y_pred_optimized = (y_proba >= optimal_threshold).astype(int)
+                    
+                    # Calculate comprehensive metrics using the private method
+                    metrics = self._calculate_classification_metrics(y_test, y_pred_optimized, y_proba)
+                    
+                    # Convert numpy types to JSON-serializable types
+                    def convert_numpy_types(obj):
+                        """Recursively convert numpy types to native Python types."""
+                        if isinstance(obj, dict):
+                            return {k: convert_numpy_types(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [convert_numpy_types(v) for v in obj]
+                        elif isinstance(obj, (np.integer, np.int32, np.int64)):
+                            return int(obj)
+                        elif isinstance(obj, (np.floating, np.float32, np.float64)):
+                            return float(obj)
+                        elif isinstance(obj, np.ndarray):
+                            return obj.tolist()
+                        elif obj is None:
+                            return None
+                        else:
+                            return obj
+                    
+                    # Apply conversion to metrics
+                    metrics = convert_numpy_types(metrics)
+                    
+                    # Calculate individual metrics for backward compatibility
+                    optimized_precision = precision_score(y_test, y_pred_optimized)
+                    optimized_recall = recall_score(y_test, y_pred_optimized)
+                    optimized_f1 = f1_score(y_test, y_pred_optimized)
+                    optimized_accuracy = accuracy_score(y_test, y_pred_optimized)
+                    
+                    # Create and save plots
+                    if THRESHOLD_OPTIMIZATION_CONFIG["plot_roc_curve"]:
+                        self._plot_roc_curve(fpr, tpr, roc_auc, optimal_threshold, 
+                                        file_identifier, output_dir)
+                    
+                    if THRESHOLD_OPTIMIZATION_CONFIG["plot_precision_recall"]:
+                        self._plot_precision_recall_curve(precision, recall, pr_auc, optimal_threshold,
+                                                        file_identifier, output_dir)
+                    
+                    # Plot threshold analysis
+                    self._plot_threshold_analysis(thresholds, fpr, tpr, precision[:-1], recall[:-1],
+                                                file_identifier, output_dir)
+                    
+                    # Save optimized model if configured
+                    if THRESHOLD_OPTIMIZATION_CONFIG["save_optimized_models"]:
+                        optimized_model_data = {
+                            "original_model": model,
+                            "optimal_threshold": optimal_threshold,
+                            "optimization_metric": optimization_metric,
+                            "roc_auc": roc_auc,
+                            "pr_auc": pr_auc
+                        }
+                        optimized_model_file = os.path.join(output_dir, f"optimized_decision_tree_{file_identifier}.joblib")
+                        joblib.dump(optimized_model_data, optimized_model_file)
+                    
+                    # Store results with comprehensive metrics
+                    file_result = {
+                        "file_identifier": file_identifier,
+                        "optimization_successful": True,
+                        "optimal_thresholds": optimal_thresholds,
+                        "used_threshold": optimal_threshold,
+                        "used_optimization_metric": optimization_metric,
+                        "performance_metrics": {
+                            "roc_auc": float(roc_auc),
+                            "pr_auc": float(pr_auc),
+                            "optimized_precision": float(optimized_precision),
+                            "optimized_recall": float(optimized_recall),
+                            "optimized_f1": float(optimized_f1),
+                            "optimized_accuracy": float(optimized_accuracy)
+                        },
+                        "comprehensive_metrics": metrics,  # Add the comprehensive metrics here
+                        "test_samples": len(y_test)
+                    }
+                    
+                    optimization_results["file_results"].append(file_result)
+                    
+                    # Update tracking variables
+                    all_optimal_thresholds.append(optimal_threshold)
+                    all_optimized_f1_scores.append(optimized_f1)
+                    all_optimized_precisions.append(optimized_precision)
+                    all_optimized_recalls.append(optimized_recall)
+                    
+                    if optimized_f1 > best_f1:
+                        best_f1 = optimized_f1
+                        best_file = file_identifier
+                    
+                    successful_optimizations += 1
+                    print(f"    threshold_optimization_decision_tree: ✓ {file_identifier} - Optimal threshold: {optimal_threshold:.3f}, F1: {optimized_f1:.3f}")
+                    
+                except Exception as e:
+                    print(f"    threshold_optimization_decision_tree: Error processing {train_file}: {str(e)}")
+                    failed_optimizations += 1
+                    
+                    # Add failed result
+                    file_identifier = os.path.basename(train_file).replace('_train_scaled.csv', '')
+                    optimization_results["file_results"].append({
+                        "file_identifier": file_identifier,
+                        "optimization_successful": False,
+                        "error": str(e)
+                    })
+                    continue
+            
+            # Finalize results
+            if successful_optimizations > 0:
+                optimization_results["optimization_overview"].update({
+                    "total_models_optimized": successful_optimizations + failed_optimizations,
+                    "successful_optimizations": successful_optimizations,
+                    "failed_optimizations": failed_optimizations
+                })
+                
+                optimization_results["aggregate_metrics"].update({
+                    "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                    "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                    "average_optimized_precision": float(np.mean(all_optimized_precisions)),
+                    "average_optimized_recall": float(np.mean(all_optimized_recalls)),
+                    "best_performing_file": {
+                        "file_identifier": best_file,
+                        "f1_score": float(best_f1)
+                    } if best_file else None
+                })
+                
+                # Save consolidated results
+                results_file = os.path.join(output_dir, "threshold_optimization_results.json")
+                with open(results_file, 'w') as f:
+                    json.dump(optimization_results, f, indent=2)
+                
+                # Create summary plot showing all optimal thresholds
+                self._plot_threshold_summary(all_optimal_thresholds, all_optimized_f1_scores, output_dir)
+                
+                print(f"    threshold_optimization_decision_tree: Completed successfully!")
+                print(f"    threshold_optimization_decision_tree: Optimized {successful_optimizations} models")
+                print(f"    threshold_optimization_decision_tree: Average optimal threshold: {np.mean(all_optimal_thresholds):.3f}")
+                print(f"    threshold_optimization_decision_tree: Average optimized F1: {np.mean(all_optimized_f1_scores):.3f}")
+                print(f"    threshold_optimization_decision_tree: Results saved to: {output_dir}")
+                
+                return {
+                    "success": True,
+                    "models_optimized": successful_optimizations,
+                    "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                    "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                    "output_directory": output_dir,
+                    "results_file": results_file,
+                    "target_feature": DEFAULT_TARGET_FEATURE
+                }
+            else:
+                error_msg = "No models were successfully optimized"
+                print(f"    threshold_optimization_decision_tree: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except Exception as e:
+            error_msg = f"threshold_optimization_decision_tree failed: {str(e)}"
+            print(f"    threshold_optimization_decision_tree: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
+            }
 
     def _create_correlation_plot(self, correlations, filename, output_dir, title):
             """
