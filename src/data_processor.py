@@ -5141,6 +5141,19 @@ class TrainingPipeline:
                     y_test = test_df[DEFAULT_TARGET_FEATURE]
                     X_test = test_df.drop(columns=[DEFAULT_TARGET_FEATURE])
                     
+                    # Extract feature importance from the trained model
+                    feature_importance = pd.DataFrame({
+                        'feature': X_test.columns,  # Use X_test.columns to get the feature names
+                        'importance': model.feature_importances_
+                    }).sort_values('importance', ascending=False)
+
+                    # Save feature importance for threshold optimized model
+                    importance_filename = f"threshold_optimized_feature_importance_{file_identifier}.csv"
+                    importance_path = os.path.join(output_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+
+                    print(f"    threshold_optimization_decision_tree: Saved feature importance for {file_identifier}")
+
                     # Get probability predictions for positive class
                     y_proba = model.predict_proba(X_test)[:, 1]
                     
