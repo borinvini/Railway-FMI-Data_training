@@ -5160,12 +5160,18 @@ class TrainingPipeline:
                     # Use the metric specified in config
                     optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
                     optimal_threshold = optimal_thresholds[optimization_metric]
-                    
+
                     # Make predictions with optimal threshold
                     y_pred_optimized = (y_proba >= optimal_threshold).astype(int)
                     
                     # Calculate comprehensive metrics using the private method
                     metrics = self._calculate_classification_metrics(y_test, y_pred_optimized, y_proba)
+
+                    # Generate and save confusion matrix
+                    conf_matrix = confusion_matrix(y_test, y_pred_optimized)
+                    conf_matrix_result = self._save_confusion_matrix(
+                        conf_matrix, y_test, y_pred_optimized, file_identifier, output_dir
+                    )
                     
                     # Convert numpy types to JSON-serializable types
                     def convert_numpy_types(obj):
