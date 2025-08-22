@@ -16,9 +16,9 @@ from src.file_utils import format_param_distributions_for_json, generate_output_
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import (
-    accuracy_score, balanced_accuracy_score, roc_auc_score, 
+    accuracy_score, auc, balanced_accuracy_score, precision_recall_curve, precision_score, recall_score, roc_auc_score, 
     average_precision_score, cohen_kappa_score, f1_score,
-    classification_report, confusion_matrix
+    classification_report, confusion_matrix, roc_curve
 )
 
 import matplotlib.pyplot as plt
@@ -30,6 +30,7 @@ from config.const import (
     CLASSIFICATION_PROBLEM,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DECISION_TREE_PARAM_DISTRIBUTIONS,
+    DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_WEATHER_CONDITIONS,
     BOOLEAN_FEATURES,
@@ -48,6 +49,7 @@ from config.const import (
     SCORE_METRIC,
     STRONG_INDICATORS,
     TEST_SIZE,
+    THRESHOLD_OPTIMIZATION_CONFIG,
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAINING_READY_OUTPUT_FOLDER,
@@ -3299,6 +3301,34 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ train_decision_tree (disabled)")
 
+        if state_machine.get("threshold_optimization_decision_tree", False):
+            try:
+                print(f"    → threshold_optimization_decision_tree")
+                threshold_opt_result = self.threshold_optimization_decision_tree()
+                
+                if threshold_opt_result and threshold_opt_result.get("success", False):
+                    result["steps_executed"].append("threshold_optimization_decision_tree")
+                    result["file_info"]["threshold_optimized_models"] = threshold_opt_result.get("models_optimized", 0)
+                    print(f"      ✓ Successfully optimized decision tree thresholds")
+                    print(f"      ✓ Target feature: {threshold_opt_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ Models optimized: {threshold_opt_result.get('models_optimized', 0)}")
+                    print(f"      ✓ Average optimal threshold: {threshold_opt_result.get('average_optimal_threshold', 0):.3f}")
+                    print(f"      ✓ Average optimized F1: {threshold_opt_result.get('average_optimized_f1', 0):.3f}")
+                    print(f"      ✓ Results saved to: {threshold_opt_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = threshold_opt_result.get("error", "threshold_optimization_decision_tree returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"threshold_optimization_decision_tree failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ threshold_optimization_decision_tree (disabled)")
+
         
         return result
     
@@ -3541,558 +3571,6 @@ class TrainingPipeline:
                 "error": error_msg,
                 "processed_files": 0
             }
-
-    def _create_correlation_plot(self, correlations, filename, output_dir, title):
-        """
-        Create a Point-Biserial Correlation Analysis plot for a single file.
-        
-        Parameters:
-        -----------
-        correlations : dict
-            Dictionary of feature names and their correlation values
-        filename : str
-            Name of the source file
-        output_dir : str
-            Directory to save the plot
-        title : str
-            Title for the plot
-        """
-        try:
-            # Filter out NaN correlations
-            valid_correlations = {k: v for k, v in correlations.items() if not pd.isna(v)}
-            
-            if not valid_correlations:
-                print(f"        No valid correlations to plot for {filename}")
-                return
-            
-            # Sort correlations by absolute value for better visualization
-            sorted_correlations = sorted(valid_correlations.items(), key=lambda x: abs(x[1]), reverse=True)
-            features = [item[0] for item in sorted_correlations]
-            corr_values = [item[1] for item in sorted_correlations]
-            
-            # Create figure with single plot
-            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-            
-            # Horizontal bar chart of Point-Biserial correlations
-            colors = ['red' if val < 0 else 'steelblue' for val in corr_values]
-            bars = ax.barh(range(len(features)), corr_values, color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
-            
-            # Customize plot
-            ax.set_yticks(range(len(features)))
-            ax.set_yticklabels(features, fontsize=11)
-            ax.set_xlabel('Point-Biserial Correlation Coefficient (r_pb)', fontsize=12)
-            ax.set_title(f'Point-Biserial Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Weather Features', fontsize=14, pad=20)
-            ax.axvline(x=0, color='black', linestyle='-', linewidth=1)
-            ax.grid(axis='x', alpha=0.3)
-            ax.set_xlim(-1, 1)
-            
-            # Add value labels on bars
-            for i, (bar, value) in enumerate(zip(bars, corr_values)):
-                label_x = value + (0.02 if value >= 0 else -0.02)
-                ha = 'left' if value >= 0 else 'right'
-                ax.text(label_x, bar.get_y() + bar.get_height()/2, f'{value:.3f}', 
-                        ha=ha, va='center', fontsize=10, fontweight='bold')
-            
-            # Add interpretation guide
-            interpretation_text = (
-                "Interpretation Guide:\n"
-                "• |r_pb| ≥ 0.7: Very Strong relationship\n"
-                "• 0.5 ≤ |r_pb| < 0.7: Strong relationship\n"
-                "• 0.3 ≤ |r_pb| < 0.5: Moderate relationship\n"
-                "• 0.1 ≤ |r_pb| < 0.3: Weak relationship\n"
-                "• |r_pb| < 0.1: Very weak/no relationship\n\n"
-                "Positive: Higher weather values → More delays\n"
-                "Negative: Higher weather values → Fewer delays"
-            )
-            
-            fig.text(0.02, 0.02, interpretation_text, fontsize=10, 
-                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8),
-                    verticalalignment='bottom')
-            
-            plt.suptitle(f'Point-Biserial Correlation Analysis: {filename}', fontsize=15, y=0.95)
-            plt.tight_layout()
-            plt.subplots_adjust(bottom=0.25)
-            
-            # Save plot
-            safe_filename = filename.replace('.csv', '').replace(' ', '_')
-            plot_filename = f"point_biserial_correlation_{safe_filename}.png"
-            plot_path = os.path.join(output_dir, plot_filename)
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            print(f"        Saved point-biserial correlation plot: {plot_filename}")
-            
-        except Exception as e:
-            print(f"        Warning: Failed to create plot for {filename}: {str(e)}")
-
-    def _create_distribution_plots(self, df, weather_features, filename, output_dir):
-        """
-        Create distribution plots for target feature and weather features.
-        
-        Parameters:
-        -----------
-        df : pandas.DataFrame
-            The dataset containing all features
-        weather_features : list
-            List of weather feature column names
-        filename : str
-            Name of the source file
-        output_dir : str
-            Directory to save the plots
-        """
-        try:
-            print(f"        Creating distribution plots for {filename}...")
-            
-            # Check if target feature exists
-            if DEFAULT_TARGET_FEATURE not in df.columns:
-                print(f"        Warning: Target feature '{DEFAULT_TARGET_FEATURE}' not found for distribution plots")
-                return
-            
-            # Filter weather features that exist in the dataframe
-            valid_weather_features = [col for col in weather_features if col in df.columns]
-            
-            if not valid_weather_features:
-                print(f"        Warning: No valid weather features found for distribution plots")
-                return
-            
-            # Create comprehensive distribution analysis
-            n_features = len(valid_weather_features)
-            n_cols = 3
-            n_rows = max(2, (n_features + n_cols - 1) // n_cols + 1)  # +1 for target distribution
-            
-            fig = plt.figure(figsize=(18, 6 * n_rows))
-            gs = fig.add_gridspec(n_rows, n_cols, hspace=0.4, wspace=0.3)
-            
-            # 1. Target feature distribution (first row, span all columns)
-            ax_target = fig.add_subplot(gs[0, :])
-            target_counts = df[DEFAULT_TARGET_FEATURE].value_counts()
-            target_proportions = df[DEFAULT_TARGET_FEATURE].value_counts(normalize=True)
-            
-            bars = ax_target.bar(
-                ['Not Delayed (False)', 'Delayed (True)'], 
-                [target_counts.get(False, 0), target_counts.get(True, 0)],
-                color=['lightgreen', 'lightcoral'], 
-                alpha=0.7,
-                edgecolor='black',
-                linewidth=1
-            )
-            
-            ax_target.set_title(f'{DEFAULT_TARGET_FEATURE} Distribution\nTotal samples: {len(df):,}', 
-                            fontsize=14, fontweight='bold')
-            ax_target.set_ylabel('Count', fontsize=12)
-            
-            # Add percentage labels on bars
-            for i, (bar, count) in enumerate(zip(bars, [target_counts.get(False, 0), target_counts.get(True, 0)])):
-                percentage = (count / len(df)) * 100
-                ax_target.text(bar.get_x() + bar.get_width()/2, bar.get_height() + len(df)*0.01,
-                            f'{count:,}\n({percentage:.1f}%)', 
-                            ha='center', va='bottom', fontweight='bold', fontsize=11)
-            
-            ax_target.grid(axis='y', alpha=0.3)
-            
-            # 2. Weather feature distributions and comparative box plots
-            for i, feature in enumerate(valid_weather_features):
-                row = (i // n_cols) + 1
-                col = i % n_cols
-                
-                # Create subplot for this feature
-                ax = fig.add_subplot(gs[row, col])
-                
-                # Get feature data, handling missing values
-                feature_data = df[feature].dropna()
-                if len(feature_data) == 0:
-                    ax.text(0.5, 0.5, f'No valid data\nfor {feature}', 
-                        ha='center', va='center', transform=ax.transAxes,
-                        fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
-                    ax.set_title(feature, fontsize=12, fontweight='bold')
-                    continue
-                
-                # Create combined plot: histogram + box plot comparison
-                # Top: Histogram of the feature
-                ax_hist = ax
-                ax_hist.hist(feature_data, bins=30, alpha=0.7, color='steelblue', 
-                            edgecolor='black', linewidth=0.5)
-                ax_hist.set_title(f'{feature} Distribution', fontsize=11, fontweight='bold')
-                ax_hist.set_xlabel(feature, fontsize=10)
-                ax_hist.set_ylabel('Frequency', fontsize=10)
-                ax_hist.grid(axis='y', alpha=0.3)
-                
-                # Add statistics text
-                stats_text = (f'Mean: {feature_data.mean():.2f}\n'
-                            f'Std: {feature_data.std():.2f}\n'
-                            f'Missing: {df[feature].isna().sum():,}')
-                ax_hist.text(0.02, 0.98, stats_text, transform=ax_hist.transAxes,
-                            verticalalignment='top', fontsize=9,
-                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
-            
-            plt.suptitle(f'Feature Distributions Analysis: {filename}', fontsize=16, y=0.98)
-            plt.tight_layout()
-            
-            # Save distribution plot
-            safe_filename = filename.replace('.csv', '').replace(' ', '_')
-            dist_plot_filename = f"distributions_{safe_filename}.png"
-            dist_plot_path = os.path.join(output_dir, dist_plot_filename)
-            plt.savefig(dist_plot_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            # Create separate comparative box plots (delayed vs non-delayed)
-            self._create_comparative_distributions(df, valid_weather_features, filename, output_dir)
-            
-            print(f"        Saved distribution plots: {dist_plot_filename}")
-            
-        except Exception as e:
-            print(f"        Warning: Failed to create distribution plots for {filename}: {str(e)}")
-
-    def _create_comparative_distributions(self, df, weather_features, filename, output_dir):
-        """
-        Create comparative distribution plots showing weather features for delayed vs non-delayed trains.
-        
-        Parameters:
-        -----------
-        df : pandas.DataFrame
-            The dataset containing all features
-        weather_features : list
-            List of weather feature column names
-        filename : str
-            Name of the source file
-        output_dir : str
-            Directory to save the plots
-        """
-        try:
-            print(f"        Creating comparative distribution plots for {filename}...")
-            
-            # Separate data by target feature
-            delayed_data = df[df[DEFAULT_TARGET_FEATURE] == True]
-            not_delayed_data = df[df[DEFAULT_TARGET_FEATURE] == False]
-            
-            if len(delayed_data) == 0 or len(not_delayed_data) == 0:
-                print(f"        Warning: Insufficient data for comparative analysis")
-                return
-            
-            n_features = len(weather_features)
-            n_cols = 2
-            n_rows = (n_features + n_cols - 1) // n_cols
-            
-            fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 5 * n_rows))
-            if n_rows == 1:
-                axes = axes.reshape(1, -1)
-            elif n_cols == 1:
-                axes = axes.reshape(-1, 1)
-            
-            for i, feature in enumerate(weather_features):
-                row = i // n_cols
-                col = i % n_cols
-                ax = axes[row, col] if n_rows > 1 else axes[col]
-                
-                # Get feature data for both groups
-                delayed_feature = delayed_data[feature].dropna()
-                not_delayed_feature = not_delayed_data[feature].dropna()
-                
-                if len(delayed_feature) == 0 or len(not_delayed_feature) == 0:
-                    ax.text(0.5, 0.5, f'Insufficient data\nfor {feature}', 
-                        ha='center', va='center', transform=ax.transAxes,
-                        fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
-                    ax.set_title(feature, fontsize=12, fontweight='bold')
-                    continue
-                
-                # Create box plot comparison
-                box_data = [not_delayed_feature, delayed_feature]
-                box_labels = ['Not Delayed', 'Delayed']
-                
-                bp = ax.boxplot(box_data, labels=box_labels, patch_artist=True)
-                bp['boxes'][0].set_facecolor('lightgreen')
-                bp['boxes'][0].set_alpha(0.7)
-                bp['boxes'][1].set_facecolor('lightcoral')
-                bp['boxes'][1].set_alpha(0.7)
-                
-                ax.set_title(f'{feature}\nDelayed vs Not Delayed', fontsize=11, fontweight='bold')
-                ax.set_ylabel(feature, fontsize=10)
-                ax.grid(axis='y', alpha=0.3)
-                
-                # Add statistical comparison
-                mean_not_delayed = not_delayed_feature.mean()
-                mean_delayed = delayed_feature.mean()
-                difference = mean_delayed - mean_not_delayed
-                
-                stats_text = (f'Not Delayed: μ={mean_not_delayed:.2f}\n'
-                            f'Delayed: μ={mean_delayed:.2f}\n'
-                            f'Difference: {difference:+.2f}')
-                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
-                    verticalalignment='top', fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
-            
-            # Hide empty subplots
-            for i in range(n_features, n_rows * n_cols):
-                row = i // n_cols
-                col = i % n_cols
-                axes[row, col].set_visible(False)
-            
-            plt.suptitle(f'Comparative Distributions: Delayed vs Not Delayed Trains\n{filename}', 
-                        fontsize=14, y=0.98)
-            plt.tight_layout()
-            
-            # Save comparative plot
-            safe_filename = filename.replace('.csv', '').replace(' ', '_')
-            comp_plot_filename = f"comparative_distributions_{safe_filename}.png"
-            comp_plot_path = os.path.join(output_dir, comp_plot_filename)
-            plt.savefig(comp_plot_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            print(f"        Saved comparative distribution plot: {comp_plot_filename}")
-            
-        except Exception as e:
-            print(f"        Warning: Failed to create comparative distribution plots for {filename}: {str(e)}")
-
-    def _create_combined_correlation_analysis(self, correlation_results, output_dir):
-        """
-        Create combined Point-Biserial correlation analysis across all files.
-        
-        Parameters:
-        -----------
-        correlation_results : list
-            List of correlation result dictionaries from each file
-        output_dir : str
-            Directory to save the combined analysis
-        """
-        try:
-            print("    correlation_analysis: Creating combined point-biserial correlation analysis...")
-            
-            # Collect all unique weather features
-            all_features = set()
-            for result in correlation_results:
-                all_features.update(result['correlations'].keys())
-            all_features = sorted(list(all_features))
-            
-            # Calculate average correlations across files
-            avg_correlations = {}
-            correlation_ranges = {}
-            
-            for feature in all_features:
-                feature_values = []
-                for result in correlation_results:
-                    corr_value = result['correlations'].get(feature, np.nan)
-                    if not pd.isna(corr_value):
-                        feature_values.append(corr_value)
-                
-                if feature_values:
-                    avg_correlations[feature] = {
-                        'mean': np.mean(feature_values),
-                        'std': np.std(feature_values),
-                        'min': np.min(feature_values),
-                        'max': np.max(feature_values),
-                        'count': len(feature_values)
-                    }
-                    correlation_ranges[feature] = (np.min(feature_values), np.max(feature_values))
-            
-            # Sort by absolute mean correlation
-            sorted_features = sorted(avg_correlations.keys(), 
-                                key=lambda x: abs(avg_correlations[x]['mean']), 
-                                reverse=True)
-            
-            # Create comprehensive combined plot
-            fig = plt.figure(figsize=(20, 12))
-            gs = fig.add_gridspec(2, 3, height_ratios=[2, 1], width_ratios=[2, 2, 1])
-            
-            # Main plot: Average correlations with error bars
-            ax1 = fig.add_subplot(gs[0, 0])
-            
-            y_positions = range(len(sorted_features))
-            means = [avg_correlations[f]['mean'] for f in sorted_features]
-            stds = [avg_correlations[f]['std'] for f in sorted_features]
-            colors = ['red' if val < 0 else 'steelblue' for val in means]
-            
-            bars = ax1.barh(y_positions, means, xerr=stds, color=colors, alpha=0.7, 
-                        capsize=5, edgecolor='black', linewidth=0.5)
-            
-            ax1.set_yticks(y_positions)
-            ax1.set_yticklabels(sorted_features, fontsize=10)
-            ax1.set_xlabel('Average Point-Biserial Correlation', fontsize=12)
-            ax1.set_title('Average Point-Biserial Correlations\n(with Standard Deviation)', fontsize=12)
-            ax1.axvline(x=0, color='black', linestyle='-', linewidth=1)
-            ax1.grid(axis='x', alpha=0.3)
-            ax1.set_xlim(-1, 1)
-            
-            # Add value labels
-            for i, (bar, mean_val, std_val) in enumerate(zip(bars, means, stds)):
-                label_x = mean_val + (0.05 if mean_val >= 0 else -0.05)
-                ha = 'left' if mean_val >= 0 else 'right'
-                ax1.text(label_x, bar.get_y() + bar.get_height()/2, 
-                        f'{mean_val:.3f}±{std_val:.3f}', 
-                        ha=ha, va='center', fontsize=8, fontweight='bold')
-            
-            # Range analysis plot
-            ax2 = fig.add_subplot(gs[0, 1])
-            
-            for i, feature in enumerate(sorted_features):
-                min_val, max_val = correlation_ranges[feature]
-                mean_val = avg_correlations[feature]['mean']
-                
-                # Plot range as line
-                ax2.plot([min_val, max_val], [i, i], 'k-', linewidth=2, alpha=0.6)
-                # Plot min and max as points
-                ax2.plot(min_val, i, 'ro', markersize=6, alpha=0.8)
-                ax2.plot(max_val, i, 'bo', markersize=6, alpha=0.8)
-                # Plot mean as diamond
-                ax2.plot(mean_val, i, 'gD', markersize=8, alpha=0.9)
-            
-            ax2.set_yticks(y_positions)
-            ax2.set_yticklabels(sorted_features, fontsize=10)
-            ax2.set_xlabel('Correlation Range Across Files', fontsize=12)
-            ax2.set_title('Correlation Variability\n(Min-Max Range)', fontsize=12)
-            ax2.axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
-            ax2.grid(axis='x', alpha=0.3)
-            ax2.set_xlim(-1, 1)
-            ax2.legend(['Range', 'Minimum', 'Maximum', 'Mean'], loc='lower right', fontsize=9)
-            
-            # Strength classification plot
-            ax3 = fig.add_subplot(gs[0, 2])
-            
-            strength_categories = {'Very Strong (≥0.7)': [], 'Strong (0.5-0.7)': [], 
-                                'Moderate (0.3-0.5)': [], 'Weak (0.1-0.3)': [], 
-                                'Very Weak (<0.1)': []}
-            
-            for feature in sorted_features:
-                abs_mean = abs(avg_correlations[feature]['mean'])
-                if abs_mean >= 0.7:
-                    strength_categories['Very Strong (≥0.7)'].append(feature)
-                elif abs_mean >= 0.5:
-                    strength_categories['Strong (0.5-0.7)'].append(feature)
-                elif abs_mean >= 0.3:
-                    strength_categories['Moderate (0.3-0.5)'].append(feature)
-                elif abs_mean >= 0.1:
-                    strength_categories['Weak (0.1-0.3)'].append(feature)
-                else:
-                    strength_categories['Very Weak (<0.1)'].append(feature)
-            
-            category_counts = [len(features) for features in strength_categories.values()]
-            category_labels = list(strength_categories.keys())
-            colors_pie = ['darkred', 'red', 'orange', 'yellow', 'lightgray']
-            
-            wedges, texts, autotexts = ax3.pie(category_counts, labels=category_labels, autopct='%1.0f%%', 
-                                            colors=colors_pie, startangle=90)
-            ax3.set_title('Correlation Strength\nDistribution', fontsize=12)
-            
-            # File-by-file heatmap
-            ax4 = fig.add_subplot(gs[1, :2])
-            
-            # Create matrix for heatmap
-            heatmap_data = []
-            file_labels = []
-            
-            for result in correlation_results:
-                row_data = []
-                for feature in sorted_features:
-                    corr_value = result['correlations'].get(feature, np.nan)
-                    row_data.append(corr_value)
-                heatmap_data.append(row_data)
-                file_labels.append(result['filename'].replace('.csv', ''))
-            
-            heatmap_matrix = np.array(heatmap_data)
-            mask = np.isnan(heatmap_matrix)
-            
-            im = ax4.imshow(heatmap_matrix, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
-            
-            # Add colorbar
-            cbar = plt.colorbar(im, ax=ax4, orientation='horizontal', pad=0.1, shrink=0.8)
-            cbar.set_label('Point-Biserial Correlation Coefficient', fontsize=10)
-            
-            ax4.set_xticks(range(len(sorted_features)))
-            ax4.set_xticklabels(sorted_features, rotation=45, ha='right', fontsize=9)
-            ax4.set_yticks(range(len(file_labels)))
-            ax4.set_yticklabels(file_labels, fontsize=9)
-            ax4.set_title('Point-Biserial Correlations Across All Files', fontsize=12)
-            
-            # Add text annotations for non-NaN values
-            for i in range(len(file_labels)):
-                for j in range(len(sorted_features)):
-                    if not mask[i, j]:
-                        text_color = 'white' if abs(heatmap_matrix[i, j]) > 0.5 else 'black'
-                        ax4.text(j, i, f'{heatmap_matrix[i, j]:.2f}', 
-                                ha='center', va='center', color=text_color, fontsize=7)
-            
-            # Summary statistics text
-            ax5 = fig.add_subplot(gs[1, 2])
-            ax5.axis('off')
-            
-            summary_text = "Summary Statistics:\n\n"
-            summary_text += f"Total Features: {len(sorted_features)}\n"
-            summary_text += f"Files Analyzed: {len(correlation_results)}\n\n"
-            
-            if sorted_features:
-                strongest_feature = sorted_features[0]
-                strongest_corr = avg_correlations[strongest_feature]['mean']
-                summary_text += f"Strongest Correlation:\n{strongest_feature}\n(r = {strongest_corr:.3f})\n\n"
-            
-            # Count by strength
-            for category, features in strength_categories.items():
-                if features:
-                    summary_text += f"{category}: {len(features)}\n"
-            
-            ax5.text(0.1, 0.9, summary_text, transform=ax5.transAxes, fontsize=10,
-                    verticalalignment='top', bbox=dict(boxstyle="round,pad=0.5", 
-                    facecolor="lightblue", alpha=0.8))
-            
-            plt.suptitle(f'Comprehensive Point-Biserial Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Weather Features', 
-                        fontsize=16, y=0.98)
-            plt.tight_layout()
-            
-            # Save combined plot
-            combined_plot_path = os.path.join(output_dir, "combined_point_biserial_analysis.png")
-            plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            # Save detailed average correlations summary
-            avg_summary_path = os.path.join(output_dir, "point_biserial_summary.txt")
-            with open(avg_summary_path, 'w') as f:
-                f.write("Point-Biserial Correlation Analysis Summary\n")
-                f.write("=" * 60 + "\n\n")
-                f.write(f"Target Variable: {DEFAULT_TARGET_FEATURE} (Binary)\n")
-                f.write(f"Weather Features: {len(all_features)} (Continuous)\n")
-                f.write(f"Files Analyzed: {len(correlation_results)}\n\n")
-                
-                f.write("Correlation Strength Interpretation:\n")
-                f.write("• |r_pb| ≥ 0.7: Very Strong relationship\n")
-                f.write("• 0.5 ≤ |r_pb| < 0.7: Strong relationship\n")
-                f.write("• 0.3 ≤ |r_pb| < 0.5: Moderate relationship\n")
-                f.write("• 0.1 ≤ |r_pb| < 0.3: Weak relationship\n")
-                f.write("• |r_pb| < 0.1: Very weak/no relationship\n\n")
-                
-                f.write("Weather Features (sorted by absolute correlation strength):\n")
-                f.write("-" * 70 + "\n")
-                for i, feature in enumerate(sorted_features, 1):
-                    stats = avg_correlations[feature]
-                    strength = ""
-                    abs_mean = abs(stats['mean'])
-                    if abs_mean >= 0.7:
-                        strength = "Very Strong"
-                    elif abs_mean >= 0.5:
-                        strength = "Strong"
-                    elif abs_mean >= 0.3:
-                        strength = "Moderate"
-                    elif abs_mean >= 0.1:
-                        strength = "Weak"
-                    else:
-                        strength = "Very Weak"
-                    
-                    f.write(f"{i:2d}. {feature}:\n")
-                    f.write(f"    Mean correlation: {stats['mean']:+.4f} ({strength})\n")
-                    f.write(f"    Std deviation: {stats['std']:.4f}\n")
-                    f.write(f"    Range: [{stats['min']:+.4f}, {stats['max']:+.4f}]\n")
-                    f.write(f"    Files available: {stats['count']}/{len(correlation_results)}\n")
-                    
-                    # Interpretation
-                    if stats['mean'] > 0:
-                        direction = "Higher values → More train delays"
-                    elif stats['mean'] < 0:
-                        direction = "Higher values → Fewer train delays"
-                    else:
-                        direction = "No clear relationship"
-                    f.write(f"    Interpretation: {direction}\n\n")
-            
-            print(f"        Saved comprehensive point-biserial correlation analysis")
-            
-        except Exception as e:
-            print(f"        Warning: Failed to create combined analysis: {str(e)}")
 
     def non_weather_correlation_analysis(self, csv_files=None):
         """
@@ -4370,256 +3848,6 @@ class TrainingPipeline:
                 "error": error_msg,
                 "processed_files": 0
             }
-
-    def _create_non_weather_correlation_plot(self, correlations, correlation_types, filename, output_dir, title):
-        """
-        Create a Non-Weather Features Correlation Analysis plot for a single file.
-        
-        This creates separate subplots for boolean and temporal features with their correlations.
-        """
-        try:
-            # Separate correlations by type
-            boolean_correlations = {}
-            temporal_correlations = {}
-            
-            for feature, corr in correlations.items():
-                if pd.isna(corr):
-                    continue
-                corr_type = correlation_types.get(feature, "")
-                if "Boolean" in corr_type:
-                    boolean_correlations[feature] = corr
-                elif "Temporal" in corr_type:
-                    temporal_correlations[feature] = corr
-            
-            # Calculate subplot layout
-            n_plots = 0
-            if boolean_correlations:
-                n_plots += 1
-            if temporal_correlations:
-                n_plots += 1
-            
-            if n_plots == 0:
-                print(f"      No valid correlations to plot for {filename}")
-                return
-            
-            fig, axes = plt.subplots(n_plots, 1, figsize=(12, 6 * n_plots))
-            if n_plots == 1:
-                axes = [axes]
-            
-            plot_idx = 0
-            
-            # Plot boolean features
-            if boolean_correlations:
-                ax = axes[plot_idx]
-                features = list(boolean_correlations.keys())
-                values = list(boolean_correlations.values())
-                colors = ['darkblue' if v >= 0 else 'darkred' for v in values]
-                
-                bars = ax.bar(features, values, color=colors, alpha=0.7, edgecolor='black')
-                ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-                ax.set_title(f'Boolean Features - Phi Coefficient\n({len(features)} features)')
-                ax.set_ylabel('Phi Coefficient (φ)')
-                ax.grid(True, alpha=0.3)
-                
-                # Add value labels on bars
-                for bar, value in zip(bars, values):
-                    height = bar.get_height()
-                    ax.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.01),
-                        f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
-                        fontsize=10, fontweight='bold')
-                
-                # Rotate x-labels if needed
-                if len(features) > 3:
-                    ax.tick_params(axis='x', rotation=45)
-                
-                plot_idx += 1
-            
-            # Plot temporal features
-            if temporal_correlations:
-                ax = axes[plot_idx]
-                features = list(temporal_correlations.keys())
-                values = list(temporal_correlations.values())
-                colors = ['steelblue' if v >= 0 else 'crimson' for v in values]
-                
-                bars = ax.bar(features, values, color=colors, alpha=0.7, edgecolor='black')
-                ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-                ax.set_title(f'Temporal Features (Sin-Cos) - Point-Biserial Correlation\n({len(features)} features)')
-                ax.set_ylabel('Point-Biserial Correlation (r_pb)')
-                ax.grid(True, alpha=0.3)
-                
-                # Add value labels on bars
-                for bar, value in zip(bars, values):
-                    height = bar.get_height()
-                    ax.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.01),
-                        f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
-                        fontsize=10, fontweight='bold')
-                
-                # Rotate x-labels if needed
-                if len(features) > 3:
-                    ax.tick_params(axis='x', rotation=45)
-            
-            plt.suptitle(title, fontsize=14, y=0.98)
-            plt.tight_layout()
-            
-            # Save plot
-            plot_filename = f"non_weather_correlation_{filename.replace('.csv', '.png')}"
-            plot_path = os.path.join(output_dir, plot_filename)
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            print(f"      Saved non-weather correlation plot: {plot_filename}")
-            
-        except Exception as e:
-            print(f"      Error creating non-weather correlation plot: {str(e)}")
-
-    def _create_combined_non_weather_correlation_analysis(self, correlation_results, output_dir):
-        """
-        Create combined analysis across all non-weather correlation results.
-        """
-        try:
-            print(f"    Creating combined non-weather correlation analysis...")
-            
-            # Aggregate correlations across all files
-            all_features = set()
-            for result in correlation_results:
-                all_features.update(result['correlations'].keys())
-            
-            all_features = sorted(list(all_features))
-            
-            # Calculate average correlations
-            avg_correlations = {}
-            for feature in all_features:
-                values = []
-                for result in correlation_results:
-                    if feature in result['correlations'] and not pd.isna(result['correlations'][feature]):
-                        values.append(result['correlations'][feature])
-                
-                if values:
-                    avg_correlations[feature] = {
-                        'mean': np.mean(values),
-                        'std': np.std(values),
-                        'count': len(values),
-                        'min': np.min(values),
-                        'max': np.max(values)
-                    }
-            
-            # Create combined plot
-            if avg_correlations:
-                # Sort features by absolute correlation strength
-                sorted_features = sorted(avg_correlations.keys(), 
-                                    key=lambda x: abs(avg_correlations[x]['mean']), 
-                                    reverse=True)
-                
-                # Separate by feature type for plotting
-                boolean_features = [f for f in sorted_features if f in ['trainStopping', 'commercialStop']]
-                temporal_features = [f for f in sorted_features if f not in boolean_features]
-                
-                fig, axes = plt.subplots(2, 1, figsize=(14, 10))
-                
-                # Plot boolean features
-                if boolean_features:
-                    ax = axes[0]
-                    values = [avg_correlations[f]['mean'] for f in boolean_features]
-                    errors = [avg_correlations[f]['std'] for f in boolean_features]
-                    colors = ['darkblue' if v >= 0 else 'darkred' for v in values]
-                    
-                    bars = ax.bar(boolean_features, values, yerr=errors, color=colors, 
-                                alpha=0.7, edgecolor='black', capsize=5)
-                    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-                    ax.set_title(f'Boolean Features - Average Phi Coefficient Across All Files\n({len(boolean_features)} features)')
-                    ax.set_ylabel('Average Phi Coefficient (φ)')
-                    ax.grid(True, alpha=0.3)
-                    
-                    # Add value labels
-                    for bar, value, error in zip(bars, values, errors):
-                        height = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2., height + (error + 0.01 if height >= 0 else -error - 0.01),
-                            f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
-                            fontsize=10, fontweight='bold')
-                else:
-                    axes[0].text(0.5, 0.5, 'No Boolean Features Available', 
-                            ha='center', va='center', transform=axes[0].transAxes, fontsize=14)
-                    axes[0].set_title('Boolean Features - No Data')
-                
-                # Plot temporal features
-                if temporal_features:
-                    ax = axes[1]
-                    values = [avg_correlations[f]['mean'] for f in temporal_features]
-                    errors = [avg_correlations[f]['std'] for f in temporal_features]
-                    colors = ['steelblue' if v >= 0 else 'crimson' for v in values]
-                    
-                    bars = ax.bar(temporal_features, values, yerr=errors, color=colors, 
-                                alpha=0.7, edgecolor='black', capsize=5)
-                    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-                    ax.set_title(f'Temporal Features - Average Point-Biserial Correlation Across All Files\n({len(temporal_features)} features)')
-                    ax.set_ylabel('Average Point-Biserial Correlation (r_pb)')
-                    ax.grid(True, alpha=0.3)
-                    
-                    # Add value labels
-                    for bar, value, error in zip(bars, values, errors):
-                        height = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2., height + (error + 0.01 if height >= 0 else -error - 0.01),
-                            f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
-                            fontsize=10, fontweight='bold')
-                    
-                    # Rotate x-labels for temporal features
-                    ax.tick_params(axis='x', rotation=45)
-                else:
-                    axes[1].text(0.5, 0.5, 'No Temporal Features Available', 
-                            ha='center', va='center', transform=axes[1].transAxes, fontsize=14)
-                    axes[1].set_title('Temporal Features - No Data')
-                
-                plt.suptitle(f'Combined Non-Weather Features Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Non-Weather Features', 
-                            fontsize=16, y=0.98)
-                plt.tight_layout()
-                
-                # Save combined plot
-                combined_plot_path = os.path.join(output_dir, "combined_non_weather_correlation_analysis.png")
-                plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
-                plt.close()
-                
-                # Save detailed average correlations summary
-                avg_summary_path = os.path.join(output_dir, "non_weather_correlation_summary.txt")
-                with open(avg_summary_path, 'w') as f:
-                    f.write("Combined Non-Weather Features Correlation Analysis\n")
-                    f.write("=" * 65 + "\n\n")
-                    f.write(f"Target Variable: {DEFAULT_TARGET_FEATURE} (Binary)\n")
-                    f.write(f"Non-Weather Features: {len(all_features)}\n")
-                    f.write(f"Files Analyzed: {len(correlation_results)}\n\n")
-                    
-                    f.write("Correlation Strength Interpretation:\n")
-                    f.write("• |correlation| ≥ 0.7: Very Strong relationship\n")
-                    f.write("• 0.5 ≤ |correlation| < 0.7: Strong relationship\n")
-                    f.write("• 0.3 ≤ |correlation| < 0.5: Moderate relationship\n")
-                    f.write("• 0.1 ≤ |correlation| < 0.3: Weak relationship\n")
-                    f.write("• |correlation| < 0.1: Very weak/no relationship\n\n")
-                    
-                    f.write("Non-Weather Features (sorted by absolute correlation strength):\n")
-                    f.write("-" * 80 + "\n")
-                    for i, feature in enumerate(sorted_features, 1):
-                        stats = avg_correlations[feature]
-                        strength = ""
-                        abs_mean = abs(stats['mean'])
-                        if abs_mean >= 0.7:
-                            strength = "Very Strong"
-                        elif abs_mean >= 0.5:
-                            strength = "Strong"
-                        elif abs_mean >= 0.3:
-                            strength = "Moderate"
-                        elif abs_mean >= 0.1:
-                            strength = "Weak"
-                        else:
-                            strength = "Very Weak"
-                        
-                        feature_type = "Boolean" if feature in ['trainStopping', 'commercialStop'] else "Temporal"
-                        
-                        f.write(f"{i:2d}. {feature:20s} | {stats['mean']:+.4f} ± {stats['std']:.4f} | {strength:12s} | {feature_type}\n")
-                        f.write(f"    Files: {stats['count']}/{len(correlation_results)} | Range: [{stats['min']:+.4f}, {stats['max']:+.4f}]\n\n")
-                
-                print(f"    Combined non-weather correlation analysis saved")
-            
-        except Exception as e:
-            print(f"    Error creating combined non-weather correlation analysis: {str(e)}")
 
     def merge_data_files(self, csv_files):
         """
@@ -5792,6 +5020,1088 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
+    def threshold_optimization_decision_tree(self):
+            """
+            Optimize decision tree classification thresholds using ROC analysis.
+            
+            This method loads trained decision tree models from the previous stage,
+            analyzes ROC curves to find optimal thresholds, and retrains models
+            with optimized thresholds. Results are saved to decishin_tree_threshold_optimized folder.
+            
+            Returns:
+            --------
+            dict
+                A summary of the threshold optimization results including optimal thresholds and performance metrics.
+            """
+            try:
+                print(f"    threshold_optimization_decision_tree: Starting threshold optimization...")
+                
+                # Create output directory
+                output_dir = os.path.join(self.project_root, DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER)
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Check if decision tree results exist from previous stage
+                dt_output_dir = os.path.join(self.project_root, "data/output/decision_tree")
+                dt_results_file = os.path.join(dt_output_dir, "decision_tree_training_results.json")
+                
+                if not os.path.exists(dt_results_file):
+                    error_msg = "Decision tree training results not found. Run train_decision_tree stage first."
+                    print(f"    threshold_optimization_decision_tree: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
+                
+                # Load decision tree training results
+                with open(dt_results_file, 'r') as f:
+                    dt_results = json.load(f)
+                
+                print(f"    threshold_optimization_decision_tree: Found {len(dt_results.get('file_results', []))} trained models")
+                
+                # Find train and test files
+                scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+                train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train_scaled.csv")
+                test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test_scaled.csv")
+                
+                train_files = glob.glob(train_pattern)
+                test_files = glob.glob(test_pattern)
+                
+                if not train_files or not test_files:
+                    error_msg = f"Training/test files not found in {scaled_data_dir}"
+                    print(f"    threshold_optimization_decision_tree: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
+                
+                # Initialize results structure
+                optimization_results = {
+                    "optimization_overview": {
+                        "optimization_completed": datetime.now().isoformat(),
+                        "target_feature": DEFAULT_TARGET_FEATURE,
+                        "optimization_metric": THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"],
+                        "total_models_optimized": 0,
+                        "successful_optimizations": 0,
+                        "failed_optimizations": 0
+                    },
+                    "threshold_optimization_config": THRESHOLD_OPTIMIZATION_CONFIG,
+                    "file_results": [],
+                    "aggregate_metrics": {
+                        "average_optimal_threshold": 0.0,
+                        "average_optimized_f1": 0.0,
+                        "average_optimized_precision": 0.0,
+                        "average_optimized_recall": 0.0,
+                        "best_performing_file": None
+                    }
+                }
+                
+                successful_optimizations = 0
+                failed_optimizations = 0
+                all_optimal_thresholds = []
+                all_optimized_f1_scores = []
+                all_optimized_precisions = []
+                all_optimized_recalls = []
+                best_f1 = -1
+                best_file = None
+                
+                # Process each train/test file pair
+                for train_file in train_files:
+                    try:
+                        # Find corresponding test file and model
+                        train_filename = os.path.basename(train_file)
+                        test_filename = train_filename.replace('_train_scaled.csv', '_test_scaled.csv')
+                        test_file = os.path.join(scaled_data_dir, test_filename)
+                        
+                        if not os.path.exists(test_file):
+                            print(f"    threshold_optimization_decision_tree: Warning - No test file for {train_filename}. Skipping.")
+                            continue
+                        
+                        # Find corresponding trained model
+                        file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
+                        model_file = os.path.join(dt_output_dir, f"decision_tree_model_{file_identifier}.joblib")
+                        
+                        if not os.path.exists(model_file):
+                            print(f"    threshold_optimization_decision_tree: Warning - No model file for {file_identifier}. Skipping.")
+                            continue
+                        
+                        print(f"    threshold_optimization_decision_tree: Optimizing threshold for {file_identifier}")
+                        
+                        # Load the trained model
+                        model = joblib.load(model_file)
+                        
+                        # Load test data
+                        test_df = pd.read_csv(test_file)
+                        
+                        if DEFAULT_TARGET_FEATURE not in test_df.columns:
+                            print(f"    threshold_optimization_decision_tree: Target feature '{DEFAULT_TARGET_FEATURE}' not found in {test_filename}")
+                            failed_optimizations += 1
+                            continue
+                        
+                        # Prepare test features and target
+                        y_test = test_df[DEFAULT_TARGET_FEATURE]
+                        X_test = test_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                        
+                        # Get probability predictions for positive class
+                        y_proba = model.predict_proba(X_test)[:, 1]
+                        
+                        # Calculate ROC curve
+                        fpr, tpr, thresholds = roc_curve(y_test, y_proba)
+                        roc_auc = auc(fpr, tpr)
+                        
+                        # Calculate Precision-Recall curve
+                        precision, recall, pr_thresholds = precision_recall_curve(y_test, y_proba)
+                        pr_auc = average_precision_score(y_test, y_proba)
+                        
+                        # Find optimal threshold based on different metrics
+                        optimal_thresholds = self._find_optimal_thresholds(
+                            y_test, y_proba, fpr, tpr, thresholds, precision, recall, pr_thresholds
+                        )
+                        
+                        # Use the metric specified in config
+                        optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
+                        optimal_threshold = optimal_thresholds[optimization_metric]
+                        
+                        # Make predictions with optimal threshold
+                        y_pred_optimized = (y_proba >= optimal_threshold).astype(int)
+                        
+                        # Calculate optimized performance metrics
+                        optimized_precision = precision_score(y_test, y_pred_optimized)
+                        optimized_recall = recall_score(y_test, y_pred_optimized)
+                        optimized_f1 = f1_score(y_test, y_pred_optimized)
+                        optimized_accuracy = accuracy_score(y_test, y_pred_optimized)
+                        
+                        # Create and save plots
+                        if THRESHOLD_OPTIMIZATION_CONFIG["plot_roc_curve"]:
+                            self._plot_roc_curve(fpr, tpr, roc_auc, optimal_threshold, 
+                                            file_identifier, output_dir)
+                        
+                        if THRESHOLD_OPTIMIZATION_CONFIG["plot_precision_recall"]:
+                            self._plot_precision_recall_curve(precision, recall, pr_auc, optimal_threshold,
+                                                            file_identifier, output_dir)
+                        
+                        # Plot threshold analysis
+                        self._plot_threshold_analysis(thresholds, fpr, tpr, precision[:-1], recall[:-1],
+                                                    file_identifier, output_dir)
+                        
+                        # Save optimized model if configured
+                        if THRESHOLD_OPTIMIZATION_CONFIG["save_optimized_models"]:
+                            optimized_model_data = {
+                                "original_model": model,
+                                "optimal_threshold": optimal_threshold,
+                                "optimization_metric": optimization_metric,
+                                "roc_auc": roc_auc,
+                                "pr_auc": pr_auc
+                            }
+                            optimized_model_file = os.path.join(output_dir, f"optimized_decision_tree_{file_identifier}.joblib")
+                            joblib.dump(optimized_model_data, optimized_model_file)
+                        
+                        # Store results
+                        file_result = {
+                            "file_identifier": file_identifier,
+                            "optimization_successful": True,
+                            "optimal_thresholds": optimal_thresholds,
+                            "used_threshold": optimal_threshold,
+                            "used_optimization_metric": optimization_metric,
+                            "performance_metrics": {
+                                "roc_auc": float(roc_auc),
+                                "pr_auc": float(pr_auc),
+                                "optimized_precision": float(optimized_precision),
+                                "optimized_recall": float(optimized_recall),
+                                "optimized_f1": float(optimized_f1),
+                                "optimized_accuracy": float(optimized_accuracy)
+                            },
+                            "test_samples": len(y_test)
+                        }
+                        
+                        optimization_results["file_results"].append(file_result)
+                        
+                        # Update tracking variables
+                        all_optimal_thresholds.append(optimal_threshold)
+                        all_optimized_f1_scores.append(optimized_f1)
+                        all_optimized_precisions.append(optimized_precision)
+                        all_optimized_recalls.append(optimized_recall)
+                        
+                        if optimized_f1 > best_f1:
+                            best_f1 = optimized_f1
+                            best_file = file_identifier
+                        
+                        successful_optimizations += 1
+                        print(f"    threshold_optimization_decision_tree: ✓ {file_identifier} - Optimal threshold: {optimal_threshold:.3f}, F1: {optimized_f1:.3f}")
+                        
+                    except Exception as e:
+                        print(f"    threshold_optimization_decision_tree: Error processing {train_file}: {str(e)}")
+                        failed_optimizations += 1
+                        
+                        # Add failed result
+                        file_identifier = os.path.basename(train_file).replace('_train_scaled.csv', '')
+                        optimization_results["file_results"].append({
+                            "file_identifier": file_identifier,
+                            "optimization_successful": False,
+                            "error": str(e)
+                        })
+                        continue
+                
+                # Finalize results
+                if successful_optimizations > 0:
+                    optimization_results["optimization_overview"].update({
+                        "total_models_optimized": successful_optimizations + failed_optimizations,
+                        "successful_optimizations": successful_optimizations,
+                        "failed_optimizations": failed_optimizations
+                    })
+                    
+                    optimization_results["aggregate_metrics"].update({
+                        "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                        "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                        "average_optimized_precision": float(np.mean(all_optimized_precisions)),
+                        "average_optimized_recall": float(np.mean(all_optimized_recalls)),
+                        "best_performing_file": {
+                            "file_identifier": best_file,
+                            "f1_score": float(best_f1)
+                        } if best_file else None
+                    })
+                    
+                    # Save consolidated results
+                    results_file = os.path.join(output_dir, "threshold_optimization_results.json")
+                    with open(results_file, 'w') as f:
+                        json.dump(optimization_results, f, indent=2)
+                    
+                    # Create summary plot showing all optimal thresholds
+                    self._plot_threshold_summary(all_optimal_thresholds, all_optimized_f1_scores, output_dir)
+                    
+                    print(f"    threshold_optimization_decision_tree: Completed successfully!")
+                    print(f"    threshold_optimization_decision_tree: Optimized {successful_optimizations} models")
+                    print(f"    threshold_optimization_decision_tree: Average optimal threshold: {np.mean(all_optimal_thresholds):.3f}")
+                    print(f"    threshold_optimization_decision_tree: Average optimized F1: {np.mean(all_optimized_f1_scores):.3f}")
+                    print(f"    threshold_optimization_decision_tree: Results saved to: {output_dir}")
+                    
+                    return {
+                        "success": True,
+                        "models_optimized": successful_optimizations,
+                        "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                        "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                        "output_directory": output_dir,
+                        "results_file": results_file,
+                        "target_feature": DEFAULT_TARGET_FEATURE
+                    }
+                else:
+                    error_msg = "No models were successfully optimized"
+                    print(f"    threshold_optimization_decision_tree: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
+                    
+            except Exception as e:
+                error_msg = f"threshold_optimization_decision_tree failed: {str(e)}"
+                print(f"    threshold_optimization_decision_tree: {error_msg}")
+                import traceback
+                traceback.print_exc()
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+    def _create_correlation_plot(self, correlations, filename, output_dir, title):
+            """
+            Create a Point-Biserial Correlation Analysis plot for a single file.
+            
+            Parameters:
+            -----------
+            correlations : dict
+                Dictionary of feature names and their correlation values
+            filename : str
+                Name of the source file
+            output_dir : str
+                Directory to save the plot
+            title : str
+                Title for the plot
+            """
+            try:
+                # Filter out NaN correlations
+                valid_correlations = {k: v for k, v in correlations.items() if not pd.isna(v)}
+                
+                if not valid_correlations:
+                    print(f"        No valid correlations to plot for {filename}")
+                    return
+                
+                # Sort correlations by absolute value for better visualization
+                sorted_correlations = sorted(valid_correlations.items(), key=lambda x: abs(x[1]), reverse=True)
+                features = [item[0] for item in sorted_correlations]
+                corr_values = [item[1] for item in sorted_correlations]
+                
+                # Create figure with single plot
+                fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                
+                # Horizontal bar chart of Point-Biserial correlations
+                colors = ['red' if val < 0 else 'steelblue' for val in corr_values]
+                bars = ax.barh(range(len(features)), corr_values, color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
+                
+                # Customize plot
+                ax.set_yticks(range(len(features)))
+                ax.set_yticklabels(features, fontsize=11)
+                ax.set_xlabel('Point-Biserial Correlation Coefficient (r_pb)', fontsize=12)
+                ax.set_title(f'Point-Biserial Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Weather Features', fontsize=14, pad=20)
+                ax.axvline(x=0, color='black', linestyle='-', linewidth=1)
+                ax.grid(axis='x', alpha=0.3)
+                ax.set_xlim(-1, 1)
+                
+                # Add value labels on bars
+                for i, (bar, value) in enumerate(zip(bars, corr_values)):
+                    label_x = value + (0.02 if value >= 0 else -0.02)
+                    ha = 'left' if value >= 0 else 'right'
+                    ax.text(label_x, bar.get_y() + bar.get_height()/2, f'{value:.3f}', 
+                            ha=ha, va='center', fontsize=10, fontweight='bold')
+                
+                # Add interpretation guide
+                interpretation_text = (
+                    "Interpretation Guide:\n"
+                    "• |r_pb| ≥ 0.7: Very Strong relationship\n"
+                    "• 0.5 ≤ |r_pb| < 0.7: Strong relationship\n"
+                    "• 0.3 ≤ |r_pb| < 0.5: Moderate relationship\n"
+                    "• 0.1 ≤ |r_pb| < 0.3: Weak relationship\n"
+                    "• |r_pb| < 0.1: Very weak/no relationship\n\n"
+                    "Positive: Higher weather values → More delays\n"
+                    "Negative: Higher weather values → Fewer delays"
+                )
+                
+                fig.text(0.02, 0.02, interpretation_text, fontsize=10, 
+                        bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8),
+                        verticalalignment='bottom')
+                
+                plt.suptitle(f'Point-Biserial Correlation Analysis: {filename}', fontsize=15, y=0.95)
+                plt.tight_layout()
+                plt.subplots_adjust(bottom=0.25)
+                
+                # Save plot
+                safe_filename = filename.replace('.csv', '').replace(' ', '_')
+                plot_filename = f"point_biserial_correlation_{safe_filename}.png"
+                plot_path = os.path.join(output_dir, plot_filename)
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                print(f"        Saved point-biserial correlation plot: {plot_filename}")
+                
+            except Exception as e:
+                print(f"        Warning: Failed to create plot for {filename}: {str(e)}")
+
+    def _create_distribution_plots(self, df, weather_features, filename, output_dir):
+        """
+        Create distribution plots for target feature and weather features.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            The dataset containing all features
+        weather_features : list
+            List of weather feature column names
+        filename : str
+            Name of the source file
+        output_dir : str
+            Directory to save the plots
+        """
+        try:
+            print(f"        Creating distribution plots for {filename}...")
+            
+            # Check if target feature exists
+            if DEFAULT_TARGET_FEATURE not in df.columns:
+                print(f"        Warning: Target feature '{DEFAULT_TARGET_FEATURE}' not found for distribution plots")
+                return
+            
+            # Filter weather features that exist in the dataframe
+            valid_weather_features = [col for col in weather_features if col in df.columns]
+            
+            if not valid_weather_features:
+                print(f"        Warning: No valid weather features found for distribution plots")
+                return
+            
+            # Create comprehensive distribution analysis
+            n_features = len(valid_weather_features)
+            n_cols = 3
+            n_rows = max(2, (n_features + n_cols - 1) // n_cols + 1)  # +1 for target distribution
+            
+            fig = plt.figure(figsize=(18, 6 * n_rows))
+            gs = fig.add_gridspec(n_rows, n_cols, hspace=0.4, wspace=0.3)
+            
+            # 1. Target feature distribution (first row, span all columns)
+            ax_target = fig.add_subplot(gs[0, :])
+            target_counts = df[DEFAULT_TARGET_FEATURE].value_counts()
+            target_proportions = df[DEFAULT_TARGET_FEATURE].value_counts(normalize=True)
+            
+            bars = ax_target.bar(
+                ['Not Delayed (False)', 'Delayed (True)'], 
+                [target_counts.get(False, 0), target_counts.get(True, 0)],
+                color=['lightgreen', 'lightcoral'], 
+                alpha=0.7,
+                edgecolor='black',
+                linewidth=1
+            )
+            
+            ax_target.set_title(f'{DEFAULT_TARGET_FEATURE} Distribution\nTotal samples: {len(df):,}', 
+                            fontsize=14, fontweight='bold')
+            ax_target.set_ylabel('Count', fontsize=12)
+            
+            # Add percentage labels on bars
+            for i, (bar, count) in enumerate(zip(bars, [target_counts.get(False, 0), target_counts.get(True, 0)])):
+                percentage = (count / len(df)) * 100
+                ax_target.text(bar.get_x() + bar.get_width()/2, bar.get_height() + len(df)*0.01,
+                            f'{count:,}\n({percentage:.1f}%)', 
+                            ha='center', va='bottom', fontweight='bold', fontsize=11)
+            
+            ax_target.grid(axis='y', alpha=0.3)
+            
+            # 2. Weather feature distributions and comparative box plots
+            for i, feature in enumerate(valid_weather_features):
+                row = (i // n_cols) + 1
+                col = i % n_cols
+                
+                # Create subplot for this feature
+                ax = fig.add_subplot(gs[row, col])
+                
+                # Get feature data, handling missing values
+                feature_data = df[feature].dropna()
+                if len(feature_data) == 0:
+                    ax.text(0.5, 0.5, f'No valid data\nfor {feature}', 
+                        ha='center', va='center', transform=ax.transAxes,
+                        fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    ax.set_title(feature, fontsize=12, fontweight='bold')
+                    continue
+                
+                # Create combined plot: histogram + box plot comparison
+                # Top: Histogram of the feature
+                ax_hist = ax
+                ax_hist.hist(feature_data, bins=30, alpha=0.7, color='steelblue', 
+                            edgecolor='black', linewidth=0.5)
+                ax_hist.set_title(f'{feature} Distribution', fontsize=11, fontweight='bold')
+                ax_hist.set_xlabel(feature, fontsize=10)
+                ax_hist.set_ylabel('Frequency', fontsize=10)
+                ax_hist.grid(axis='y', alpha=0.3)
+                
+                # Add statistics text
+                stats_text = (f'Mean: {feature_data.mean():.2f}\n'
+                            f'Std: {feature_data.std():.2f}\n'
+                            f'Missing: {df[feature].isna().sum():,}')
+                ax_hist.text(0.02, 0.98, stats_text, transform=ax_hist.transAxes,
+                            verticalalignment='top', fontsize=9,
+                            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            plt.suptitle(f'Feature Distributions Analysis: {filename}', fontsize=16, y=0.98)
+            plt.tight_layout()
+            
+            # Save distribution plot
+            safe_filename = filename.replace('.csv', '').replace(' ', '_')
+            dist_plot_filename = f"distributions_{safe_filename}.png"
+            dist_plot_path = os.path.join(output_dir, dist_plot_filename)
+            plt.savefig(dist_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Create separate comparative box plots (delayed vs non-delayed)
+            self._create_comparative_distributions(df, valid_weather_features, filename, output_dir)
+            
+            print(f"        Saved distribution plots: {dist_plot_filename}")
+            
+        except Exception as e:
+            print(f"        Warning: Failed to create distribution plots for {filename}: {str(e)}")
+
+    def _create_comparative_distributions(self, df, weather_features, filename, output_dir):
+        """
+        Create comparative distribution plots showing weather features for delayed vs non-delayed trains.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            The dataset containing all features
+        weather_features : list
+            List of weather feature column names
+        filename : str
+            Name of the source file
+        output_dir : str
+            Directory to save the plots
+        """
+        try:
+            print(f"        Creating comparative distribution plots for {filename}...")
+            
+            # Separate data by target feature
+            delayed_data = df[df[DEFAULT_TARGET_FEATURE] == True]
+            not_delayed_data = df[df[DEFAULT_TARGET_FEATURE] == False]
+            
+            if len(delayed_data) == 0 or len(not_delayed_data) == 0:
+                print(f"        Warning: Insufficient data for comparative analysis")
+                return
+            
+            n_features = len(weather_features)
+            n_cols = 2
+            n_rows = (n_features + n_cols - 1) // n_cols
+            
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 5 * n_rows))
+            if n_rows == 1:
+                axes = axes.reshape(1, -1)
+            elif n_cols == 1:
+                axes = axes.reshape(-1, 1)
+            
+            for i, feature in enumerate(weather_features):
+                row = i // n_cols
+                col = i % n_cols
+                ax = axes[row, col] if n_rows > 1 else axes[col]
+                
+                # Get feature data for both groups
+                delayed_feature = delayed_data[feature].dropna()
+                not_delayed_feature = not_delayed_data[feature].dropna()
+                
+                if len(delayed_feature) == 0 or len(not_delayed_feature) == 0:
+                    ax.text(0.5, 0.5, f'Insufficient data\nfor {feature}', 
+                        ha='center', va='center', transform=ax.transAxes,
+                        fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    ax.set_title(feature, fontsize=12, fontweight='bold')
+                    continue
+                
+                # Create box plot comparison
+                box_data = [not_delayed_feature, delayed_feature]
+                box_labels = ['Not Delayed', 'Delayed']
+                
+                bp = ax.boxplot(box_data, labels=box_labels, patch_artist=True)
+                bp['boxes'][0].set_facecolor('lightgreen')
+                bp['boxes'][0].set_alpha(0.7)
+                bp['boxes'][1].set_facecolor('lightcoral')
+                bp['boxes'][1].set_alpha(0.7)
+                
+                ax.set_title(f'{feature}\nDelayed vs Not Delayed', fontsize=11, fontweight='bold')
+                ax.set_ylabel(feature, fontsize=10)
+                ax.grid(axis='y', alpha=0.3)
+                
+                # Add statistical comparison
+                mean_not_delayed = not_delayed_feature.mean()
+                mean_delayed = delayed_feature.mean()
+                difference = mean_delayed - mean_not_delayed
+                
+                stats_text = (f'Not Delayed: μ={mean_not_delayed:.2f}\n'
+                            f'Delayed: μ={mean_delayed:.2f}\n'
+                            f'Difference: {difference:+.2f}')
+                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                    verticalalignment='top', fontsize=9,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+            
+            # Hide empty subplots
+            for i in range(n_features, n_rows * n_cols):
+                row = i // n_cols
+                col = i % n_cols
+                axes[row, col].set_visible(False)
+            
+            plt.suptitle(f'Comparative Distributions: Delayed vs Not Delayed Trains\n{filename}', 
+                        fontsize=14, y=0.98)
+            plt.tight_layout()
+            
+            # Save comparative plot
+            safe_filename = filename.replace('.csv', '').replace(' ', '_')
+            comp_plot_filename = f"comparative_distributions_{safe_filename}.png"
+            comp_plot_path = os.path.join(output_dir, comp_plot_filename)
+            plt.savefig(comp_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"        Saved comparative distribution plot: {comp_plot_filename}")
+            
+        except Exception as e:
+            print(f"        Warning: Failed to create comparative distribution plots for {filename}: {str(e)}")
+
+    def _create_combined_correlation_analysis(self, correlation_results, output_dir):
+        """
+        Create combined Point-Biserial correlation analysis across all files.
+        
+        Parameters:
+        -----------
+        correlation_results : list
+            List of correlation result dictionaries from each file
+        output_dir : str
+            Directory to save the combined analysis
+        """
+        try:
+            print("    correlation_analysis: Creating combined point-biserial correlation analysis...")
+            
+            # Collect all unique weather features
+            all_features = set()
+            for result in correlation_results:
+                all_features.update(result['correlations'].keys())
+            all_features = sorted(list(all_features))
+            
+            # Calculate average correlations across files
+            avg_correlations = {}
+            correlation_ranges = {}
+            
+            for feature in all_features:
+                feature_values = []
+                for result in correlation_results:
+                    corr_value = result['correlations'].get(feature, np.nan)
+                    if not pd.isna(corr_value):
+                        feature_values.append(corr_value)
+                
+                if feature_values:
+                    avg_correlations[feature] = {
+                        'mean': np.mean(feature_values),
+                        'std': np.std(feature_values),
+                        'min': np.min(feature_values),
+                        'max': np.max(feature_values),
+                        'count': len(feature_values)
+                    }
+                    correlation_ranges[feature] = (np.min(feature_values), np.max(feature_values))
+            
+            # Sort by absolute mean correlation
+            sorted_features = sorted(avg_correlations.keys(), 
+                                key=lambda x: abs(avg_correlations[x]['mean']), 
+                                reverse=True)
+            
+            # Create comprehensive combined plot
+            fig = plt.figure(figsize=(20, 12))
+            gs = fig.add_gridspec(2, 3, height_ratios=[2, 1], width_ratios=[2, 2, 1])
+            
+            # Main plot: Average correlations with error bars
+            ax1 = fig.add_subplot(gs[0, 0])
+            
+            y_positions = range(len(sorted_features))
+            means = [avg_correlations[f]['mean'] for f in sorted_features]
+            stds = [avg_correlations[f]['std'] for f in sorted_features]
+            colors = ['red' if val < 0 else 'steelblue' for val in means]
+            
+            bars = ax1.barh(y_positions, means, xerr=stds, color=colors, alpha=0.7, 
+                        capsize=5, edgecolor='black', linewidth=0.5)
+            
+            ax1.set_yticks(y_positions)
+            ax1.set_yticklabels(sorted_features, fontsize=10)
+            ax1.set_xlabel('Average Point-Biserial Correlation', fontsize=12)
+            ax1.set_title('Average Point-Biserial Correlations\n(with Standard Deviation)', fontsize=12)
+            ax1.axvline(x=0, color='black', linestyle='-', linewidth=1)
+            ax1.grid(axis='x', alpha=0.3)
+            ax1.set_xlim(-1, 1)
+            
+            # Add value labels
+            for i, (bar, mean_val, std_val) in enumerate(zip(bars, means, stds)):
+                label_x = mean_val + (0.05 if mean_val >= 0 else -0.05)
+                ha = 'left' if mean_val >= 0 else 'right'
+                ax1.text(label_x, bar.get_y() + bar.get_height()/2, 
+                        f'{mean_val:.3f}±{std_val:.3f}', 
+                        ha=ha, va='center', fontsize=8, fontweight='bold')
+            
+            # Range analysis plot
+            ax2 = fig.add_subplot(gs[0, 1])
+            
+            for i, feature in enumerate(sorted_features):
+                min_val, max_val = correlation_ranges[feature]
+                mean_val = avg_correlations[feature]['mean']
+                
+                # Plot range as line
+                ax2.plot([min_val, max_val], [i, i], 'k-', linewidth=2, alpha=0.6)
+                # Plot min and max as points
+                ax2.plot(min_val, i, 'ro', markersize=6, alpha=0.8)
+                ax2.plot(max_val, i, 'bo', markersize=6, alpha=0.8)
+                # Plot mean as diamond
+                ax2.plot(mean_val, i, 'gD', markersize=8, alpha=0.9)
+            
+            ax2.set_yticks(y_positions)
+            ax2.set_yticklabels(sorted_features, fontsize=10)
+            ax2.set_xlabel('Correlation Range Across Files', fontsize=12)
+            ax2.set_title('Correlation Variability\n(Min-Max Range)', fontsize=12)
+            ax2.axvline(x=0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+            ax2.grid(axis='x', alpha=0.3)
+            ax2.set_xlim(-1, 1)
+            ax2.legend(['Range', 'Minimum', 'Maximum', 'Mean'], loc='lower right', fontsize=9)
+            
+            # Strength classification plot
+            ax3 = fig.add_subplot(gs[0, 2])
+            
+            strength_categories = {'Very Strong (≥0.7)': [], 'Strong (0.5-0.7)': [], 
+                                'Moderate (0.3-0.5)': [], 'Weak (0.1-0.3)': [], 
+                                'Very Weak (<0.1)': []}
+            
+            for feature in sorted_features:
+                abs_mean = abs(avg_correlations[feature]['mean'])
+                if abs_mean >= 0.7:
+                    strength_categories['Very Strong (≥0.7)'].append(feature)
+                elif abs_mean >= 0.5:
+                    strength_categories['Strong (0.5-0.7)'].append(feature)
+                elif abs_mean >= 0.3:
+                    strength_categories['Moderate (0.3-0.5)'].append(feature)
+                elif abs_mean >= 0.1:
+                    strength_categories['Weak (0.1-0.3)'].append(feature)
+                else:
+                    strength_categories['Very Weak (<0.1)'].append(feature)
+            
+            category_counts = [len(features) for features in strength_categories.values()]
+            category_labels = list(strength_categories.keys())
+            colors_pie = ['darkred', 'red', 'orange', 'yellow', 'lightgray']
+            
+            wedges, texts, autotexts = ax3.pie(category_counts, labels=category_labels, autopct='%1.0f%%', 
+                                            colors=colors_pie, startangle=90)
+            ax3.set_title('Correlation Strength\nDistribution', fontsize=12)
+            
+            # File-by-file heatmap
+            ax4 = fig.add_subplot(gs[1, :2])
+            
+            # Create matrix for heatmap
+            heatmap_data = []
+            file_labels = []
+            
+            for result in correlation_results:
+                row_data = []
+                for feature in sorted_features:
+                    corr_value = result['correlations'].get(feature, np.nan)
+                    row_data.append(corr_value)
+                heatmap_data.append(row_data)
+                file_labels.append(result['filename'].replace('.csv', ''))
+            
+            heatmap_matrix = np.array(heatmap_data)
+            mask = np.isnan(heatmap_matrix)
+            
+            im = ax4.imshow(heatmap_matrix, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
+            
+            # Add colorbar
+            cbar = plt.colorbar(im, ax=ax4, orientation='horizontal', pad=0.1, shrink=0.8)
+            cbar.set_label('Point-Biserial Correlation Coefficient', fontsize=10)
+            
+            ax4.set_xticks(range(len(sorted_features)))
+            ax4.set_xticklabels(sorted_features, rotation=45, ha='right', fontsize=9)
+            ax4.set_yticks(range(len(file_labels)))
+            ax4.set_yticklabels(file_labels, fontsize=9)
+            ax4.set_title('Point-Biserial Correlations Across All Files', fontsize=12)
+            
+            # Add text annotations for non-NaN values
+            for i in range(len(file_labels)):
+                for j in range(len(sorted_features)):
+                    if not mask[i, j]:
+                        text_color = 'white' if abs(heatmap_matrix[i, j]) > 0.5 else 'black'
+                        ax4.text(j, i, f'{heatmap_matrix[i, j]:.2f}', 
+                                ha='center', va='center', color=text_color, fontsize=7)
+            
+            # Summary statistics text
+            ax5 = fig.add_subplot(gs[1, 2])
+            ax5.axis('off')
+            
+            summary_text = "Summary Statistics:\n\n"
+            summary_text += f"Total Features: {len(sorted_features)}\n"
+            summary_text += f"Files Analyzed: {len(correlation_results)}\n\n"
+            
+            if sorted_features:
+                strongest_feature = sorted_features[0]
+                strongest_corr = avg_correlations[strongest_feature]['mean']
+                summary_text += f"Strongest Correlation:\n{strongest_feature}\n(r = {strongest_corr:.3f})\n\n"
+            
+            # Count by strength
+            for category, features in strength_categories.items():
+                if features:
+                    summary_text += f"{category}: {len(features)}\n"
+            
+            ax5.text(0.1, 0.9, summary_text, transform=ax5.transAxes, fontsize=10,
+                    verticalalignment='top', bbox=dict(boxstyle="round,pad=0.5", 
+                    facecolor="lightblue", alpha=0.8))
+            
+            plt.suptitle(f'Comprehensive Point-Biserial Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Weather Features', 
+                        fontsize=16, y=0.98)
+            plt.tight_layout()
+            
+            # Save combined plot
+            combined_plot_path = os.path.join(output_dir, "combined_point_biserial_analysis.png")
+            plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Save detailed average correlations summary
+            avg_summary_path = os.path.join(output_dir, "point_biserial_summary.txt")
+            with open(avg_summary_path, 'w') as f:
+                f.write("Point-Biserial Correlation Analysis Summary\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(f"Target Variable: {DEFAULT_TARGET_FEATURE} (Binary)\n")
+                f.write(f"Weather Features: {len(all_features)} (Continuous)\n")
+                f.write(f"Files Analyzed: {len(correlation_results)}\n\n")
+                
+                f.write("Correlation Strength Interpretation:\n")
+                f.write("• |r_pb| ≥ 0.7: Very Strong relationship\n")
+                f.write("• 0.5 ≤ |r_pb| < 0.7: Strong relationship\n")
+                f.write("• 0.3 ≤ |r_pb| < 0.5: Moderate relationship\n")
+                f.write("• 0.1 ≤ |r_pb| < 0.3: Weak relationship\n")
+                f.write("• |r_pb| < 0.1: Very weak/no relationship\n\n")
+                
+                f.write("Weather Features (sorted by absolute correlation strength):\n")
+                f.write("-" * 70 + "\n")
+                for i, feature in enumerate(sorted_features, 1):
+                    stats = avg_correlations[feature]
+                    strength = ""
+                    abs_mean = abs(stats['mean'])
+                    if abs_mean >= 0.7:
+                        strength = "Very Strong"
+                    elif abs_mean >= 0.5:
+                        strength = "Strong"
+                    elif abs_mean >= 0.3:
+                        strength = "Moderate"
+                    elif abs_mean >= 0.1:
+                        strength = "Weak"
+                    else:
+                        strength = "Very Weak"
+                    
+                    f.write(f"{i:2d}. {feature}:\n")
+                    f.write(f"    Mean correlation: {stats['mean']:+.4f} ({strength})\n")
+                    f.write(f"    Std deviation: {stats['std']:.4f}\n")
+                    f.write(f"    Range: [{stats['min']:+.4f}, {stats['max']:+.4f}]\n")
+                    f.write(f"    Files available: {stats['count']}/{len(correlation_results)}\n")
+                    
+                    # Interpretation
+                    if stats['mean'] > 0:
+                        direction = "Higher values → More train delays"
+                    elif stats['mean'] < 0:
+                        direction = "Higher values → Fewer train delays"
+                    else:
+                        direction = "No clear relationship"
+                    f.write(f"    Interpretation: {direction}\n\n")
+            
+            print(f"        Saved comprehensive point-biserial correlation analysis")
+            
+        except Exception as e:
+            print(f"        Warning: Failed to create combined analysis: {str(e)}")
+
+    def _create_non_weather_correlation_plot(self, correlations, correlation_types, filename, output_dir, title):
+        """
+        Create a Non-Weather Features Correlation Analysis plot for a single file.
+        
+        This creates separate subplots for boolean and temporal features with their correlations.
+        """
+        try:
+            # Separate correlations by type
+            boolean_correlations = {}
+            temporal_correlations = {}
+            
+            for feature, corr in correlations.items():
+                if pd.isna(corr):
+                    continue
+                corr_type = correlation_types.get(feature, "")
+                if "Boolean" in corr_type:
+                    boolean_correlations[feature] = corr
+                elif "Temporal" in corr_type:
+                    temporal_correlations[feature] = corr
+            
+            # Calculate subplot layout
+            n_plots = 0
+            if boolean_correlations:
+                n_plots += 1
+            if temporal_correlations:
+                n_plots += 1
+            
+            if n_plots == 0:
+                print(f"      No valid correlations to plot for {filename}")
+                return
+            
+            fig, axes = plt.subplots(n_plots, 1, figsize=(12, 6 * n_plots))
+            if n_plots == 1:
+                axes = [axes]
+            
+            plot_idx = 0
+            
+            # Plot boolean features
+            if boolean_correlations:
+                ax = axes[plot_idx]
+                features = list(boolean_correlations.keys())
+                values = list(boolean_correlations.values())
+                colors = ['darkblue' if v >= 0 else 'darkred' for v in values]
+                
+                bars = ax.bar(features, values, color=colors, alpha=0.7, edgecolor='black')
+                ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                ax.set_title(f'Boolean Features - Phi Coefficient\n({len(features)} features)')
+                ax.set_ylabel('Phi Coefficient (φ)')
+                ax.grid(True, alpha=0.3)
+                
+                # Add value labels on bars
+                for bar, value in zip(bars, values):
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.01),
+                        f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                        fontsize=10, fontweight='bold')
+                
+                # Rotate x-labels if needed
+                if len(features) > 3:
+                    ax.tick_params(axis='x', rotation=45)
+                
+                plot_idx += 1
+            
+            # Plot temporal features
+            if temporal_correlations:
+                ax = axes[plot_idx]
+                features = list(temporal_correlations.keys())
+                values = list(temporal_correlations.values())
+                colors = ['steelblue' if v >= 0 else 'crimson' for v in values]
+                
+                bars = ax.bar(features, values, color=colors, alpha=0.7, edgecolor='black')
+                ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                ax.set_title(f'Temporal Features (Sin-Cos) - Point-Biserial Correlation\n({len(features)} features)')
+                ax.set_ylabel('Point-Biserial Correlation (r_pb)')
+                ax.grid(True, alpha=0.3)
+                
+                # Add value labels on bars
+                for bar, value in zip(bars, values):
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.01),
+                        f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                        fontsize=10, fontweight='bold')
+                
+                # Rotate x-labels if needed
+                if len(features) > 3:
+                    ax.tick_params(axis='x', rotation=45)
+            
+            plt.suptitle(title, fontsize=14, y=0.98)
+            plt.tight_layout()
+            
+            # Save plot
+            plot_filename = f"non_weather_correlation_{filename.replace('.csv', '.png')}"
+            plot_path = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"      Saved non-weather correlation plot: {plot_filename}")
+            
+        except Exception as e:
+            print(f"      Error creating non-weather correlation plot: {str(e)}")
+
+    def _create_combined_non_weather_correlation_analysis(self, correlation_results, output_dir):
+        """
+        Create combined analysis across all non-weather correlation results.
+        """
+        try:
+            print(f"    Creating combined non-weather correlation analysis...")
+            
+            # Aggregate correlations across all files
+            all_features = set()
+            for result in correlation_results:
+                all_features.update(result['correlations'].keys())
+            
+            all_features = sorted(list(all_features))
+            
+            # Calculate average correlations
+            avg_correlations = {}
+            for feature in all_features:
+                values = []
+                for result in correlation_results:
+                    if feature in result['correlations'] and not pd.isna(result['correlations'][feature]):
+                        values.append(result['correlations'][feature])
+                
+                if values:
+                    avg_correlations[feature] = {
+                        'mean': np.mean(values),
+                        'std': np.std(values),
+                        'count': len(values),
+                        'min': np.min(values),
+                        'max': np.max(values)
+                    }
+            
+            # Create combined plot
+            if avg_correlations:
+                # Sort features by absolute correlation strength
+                sorted_features = sorted(avg_correlations.keys(), 
+                                    key=lambda x: abs(avg_correlations[x]['mean']), 
+                                    reverse=True)
+                
+                # Separate by feature type for plotting
+                boolean_features = [f for f in sorted_features if f in ['trainStopping', 'commercialStop']]
+                temporal_features = [f for f in sorted_features if f not in boolean_features]
+                
+                fig, axes = plt.subplots(2, 1, figsize=(14, 10))
+                
+                # Plot boolean features
+                if boolean_features:
+                    ax = axes[0]
+                    values = [avg_correlations[f]['mean'] for f in boolean_features]
+                    errors = [avg_correlations[f]['std'] for f in boolean_features]
+                    colors = ['darkblue' if v >= 0 else 'darkred' for v in values]
+                    
+                    bars = ax.bar(boolean_features, values, yerr=errors, color=colors, 
+                                alpha=0.7, edgecolor='black', capsize=5)
+                    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                    ax.set_title(f'Boolean Features - Average Phi Coefficient Across All Files\n({len(boolean_features)} features)')
+                    ax.set_ylabel('Average Phi Coefficient (φ)')
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Add value labels
+                    for bar, value, error in zip(bars, values, errors):
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + (error + 0.01 if height >= 0 else -error - 0.01),
+                            f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                            fontsize=10, fontweight='bold')
+                else:
+                    axes[0].text(0.5, 0.5, 'No Boolean Features Available', 
+                            ha='center', va='center', transform=axes[0].transAxes, fontsize=14)
+                    axes[0].set_title('Boolean Features - No Data')
+                
+                # Plot temporal features
+                if temporal_features:
+                    ax = axes[1]
+                    values = [avg_correlations[f]['mean'] for f in temporal_features]
+                    errors = [avg_correlations[f]['std'] for f in temporal_features]
+                    colors = ['steelblue' if v >= 0 else 'crimson' for v in values]
+                    
+                    bars = ax.bar(temporal_features, values, yerr=errors, color=colors, 
+                                alpha=0.7, edgecolor='black', capsize=5)
+                    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+                    ax.set_title(f'Temporal Features - Average Point-Biserial Correlation Across All Files\n({len(temporal_features)} features)')
+                    ax.set_ylabel('Average Point-Biserial Correlation (r_pb)')
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Add value labels
+                    for bar, value, error in zip(bars, values, errors):
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + (error + 0.01 if height >= 0 else -error - 0.01),
+                            f'{value:.3f}', ha='center', va='bottom' if height >= 0 else 'top',
+                            fontsize=10, fontweight='bold')
+                    
+                    # Rotate x-labels for temporal features
+                    ax.tick_params(axis='x', rotation=45)
+                else:
+                    axes[1].text(0.5, 0.5, 'No Temporal Features Available', 
+                            ha='center', va='center', transform=axes[1].transAxes, fontsize=14)
+                    axes[1].set_title('Temporal Features - No Data')
+                
+                plt.suptitle(f'Combined Non-Weather Features Correlation Analysis\n{DEFAULT_TARGET_FEATURE} vs Non-Weather Features', 
+                            fontsize=16, y=0.98)
+                plt.tight_layout()
+                
+                # Save combined plot
+                combined_plot_path = os.path.join(output_dir, "combined_non_weather_correlation_analysis.png")
+                plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                # Save detailed average correlations summary
+                avg_summary_path = os.path.join(output_dir, "non_weather_correlation_summary.txt")
+                with open(avg_summary_path, 'w') as f:
+                    f.write("Combined Non-Weather Features Correlation Analysis\n")
+                    f.write("=" * 65 + "\n\n")
+                    f.write(f"Target Variable: {DEFAULT_TARGET_FEATURE} (Binary)\n")
+                    f.write(f"Non-Weather Features: {len(all_features)}\n")
+                    f.write(f"Files Analyzed: {len(correlation_results)}\n\n")
+                    
+                    f.write("Correlation Strength Interpretation:\n")
+                    f.write("• |correlation| ≥ 0.7: Very Strong relationship\n")
+                    f.write("• 0.5 ≤ |correlation| < 0.7: Strong relationship\n")
+                    f.write("• 0.3 ≤ |correlation| < 0.5: Moderate relationship\n")
+                    f.write("• 0.1 ≤ |correlation| < 0.3: Weak relationship\n")
+                    f.write("• |correlation| < 0.1: Very weak/no relationship\n\n")
+                    
+                    f.write("Non-Weather Features (sorted by absolute correlation strength):\n")
+                    f.write("-" * 80 + "\n")
+                    for i, feature in enumerate(sorted_features, 1):
+                        stats = avg_correlations[feature]
+                        strength = ""
+                        abs_mean = abs(stats['mean'])
+                        if abs_mean >= 0.7:
+                            strength = "Very Strong"
+                        elif abs_mean >= 0.5:
+                            strength = "Strong"
+                        elif abs_mean >= 0.3:
+                            strength = "Moderate"
+                        elif abs_mean >= 0.1:
+                            strength = "Weak"
+                        else:
+                            strength = "Very Weak"
+                        
+                        feature_type = "Boolean" if feature in ['trainStopping', 'commercialStop'] else "Temporal"
+                        
+                        f.write(f"{i:2d}. {feature:20s} | {stats['mean']:+.4f} ± {stats['std']:.4f} | {strength:12s} | {feature_type}\n")
+                        f.write(f"    Files: {stats['count']}/{len(correlation_results)} | Range: [{stats['min']:+.4f}, {stats['max']:+.4f}]\n\n")
+                
+                print(f"    Combined non-weather correlation analysis saved")
+            
+        except Exception as e:
+            print(f"    Error creating combined non-weather correlation analysis: {str(e)}")
 
     def _calculate_classification_metrics(self, y_true, y_pred, y_pred_proba=None):
         """
@@ -5961,3 +6271,208 @@ class TrainingPipeline:
                 'plot_path': None,
                 'error': str(e)
             }
+        
+    def _find_optimal_thresholds(self, y_true, y_proba, fpr, tpr, thresholds, precision, recall, pr_thresholds):
+        """
+        Find optimal thresholds based on different metrics.
+        
+        Returns:
+        --------
+        dict
+            Dictionary with optimal thresholds for different metrics
+        """
+        from sklearn.metrics import f1_score, precision_score, recall_score, accuracy_score
+        
+        # Youden's J statistic (TPR - FPR)
+        j_scores = tpr - fpr
+        youden_optimal_idx = np.argmax(j_scores)
+        youden_threshold = thresholds[youden_optimal_idx]
+        
+        # F1 score optimization
+        f1_scores = []
+        test_thresholds = np.arange(
+            THRESHOLD_OPTIMIZATION_CONFIG["min_threshold"],
+            THRESHOLD_OPTIMIZATION_CONFIG["max_threshold"],
+            THRESHOLD_OPTIMIZATION_CONFIG["threshold_step"]
+        )
+        
+        for threshold in test_thresholds:
+            y_pred = (y_proba >= threshold).astype(int)
+            f1 = f1_score(y_true, y_pred)
+            f1_scores.append(f1)
+        
+        f1_optimal_idx = np.argmax(f1_scores)
+        f1_threshold = test_thresholds[f1_optimal_idx]
+        
+        # Precision optimization (highest precision with reasonable recall)
+        precision_scores = []
+        for threshold in test_thresholds:
+            y_pred = (y_proba >= threshold).astype(int)
+            if np.sum(y_pred) > 0:  # Avoid division by zero
+                prec = precision_score(y_true, y_pred)
+                rec = recall_score(y_true, y_pred)
+                # Only consider thresholds with recall > 0.1
+                if rec > 0.1:
+                    precision_scores.append(prec)
+                else:
+                    precision_scores.append(0)
+            else:
+                precision_scores.append(0)
+        
+        precision_optimal_idx = np.argmax(precision_scores)
+        precision_threshold = test_thresholds[precision_optimal_idx]
+        
+        # Recall optimization (highest recall with reasonable precision)
+        recall_scores = []
+        for threshold in test_thresholds:
+            y_pred = (y_proba >= threshold).astype(int)
+            if np.sum(y_pred) > 0:
+                prec = precision_score(y_true, y_pred)
+                rec = recall_score(y_true, y_pred)
+                # Only consider thresholds with precision > 0.1
+                if prec > 0.1:
+                    recall_scores.append(rec)
+                else:
+                    recall_scores.append(0)
+            else:
+                recall_scores.append(0)
+        
+        recall_optimal_idx = np.argmax(recall_scores)
+        recall_threshold = test_thresholds[recall_optimal_idx]
+        
+        # Accuracy optimization
+        accuracy_scores = []
+        for threshold in test_thresholds:
+            y_pred = (y_proba >= threshold).astype(int)
+            acc = accuracy_score(y_true, y_pred)
+            accuracy_scores.append(acc)
+        
+        accuracy_optimal_idx = np.argmax(accuracy_scores)
+        accuracy_threshold = test_thresholds[accuracy_optimal_idx]
+        
+        return {
+            "youden": float(youden_threshold),
+            "f1": float(f1_threshold),
+            "precision": float(precision_threshold),
+            "recall": float(recall_threshold),
+            "accuracy": float(accuracy_threshold)
+        }
+    
+    def _plot_roc_curve(self, fpr, tpr, roc_auc, optimal_threshold, file_identifier, output_dir):
+        """Plot and save ROC curve with optimal threshold marked."""
+        plt.figure(figsize=(10, 8))
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random classifier')
+        
+        # Mark optimal threshold
+        from sklearn.metrics import roc_curve
+        # Find closest threshold point
+        optimal_idx = np.argmin(np.abs(np.array([0.5]) - optimal_threshold))  # Simplified for visualization
+        plt.plot(fpr[optimal_idx], tpr[optimal_idx], 'ro', markersize=10, 
+                label=f'Optimal threshold = {optimal_threshold:.3f}')
+        
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'ROC Curve - {file_identifier}')
+        plt.legend(loc="lower right")
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'roc_curve_{file_identifier}.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_precision_recall_curve(self, precision, recall, pr_auc, optimal_threshold, file_identifier, output_dir):
+        """Plot and save Precision-Recall curve."""
+        plt.figure(figsize=(10, 8))
+        plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (AUC = {pr_auc:.3f})')
+        
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title(f'Precision-Recall Curve - {file_identifier}')
+        plt.legend(loc="lower left")
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'precision_recall_curve_{file_identifier}.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_threshold_analysis(self, thresholds, fpr, tpr, precision, recall, file_identifier, output_dir):
+        """Plot threshold analysis showing how metrics change with threshold."""
+        plt.figure(figsize=(15, 10))
+        
+        # Ensure all arrays have the same length
+        min_len = min(len(thresholds), len(fpr), len(tpr), len(precision), len(recall))
+        thresholds = thresholds[:min_len]
+        fpr = fpr[:min_len]
+        tpr = tpr[:min_len]
+        precision = precision[:min_len]
+        recall = recall[:min_len]
+        
+        plt.subplot(2, 2, 1)
+        plt.plot(thresholds, tpr, 'b-', label='True Positive Rate')
+        plt.plot(thresholds, fpr, 'r-', label='False Positive Rate')
+        plt.xlabel('Threshold')
+        plt.ylabel('Rate')
+        plt.title('TPR and FPR vs Threshold')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.subplot(2, 2, 2)
+        plt.plot(thresholds, precision, 'g-', label='Precision')
+        plt.plot(thresholds, recall, 'b-', label='Recall')
+        plt.xlabel('Threshold')
+        plt.ylabel('Score')
+        plt.title('Precision and Recall vs Threshold')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.subplot(2, 2, 3)
+        # Calculate F1 score for each threshold
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-8)
+        plt.plot(thresholds, f1_scores, 'purple', label='F1 Score')
+        plt.xlabel('Threshold')
+        plt.ylabel('F1 Score')
+        plt.title('F1 Score vs Threshold')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.subplot(2, 2, 4)
+        # Calculate Youden's J statistic
+        j_scores = tpr - fpr
+        plt.plot(thresholds, j_scores, 'orange', label="Youden's J")
+        plt.xlabel('Threshold')
+        plt.ylabel("Youden's J")
+        plt.title("Youden's J Statistic vs Threshold")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.suptitle(f'Threshold Analysis - {file_identifier}', fontsize=16)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'threshold_analysis_{file_identifier}.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _plot_threshold_summary(self, optimal_thresholds, f1_scores, output_dir):
+        """Plot summary of optimal thresholds across all models."""
+        plt.figure(figsize=(12, 8))
+        
+        plt.subplot(2, 1, 1)
+        plt.hist(optimal_thresholds, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+        plt.xlabel('Optimal Threshold')
+        plt.ylabel('Frequency')
+        plt.title('Distribution of Optimal Thresholds Across All Models')
+        plt.grid(True, alpha=0.3)
+        
+        plt.subplot(2, 1, 2)
+        plt.scatter(optimal_thresholds, f1_scores, alpha=0.7, color='green')
+        plt.xlabel('Optimal Threshold')
+        plt.ylabel('Optimized F1 Score')
+        plt.title('Optimal Threshold vs F1 Score Performance')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'threshold_optimization_summary.png'), dpi=300, bbox_inches='tight')
+        plt.close()

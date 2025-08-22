@@ -20,6 +20,8 @@ DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
+DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decishin_tree_threshold_optimized"
+
 
 # Pipeline State Machine Configuration
 # Dictionary containing method names in execution order with enable/disable flags
@@ -50,9 +52,19 @@ TRAINING_STATE_MACHINE = {
     "scale_weather_features": True,
     "correlation_analysis": True,
     "non_weather_correlation_analysis": True,
-    "train_decision_tree": True
+    "train_decision_tree": True,
+    "threshold_optimization_decision_tree": True
 }
 
+THRESHOLD_OPTIMIZATION_CONFIG = {
+    "threshold_step": 0.01,  # Step size for threshold scanning
+    "min_threshold": 0.1,    # Minimum threshold to test
+    "max_threshold": 0.9,    # Maximum threshold to test
+    "optimization_metric": "f1",  # Metric to optimize: 'f1', 'precision', 'recall', 'accuracy'
+    "plot_roc_curve": True,  # Whether to plot ROC curve
+    "plot_precision_recall": True,  # Whether to plot Precision-Recall curve
+    "save_optimized_models": True  # Whether to save models with optimized thresholds
+}
 
 # Weather column missing value threshold (drop columns with more missing values than this %)
 WEATHER_MISSING_THRESHOLD = 30.0
