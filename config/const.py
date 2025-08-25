@@ -23,6 +23,7 @@ REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_threshold_optimized"
 BORDERLINE_SMOTE_OUTPUT_FOLDER = "data/output/borderline_smote_synthetic"
 DECISION_TREE_BORDERLINE_SMOTE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_borderline_smote_threshold_optimized"
+XGBOOST_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/xgboost_threshold_optimized"
 
 
 
@@ -59,8 +60,8 @@ TRAINING_STATE_MACHINE = {
     "threshold_optimization_decision_tree": True,
     "generate_borderline_smote_data": True,
     "train_decision_tree_with_borderline_smote_data": True,
-    "threshold_optimization_decision_tree_borderline_smote": True
-    
+    "threshold_optimization_decision_tree_borderline_smote": True,
+    "train_xgboost_with_randomized_search_cv": True    
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
