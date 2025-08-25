@@ -53,6 +53,7 @@ from config.const import (
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     SCORE_METRIC,
     STRONG_INDICATORS,
+    TARGET_STATION_CODE,
     TEST_SIZE,
     THRESHOLD_OPTIMIZATION_CONFIG,
     TRAIN_DELAY_MINUTES,
@@ -382,6 +383,46 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ extract_nested_data (disabled)")
+
+        if state_machine.get("filter_by_target_station", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → filter_by_target_station")
+                    station_filtered_df = self.filter_by_target_station(
+                        dataframe=result["data"], 
+                        month_id=file_id
+                    )
+                    
+                    if station_filtered_df is not None:
+                        # Clear previous dataframe from memory
+                        del result["data"]
+                        result["data"] = station_filtered_df
+                        result["steps_executed"].append("filter_by_target_station")
+                        result["file_info"]["rows"] = len(station_filtered_df)
+                        result["file_info"]["columns"] = len(station_filtered_df.columns)
+                        print(f"      ✓ Filtered to {len(station_filtered_df)} rows for target station")
+                        
+                        # Check if filtering resulted in empty data
+                        if station_filtered_df.empty:
+                            print(f"      ⚠️  Warning: No data remains after station filtering")
+                            # You might want to continue or stop here depending on requirements
+                            # For now, we'll continue with empty dataframe
+                            
+                    else:
+                        result["errors"].append("filter_by_target_station returned None")
+                        print(f"      ✗ Failed - returned None")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"filter_by_target_station failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                result["errors"].append("filter_by_target_station: No data available")
+                print(f"    ✗ filter_by_target_station (no data)")
+                return result
+        else:
+            print(f"    ⊝ filter_by_target_station (disabled)")
 
         if state_machine.get("process_causes_column", False):
             if result["data"] is not None:
@@ -947,6 +988,85 @@ class TrainingPipeline:
             import traceback
             traceback.print_exc()  # Print full traceback for debugging
             return None
+
+    def filter_by_target_station(self, dataframe=None, month_id=None):
+        """
+        Filter the dataframe to keep only rows for a specific target station.
+        
+        This method filters the data to focus on train stops at a specific train station
+        based on the stationShortCode column. Only exact matches are kept - for example,
+        if TARGET_STATION_CODE is 'OL', stations like 'OLL' or 'OLK' will be dropped.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to filter.
+        month_id : str, optional
+            Month identifier for logging purposes (format: YYYY_MM).
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The filtered dataframe containing only data for the target station.
+            Returns None if stationShortCode column is missing or if no data matches.
+        """
+       
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        
+        # Log initial state
+        initial_rows = len(df)
+        initial_stations = df['stationShortCode'].nunique() if 'stationShortCode' in df.columns else 0
+        
+        print(f"Filtering data for target station '{TARGET_STATION_CODE}' from dataframe with {initial_rows} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+            
+        # Check if stationShortCode column exists
+        if 'stationShortCode' not in df.columns:
+            print("Error: 'stationShortCode' column not found in dataframe")
+            print(f"Available columns: {list(df.columns)}")
+            return None
+            
+        # Log station distribution before filtering
+        if initial_stations > 0:
+            station_counts = df['stationShortCode'].value_counts().head(10)
+            print(f"Found {initial_stations} unique stations. Top 10 stations by frequency:")
+            for station, count in station_counts.items():
+                print(f"  {station}: {count:,} rows")
+                
+        # Filter for exact match with target station code
+        filtered_df = df[df['stationShortCode'] == TARGET_STATION_CODE].copy()
+        
+        # Log filtering results
+        final_rows = len(filtered_df)
+        rows_removed = initial_rows - final_rows
+        
+        if final_rows == 0:
+            print(f"⚠️  WARNING: No data found for station '{TARGET_STATION_CODE}'!")
+            print(f"Available stations in dataset: {sorted(df['stationShortCode'].unique().tolist())}")
+            return filtered_df  # Return empty dataframe with same structure
+            
+        print(f"✓ Station filtering completed:")
+        print(f"  • Target station: {TARGET_STATION_CODE}")
+        print(f"  • Rows kept: {final_rows:,} ({final_rows/initial_rows*100:.1f}%)")
+        print(f"  • Rows removed: {rows_removed:,} ({rows_removed/initial_rows*100:.1f}%)")
+        
+        # Optional: Log unique train numbers for this station
+        if 'train_id' in filtered_df.columns:
+            unique_trains = filtered_df['train_id'].nunique()
+            print(f"  • Unique trains at {TARGET_STATION_CODE}: {unique_trains}")
+        elif 'trainNumber' in filtered_df.columns:
+            unique_trains = filtered_df['trainNumber'].nunique()
+            print(f"  • Unique trains at {TARGET_STATION_CODE}: {unique_trains}")
+            
+        return filtered_df
 
     def process_causes_column(self, dataframe=None):
         """
@@ -3809,7 +3929,6 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
-
     def _optimize_threshold_xgboost(self, y_true, y_proba, file_identifier, method_name, output_dir):
         """
         Find optimal threshold for XGBoost classification using ROC analysis.
@@ -3913,7 +4032,6 @@ class TrainingPipeline:
             "accuracy": optimal_metrics["accuracy"]
         }
 
-
     def _plot_roc_curve_xgboost(self, y_true, y_proba, optimal_threshold, file_identifier, method_name, output_dir):
         """Plot and save ROC curve for XGBoost models with optimal threshold marked."""
         try:
@@ -3950,7 +4068,6 @@ class TrainingPipeline:
             
         except Exception as e:
             print(f"      Warning: Could not create ROC plot for {file_identifier}_{method_name}: {str(e)}")
-
 
     def _plot_precision_recall_xgboost(self, y_true, y_proba, optimal_threshold, file_identifier, method_name, output_dir):
         """Plot and save Precision-Recall curve for XGBoost models with optimal threshold marked."""

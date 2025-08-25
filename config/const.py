@@ -2,8 +2,8 @@ from scipy.stats import randint
 import numpy as np
 
 # Pipeline execution control flag
-EXECUTE_PREPROCESSING_DATA_PIPELINE = False
-EXECUTE_TRAINING_PIPELINE = True
+EXECUTE_PREPROCESSING_DATA_PIPELINE = True
+EXECUTE_TRAINING_PIPELINE = False
 
 # Constants for file processing
 FOLDER_NAME = "data"
@@ -26,12 +26,12 @@ DECISION_TREE_BORDERLINE_SMOTE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/
 XGBOOST_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/xgboost_threshold_optimized"
 
 
-
 # Pipeline State Machine Configuration
 # Dictionary containing method names in execution order with enable/disable flags
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
+    "filter_by_target_station": True,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
@@ -45,7 +45,7 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_dayofweek_to_sincos": True,
     "drop_original_temporal_columns": True,
     "select_target": True,
-    "filter_strong_weather_causes": True,
+    "filter_strong_weather_causes": False,
     "remove_duplicates": True,
     "save_training_ready_csv": True
 }
@@ -107,6 +107,10 @@ VALID_TARGET_FEATURES = [
 
 CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled']
 REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
+
+# Station short code to filter data for - only exact matches will be kept
+TARGET_STATION_CODE = 'OL'  # Example: 'OL', 'HKI', 'ROI', etc.
+
 
 # All columns available in the matched dataset before preprocessing (alphabetical order):
 #
