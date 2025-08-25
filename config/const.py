@@ -56,7 +56,8 @@ TRAINING_STATE_MACHINE = {
     "non_weather_correlation_analysis": True,
     "train_decision_tree": True,
     "threshold_optimization_decision_tree": True,
-    "generate_borderline_smote_data": True
+    "generate_borderline_smote_data": True,
+    "train_decision_tree_with_borderline_smote_data": True,
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
