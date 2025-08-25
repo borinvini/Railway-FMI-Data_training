@@ -61,7 +61,8 @@ TRAINING_STATE_MACHINE = {
     "generate_borderline_smote_data": True,
     "train_decision_tree_with_borderline_smote_data": True,
     "threshold_optimization_decision_tree_borderline_smote": True,
-    "train_xgboost_with_randomized_search_cv": True    
+    "train_xgboost_with_randomized_search_cv": True,
+    "threshold_optimization_xgboost": True  
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {

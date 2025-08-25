@@ -68,6 +68,7 @@ from config.const import (
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     MAX_SAMPLE_WEIGHT_CLASSIFICATION,
+    XGBOOST_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER,
 )
 
 
@@ -3467,8 +3468,531 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ train_xgboost_with_randomized_search_cv (disabled)")
+
+        if state_machine.get("threshold_optimization_xgboost", False):
+            try:
+                print(f"    → threshold_optimization_xgboost")
+                xgb_threshold_result = self.threshold_optimization_xgboost()
+                
+                if xgb_threshold_result and xgb_threshold_result.get("success", False):
+                    result["steps_executed"].append("threshold_optimization_xgboost")
+                    result["file_info"]["xgboost_models_optimized"] = xgb_threshold_result.get("models_optimized", 0)
+                    print(f"      ✓ Successfully optimized XGBoost thresholds")
+                    print(f"      ✓ Target feature: {xgb_threshold_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ Models optimized: {xgb_threshold_result.get('models_optimized', 0)}")
+                    print(f"      ✓ Average optimal threshold: {xgb_threshold_result.get('average_optimal_threshold', 0):.3f}")
+                    print(f"      ✓ Average optimized F1: {xgb_threshold_result.get('average_optimized_f1', 0):.3f}")
+                    print(f"      ✓ Average optimized Precision: {xgb_threshold_result.get('average_optimized_precision', 0):.3f}")
+                    print(f"      ✓ Average optimized Recall: {xgb_threshold_result.get('average_optimized_recall', 0):.3f}")
+                    print(f"      ✓ Results saved to: {xgb_threshold_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = xgb_threshold_result.get("error", "threshold_optimization_xgboost returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"threshold_optimization_xgboost failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ threshold_optimization_xgboost (disabled)")
+
             
         return result
+    
+    def threshold_optimization_xgboost(self):
+        """
+        Optimize XGBoost classification thresholds using ROC analysis.
+        
+        This method loads trained XGBoost models from the previous stage,
+        analyzes ROC curves to find optimal thresholds, and saves optimized models
+        with new thresholds. Results are saved to xgboost_threshold_optimized folder.
+        
+        Input Data Sources:
+        - Models: data/output/xgboost_randomized_search/
+        - Test Data: data/output/4-merged_scaled_training_ready/merged_data_*_test_scaled.csv
+        
+        Output:
+        - Optimized models and thresholds saved to: data/output/xgboost_threshold_optimized/
+        
+        Returns:
+        --------
+        dict
+            A summary of the threshold optimization results including optimal thresholds and performance metrics.
+        """
+        try:
+            print(f"    threshold_optimization_xgboost: Starting XGBoost threshold optimization...")
+            
+            # Create output directory
+            output_dir = os.path.join(self.project_root, XGBOOST_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Check if XGBoost results exist from previous stage
+            xgb_output_dir = os.path.join(self.project_root, "data/output/xgboost_randomized_search")
+            xgb_results_file = os.path.join(xgb_output_dir, "xgboost_randomized_search_training_results.json")
+            
+            if not os.path.exists(xgb_results_file):
+                error_msg = "XGBoost training results not found. Run train_xgboost_with_randomized_search_cv stage first."
+                print(f"    threshold_optimization_xgboost: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load XGBoost training results
+            with open(xgb_results_file, 'r') as f:
+                xgb_results = json.load(f)
+            
+            # Check if this is a classification problem
+            problem_type = xgb_results.get("training_overview", {}).get("problem_type", "")
+            if problem_type != "classification":
+                error_msg = f"Threshold optimization is only supported for classification problems. Current problem type: {problem_type}"
+                print(f"    threshold_optimization_xgboost: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"    threshold_optimization_xgboost: Found {len(xgb_results.get('file_results', []))} trained XGBoost models")
+            
+            # Find train and test files
+            scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train_scaled.csv")
+            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test_scaled.csv")
+            
+            train_files = glob.glob(train_pattern)
+            test_files = glob.glob(test_pattern)
+            
+            if not train_files or not test_files:
+                error_msg = f"Training/test files not found in {scaled_data_dir}"
+                print(f"    threshold_optimization_xgboost: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Initialize results structure
+            optimization_results = {
+                "optimization_overview": {
+                    "optimization_completed": datetime.now().isoformat(),
+                    "target_feature": DEFAULT_TARGET_FEATURE,
+                    "optimization_metric": THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"],
+                    "total_models_optimized": 0,
+                    "successful_optimizations": 0,
+                    "failed_optimizations": 0,
+                    "problem_type": "classification"
+                },
+                "threshold_optimization_config": THRESHOLD_OPTIMIZATION_CONFIG,
+                "file_results": [],
+                "aggregate_metrics": {
+                    "average_optimal_threshold": 0.0,
+                    "average_optimized_f1": 0.0,
+                    "average_optimized_precision": 0.0,
+                    "average_optimized_recall": 0.0,
+                    "average_optimized_accuracy": 0.0,
+                    "best_performing_file": None
+                }
+            }
+            
+            successful_optimizations = 0
+            failed_optimizations = 0
+            all_optimal_thresholds = []
+            all_optimized_f1_scores = []
+            all_optimized_precisions = []
+            all_optimized_recalls = []
+            all_optimized_accuracies = []
+            best_f1 = -1
+            best_file = None
+            
+            # Process each train/test file pair
+            for train_file in train_files:
+                try:
+                    # Find corresponding test file and model
+                    train_filename = os.path.basename(train_file)
+                    test_filename = train_filename.replace('_train_scaled.csv', '_test_scaled.csv')
+                    test_file = os.path.join(scaled_data_dir, test_filename)
+                    
+                    if not os.path.exists(test_file):
+                        print(f"    threshold_optimization_xgboost: Warning - No test file for {train_filename}. Skipping.")
+                        continue
+                    
+                    # Find corresponding trained XGBoost model
+                    file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
+                    
+                    # Look for XGBoost model files (there might be multiple methods/models per file)
+                    model_pattern = os.path.join(xgb_output_dir, f"xgboost_model_{file_identifier}.joblib")
+                    model_files = glob.glob(model_pattern)
+                    
+                    if not model_files:
+                        print(f"    threshold_optimization_xgboost: Warning - No XGBoost model files for {file_identifier}. Skipping.")
+                        failed_optimizations += 1
+                        continue
+                    
+                    print(f"    threshold_optimization_xgboost: Optimizing threshold for {file_identifier}")
+                    
+                    # Load test data
+                    test_df = pd.read_csv(test_file)
+                    
+                    if DEFAULT_TARGET_FEATURE not in test_df.columns:
+                        print(f"    threshold_optimization_xgboost: Target feature '{DEFAULT_TARGET_FEATURE}' not found in {test_filename}")
+                        failed_optimizations += 1
+                        continue
+                    
+                    # Prepare test features and target
+                    y_test = test_df[DEFAULT_TARGET_FEATURE]
+                    X_test = test_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                    
+                    # Handle missing values (consistent with XGBoost training)
+                    X_test = X_test.fillna(0)
+                    
+                    # Process each model file for this identifier
+                    file_results = {
+                        "file_identifier": file_identifier,
+                        "test_samples": len(y_test),
+                        "positive_samples": int(y_test.sum()),
+                        "negative_samples": int(len(y_test) - y_test.sum()),
+                        "models_optimized": [],
+                        "optimization_successful": True,
+                        "error_message": None
+                    }
+                    
+                    file_successful = False
+                    
+                    for model_file in model_files:
+                        try:
+                            # Extract method name from model filename
+                            model_filename = os.path.basename(model_file)
+                            method_match = re.search(r'xgboost_model_.*?_(.+?)\.joblib', model_filename)
+                            method_name = method_match.group(1) if method_match else "unknown"
+                            
+                            print(f"      Processing {method_name} model...")
+                            
+                            # Load the trained XGBoost model
+                            model = joblib.load(model_file)
+                            
+                            # Get probability predictions
+                            y_proba = model.predict_proba(X_test)[:, 1]  # Probability of positive class
+                            
+                            # Perform threshold optimization
+                            optimal_threshold, optimal_metrics = self._optimize_threshold_xgboost(
+                                y_test, y_proba, file_identifier, method_name, output_dir
+                            )
+                            
+                            # Create optimized model wrapper that uses the optimal threshold
+                            optimized_model_data = {
+                                "original_model": model,
+                                "optimal_threshold": optimal_threshold,
+                                "optimization_metrics": optimal_metrics,
+                                "model_type": "xgboost_optimized"
+                            }
+                            
+                            # Save optimized model
+                            optimized_model_filename = f"xgboost_optimized_model_{file_identifier}_{method_name}.joblib"
+                            optimized_model_path = os.path.join(output_dir, optimized_model_filename)
+                            joblib.dump(optimized_model_data, optimized_model_path)
+
+                            # Generate and save confusion matrix for optimized threshold
+                            y_pred_optimized = (y_proba >= optimal_threshold).astype(int)
+                            conf_matrix = confusion_matrix(y_test, y_pred_optimized)
+                            conf_matrix_result = self._save_confusion_matrix(
+                                conf_matrix, y_test, y_pred_optimized, 
+                                f"{file_identifier}_{method_name}_optimized", output_dir
+                            )
+                            
+                            # Store results for this model
+                            model_result = {
+                                "method_name": method_name,
+                                "original_model_file": model_file,
+                                "optimized_model_file": optimized_model_path,
+                                "optimal_threshold": optimal_threshold,
+                                "optimization_metrics": optimal_metrics,
+                                "default_threshold_metrics": {
+                                    "f1_score": float(f1_score(y_test, model.predict(X_test))),
+                                    "precision": float(precision_score(y_test, model.predict(X_test))),
+                                    "recall": float(recall_score(y_test, model.predict(X_test))),
+                                    "accuracy": float(accuracy_score(y_test, model.predict(X_test)))
+                                }
+                            }
+                            
+                            file_results["models_optimized"].append(model_result)
+                            
+                            # Track aggregates
+                            all_optimal_thresholds.append(optimal_threshold)
+                            all_optimized_f1_scores.append(optimal_metrics['f1_score'])
+                            all_optimized_precisions.append(optimal_metrics['precision'])
+                            all_optimized_recalls.append(optimal_metrics['recall'])
+                            all_optimized_accuracies.append(optimal_metrics['accuracy'])
+                            
+                            if optimal_metrics['f1_score'] > best_f1:
+                                best_f1 = optimal_metrics['f1_score']
+                                best_file = f"{file_identifier}_{method_name}"
+                            
+                            file_successful = True
+                            
+                            print(f"        ✓ {method_name}: Threshold {optimal_threshold:.3f}, F1 {optimal_metrics['f1_score']:.3f}")
+                            
+                        except Exception as e:
+                            print(f"        ✗ Error processing {method_name} model: {str(e)}")
+                            continue
+                    
+                    if file_successful:
+                        successful_optimizations += len(file_results["models_optimized"])
+                        optimization_results["file_results"].append(file_results)
+                    else:
+                        failed_optimizations += 1
+                        file_results["optimization_successful"] = False
+                        file_results["error_message"] = "No models were successfully optimized"
+                        optimization_results["file_results"].append(file_results)
+                    
+                except Exception as e:
+                    print(f"    threshold_optimization_xgboost: Error processing {train_filename}: {str(e)}")
+                    failed_optimizations += 1
+                    continue
+            
+            # Calculate aggregate metrics
+            if successful_optimizations > 0:
+                optimization_results["optimization_overview"]["successful_optimizations"] = successful_optimizations
+                optimization_results["optimization_overview"]["failed_optimizations"] = failed_optimizations
+                optimization_results["optimization_overview"]["total_models_optimized"] = successful_optimizations
+                
+                optimization_results["aggregate_metrics"] = {
+                    "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                    "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                    "average_optimized_precision": float(np.mean(all_optimized_precisions)),
+                    "average_optimized_recall": float(np.mean(all_optimized_recalls)),
+                    "average_optimized_accuracy": float(np.mean(all_optimized_accuracies)),
+                    "best_performing_file": {
+                        "file_identifier": best_file,
+                        "f1_score": float(best_f1)
+                    } if best_file else None
+                }
+                
+                # Save consolidated results
+                results_file = os.path.join(output_dir, "xgboost_threshold_optimization_results.json")
+                with open(results_file, 'w') as f:
+                    json.dump(optimization_results, f, indent=2)
+                
+                print(f"    threshold_optimization_xgboost: Optimized {successful_optimizations} XGBoost models")
+                print(f"    threshold_optimization_xgboost: Average optimal threshold: {np.mean(all_optimal_thresholds):.3f}")
+                print(f"    threshold_optimization_xgboost: Average optimized F1: {np.mean(all_optimized_f1_scores):.3f}")
+                print(f"    threshold_optimization_xgboost: Results saved to: {output_dir}")
+                
+                return {
+                    "success": True,
+                    "models_optimized": successful_optimizations,
+                    "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                    "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                    "average_optimized_precision": float(np.mean(all_optimized_precisions)),
+                    "average_optimized_recall": float(np.mean(all_optimized_recalls)),
+                    "average_optimized_accuracy": float(np.mean(all_optimized_accuracies)),
+                    "output_directory": output_dir,
+                    "results_file": results_file,
+                    "target_feature": DEFAULT_TARGET_FEATURE
+                }
+            else:
+                error_msg = "No XGBoost models were successfully optimized"
+                print(f"    threshold_optimization_xgboost: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except Exception as e:
+            error_msg = f"threshold_optimization_xgboost failed: {str(e)}"
+            print(f"    threshold_optimization_xgboost: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+
+    def _optimize_threshold_xgboost(self, y_true, y_proba, file_identifier, method_name, output_dir):
+        """
+        Find optimal threshold for XGBoost classification using ROC analysis.
+        
+        Parameters:
+        -----------
+        y_true : array-like
+            True binary labels
+        y_proba : array-like
+            Probability predictions from XGBoost model
+        file_identifier : str
+            Identifier for the file being processed
+        method_name : str
+            Name of the XGBoost method being optimized
+        output_dir : str
+            Directory to save plots and results
+            
+        Returns:
+        --------
+        tuple
+            (optimal_threshold, metrics_dict)
+        """
+        # Generate threshold range
+        thresholds = np.arange(
+            THRESHOLD_OPTIMIZATION_CONFIG["min_threshold"], 
+            THRESHOLD_OPTIMIZATION_CONFIG["max_threshold"] + THRESHOLD_OPTIMIZATION_CONFIG["threshold_step"], 
+            THRESHOLD_OPTIMIZATION_CONFIG["threshold_step"]
+        )
+        
+        # Initialize tracking variables
+        best_threshold = 0.5
+        best_score = -1
+        threshold_results = []
+        
+        optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
+        
+        # Test each threshold
+        for threshold in thresholds:
+            y_pred = (y_proba >= threshold).astype(int)
+            
+            # Calculate metrics
+            f1 = f1_score(y_true, y_pred, zero_division=0)
+            precision = precision_score(y_true, y_pred, zero_division=0)
+            recall = recall_score(y_true, y_pred, zero_division=0)
+            accuracy = accuracy_score(y_true, y_pred)
+            
+            # Select metric for optimization
+            if optimization_metric == "f1":
+                score = f1
+            elif optimization_metric == "precision":
+                score = precision
+            elif optimization_metric == "recall":
+                score = recall
+            elif optimization_metric == "accuracy":
+                score = accuracy
+            else:
+                score = f1  # Default to F1
+            
+            threshold_results.append({
+                "threshold": threshold,
+                "f1_score": f1,
+                "precision": precision,
+                "recall": recall,
+                "accuracy": accuracy,
+                "optimization_score": score
+            })
+            
+            if score > best_score:
+                best_score = score
+                best_threshold = threshold
+        
+        # Get metrics for optimal threshold
+        optimal_metrics = next(
+            result for result in threshold_results 
+            if result["threshold"] == best_threshold
+        )
+        
+        # Create plots if enabled
+        if THRESHOLD_OPTIMIZATION_CONFIG["plot_roc_curve"]:
+            self._plot_roc_curve_xgboost(y_true, y_proba, best_threshold, file_identifier, method_name, output_dir)
+        
+        if THRESHOLD_OPTIMIZATION_CONFIG["plot_precision_recall"]:
+            self._plot_precision_recall_xgboost(y_true, y_proba, best_threshold, file_identifier, method_name, output_dir)
+        
+        # Save threshold analysis results
+        threshold_analysis_file = os.path.join(output_dir, f"threshold_analysis_{file_identifier}_{method_name}.json")
+        with open(threshold_analysis_file, 'w') as f:
+            json.dump({
+                "file_identifier": file_identifier,
+                "method_name": method_name,
+                "optimization_metric": optimization_metric,
+                "optimal_threshold": best_threshold,
+                "optimal_metrics": optimal_metrics,
+                "all_thresholds": threshold_results
+            }, f, indent=2)
+        
+        return best_threshold, {
+            "f1_score": optimal_metrics["f1_score"],
+            "precision": optimal_metrics["precision"],
+            "recall": optimal_metrics["recall"],
+            "accuracy": optimal_metrics["accuracy"]
+        }
+
+
+    def _plot_roc_curve_xgboost(self, y_true, y_proba, optimal_threshold, file_identifier, method_name, output_dir):
+        """Plot and save ROC curve for XGBoost models with optimal threshold marked."""
+        try:
+            # Calculate ROC curve
+            fpr, tpr, _ = roc_curve(y_true, y_proba)
+            roc_auc = auc(fpr, tpr)
+            
+            # Create the plot
+            plt.figure(figsize=(10, 8))
+            plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+            plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
+            
+            # Mark optimal threshold point
+            y_pred_optimal = (y_proba >= optimal_threshold).astype(int)
+            optimal_fpr = np.mean(y_pred_optimal[y_true == 0])  # False Positive Rate
+            optimal_tpr = np.mean(y_pred_optimal[y_true == 1])  # True Positive Rate (Recall)
+            
+            plt.plot(optimal_fpr, optimal_tpr, 'ro', markersize=10, 
+                    label=f'Optimal Threshold = {optimal_threshold:.3f}')
+            
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.05])
+            plt.xlabel('False Positive Rate', fontsize=12)
+            plt.ylabel('True Positive Rate', fontsize=12)
+            plt.title(f'ROC Curve - XGBoost {method_name}\n{file_identifier}', fontsize=14, fontweight='bold')
+            plt.legend(loc="lower right", fontsize=11)
+            plt.grid(True, alpha=0.3)
+            
+            # Save the plot
+            plot_filename = f"roc_curve_xgboost_{file_identifier}_{method_name}.png"
+            plot_path = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception as e:
+            print(f"      Warning: Could not create ROC plot for {file_identifier}_{method_name}: {str(e)}")
+
+
+    def _plot_precision_recall_xgboost(self, y_true, y_proba, optimal_threshold, file_identifier, method_name, output_dir):
+        """Plot and save Precision-Recall curve for XGBoost models with optimal threshold marked."""
+        try:
+            # Calculate Precision-Recall curve
+            precision, recall, _ = precision_recall_curve(y_true, y_proba)
+            avg_precision = average_precision_score(y_true, y_proba)
+            
+            # Create the plot
+            plt.figure(figsize=(10, 8))
+            plt.plot(recall, precision, color='blue', lw=2, 
+                    label=f'Precision-Recall curve (AP = {avg_precision:.3f})')
+            
+            # Mark optimal threshold point
+            y_pred_optimal = (y_proba >= optimal_threshold).astype(int)
+            optimal_precision = precision_score(y_true, y_pred_optimal, zero_division=0)
+            optimal_recall = recall_score(y_true, y_pred_optimal, zero_division=0)
+            
+            plt.plot(optimal_recall, optimal_precision, 'ro', markersize=10,
+                    label=f'Optimal Threshold = {optimal_threshold:.3f}')
+            
+            # Add baseline (random classifier)
+            baseline = np.mean(y_true)
+            plt.axhline(y=baseline, color='red', linestyle='--', 
+                    label=f'Random Baseline (AP = {baseline:.3f})')
+            
+            plt.xlim([0.0, 1.0])
+            plt.ylim([0.0, 1.05])
+            plt.xlabel('Recall', fontsize=12)
+            plt.ylabel('Precision', fontsize=12)
+            plt.title(f'Precision-Recall Curve - XGBoost {method_name}\n{file_identifier}', fontsize=14, fontweight='bold')
+            plt.legend(loc="lower left", fontsize=11)
+            plt.grid(True, alpha=0.3)
+            
+            # Save the plot
+            plot_filename = f"precision_recall_xgboost_{file_identifier}_{method_name}.png"
+            plot_path = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception as e:
+            print(f"      Warning: Could not create Precision-Recall plot for {file_identifier}_{method_name}: {str(e)}")
     
     def correlation_analysis(self, csv_files=None):
         """
