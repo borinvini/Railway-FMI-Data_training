@@ -21,6 +21,8 @@ IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decishin_tree_threshold_optimized"
+BORDERLINE_SMOTE_OUTPUT_FOLDER = "data/output/borderline_smote_synthetic"
+
 
 
 # Pipeline State Machine Configuration
@@ -53,7 +55,8 @@ TRAINING_STATE_MACHINE = {
     "correlation_analysis": True,
     "non_weather_correlation_analysis": True,
     "train_decision_tree": True,
-    "threshold_optimization_decision_tree": True
+    "threshold_optimization_decision_tree": True,
+    "generate_borderline_smote_data": True
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
@@ -64,6 +67,15 @@ THRESHOLD_OPTIMIZATION_CONFIG = {
     "plot_roc_curve": True,  # Whether to plot ROC curve
     "plot_precision_recall": True,  # Whether to plot Precision-Recall curve
     "save_optimized_models": True  # Whether to save models with optimized thresholds
+}
+
+# BorderlineSMOTE configuration constants
+BORDERLINE_SMOTE_CONFIG = {
+    "k_neighbors": 5,
+    "m_neighbors": 10,
+    "kind": "borderline-1",  # Options: "borderline-1", "borderline-2"
+    "random_state": 42,
+    "sampling_strategy": "auto",  # Options: "auto", "minority", float, dict
 }
 
 # Weather column missing value threshold (drop columns with more missing values than this %)

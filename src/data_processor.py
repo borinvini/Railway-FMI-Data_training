@@ -27,6 +27,8 @@ import seaborn as sns
 
 from config.const import (
     ALL_WEATHER_FEATURES,
+    BORDERLINE_SMOTE_CONFIG,
+    BORDERLINE_SMOTE_OUTPUT_FOLDER,
     CLASSIFICATION_PROBLEM,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DECISION_TREE_PARAM_DISTRIBUTIONS,
@@ -3329,6 +3331,36 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ threshold_optimization_decision_tree (disabled)")
 
+        if state_machine.get("generate_borderline_smote_data", False):
+            try:
+                print(f"    → generate_borderline_smote_data")
+                smote_result = self.generate_borderline_smote_data()
+                
+                if smote_result and smote_result.get("success", False):
+                    result["steps_executed"].append("generate_borderline_smote_data")
+                    result["file_info"]["synthetic_samples_generated"] = smote_result.get("total_synthetic_samples", 0)
+                    result["file_info"]["smote_files_processed"] = smote_result.get("files_processed", 0)
+                    print(f"      ✓ Successfully generated synthetic data using BorderlineSMOTE")
+                    print(f"      ✓ Target feature: {smote_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ Files processed: {smote_result.get('files_processed', 0)}")
+                    print(f"      ✓ Synthetic samples generated: {smote_result.get('total_synthetic_samples', 0):,}")
+                    print(f"      ✓ Average augmentation ratio: {smote_result.get('average_augmentation_ratio', 0):.2f}x")
+                    print(f"      ✓ Results saved to: {smote_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = smote_result.get("error", "generate_borderline_smote_data returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"generate_borderline_smote_data failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ generate_borderline_smote_data (disabled)")
+
+
         
         return result
     
@@ -5344,6 +5376,426 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg
             }
+
+    def generate_borderline_smote_data(self):
+        """
+        Generate synthetic data using BorderlineSMOTE on training datasets.
+        
+        This method applies BorderlineSMOTE to generate synthetic samples for the minority class
+        in the training datasets. It processes all merged_data_*_train_scaled.csv files and
+        creates augmented versions with synthetic samples.
+        
+        BorderlineSMOTE focuses on borderline samples (samples that are close to the decision boundary)
+        to generate more realistic synthetic samples compared to regular SMOTE.
+        
+        Returns:
+        --------
+        dict
+            A summary of the BorderlineSMOTE data generation results including files processed and sample counts.
+        """
+        try:
+            print(f"    generate_borderline_smote_data: Starting BorderlineSMOTE synthetic data generation...")
+            
+            # Import required libraries
+            from imblearn.over_sampling import BorderlineSMOTE
+            from collections import Counter
+            
+            # Create output directory
+            output_dir = os.path.join(self.project_root, BORDERLINE_SMOTE_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Find training files
+            scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train_scaled.csv")
+            train_files = glob.glob(train_pattern)
+            
+            if not train_files:
+                error_msg = f"No training files found matching pattern: {train_pattern}"
+                print(f"    generate_borderline_smote_data: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Initialize results structure
+            smote_results = {
+                "generation_overview": {
+                    "generation_completed": datetime.now().isoformat(),
+                    "target_feature": DEFAULT_TARGET_FEATURE,
+                    "total_files_processed": 0,
+                    "successful_generations": 0,
+                    "failed_generations": 0,
+                    "borderline_smote_config": BORDERLINE_SMOTE_CONFIG
+                },
+                "file_results": [],
+                "aggregate_metrics": {
+                    "total_original_samples": 0,
+                    "total_synthetic_samples": 0,
+                    "total_final_samples": 0,
+                    "average_augmentation_ratio": 0.0,
+                    "overall_class_distributions": {
+                        "before_smote": {
+                            "total_samples": 0,
+                            "distribution": {}
+                        },
+                        "after_smote": {
+                            "total_samples": 0,
+                            "distribution": {}
+                        }
+                    },
+                    "best_performing_file": None
+                }
+            }
+            
+            successful_generations = 0
+            failed_generations = 0
+            total_original_samples = 0
+            total_synthetic_samples = 0
+            total_final_samples = 0
+            augmentation_ratios = []
+            overall_original_distribution = Counter()
+            overall_final_distribution = Counter()
+            
+            # Process each training file
+            for train_file in train_files:
+                try:
+                    train_filename = os.path.basename(train_file)
+                    file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
+                    
+                    print(f"    generate_borderline_smote_data: Processing {file_identifier}")
+                    
+                    # Load training data
+                    train_df = pd.read_csv(train_file)
+                    
+                    if DEFAULT_TARGET_FEATURE not in train_df.columns:
+                        print(f"    generate_borderline_smote_data: Target feature '{DEFAULT_TARGET_FEATURE}' not found in {train_filename}")
+                        failed_generations += 1
+                        continue
+                    
+                    # Prepare features and target
+                    y_train = train_df[DEFAULT_TARGET_FEATURE]
+                    X_train = train_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                    
+                    # Check class distribution before SMOTE
+                    original_distribution = Counter(y_train)
+                    original_sample_count = len(y_train)
+                    
+                    print(f"    generate_borderline_smote_data: Original distribution for {file_identifier}: {dict(original_distribution)}")
+                    
+                    # Check if minority class has enough samples for BorderlineSMOTE
+                    minority_class_count = min(original_distribution.values())
+                    if minority_class_count < BORDERLINE_SMOTE_CONFIG["k_neighbors"] + 1:
+                        print(f"    generate_borderline_smote_data: Warning - Not enough minority samples ({minority_class_count}) for BorderlineSMOTE (requires >{BORDERLINE_SMOTE_CONFIG['k_neighbors']}). Skipping {file_identifier}")
+                        failed_generations += 1
+                        continue
+                    
+                    # Initialize BorderlineSMOTE
+                    borderline_smote = BorderlineSMOTE(
+                        k_neighbors=BORDERLINE_SMOTE_CONFIG["k_neighbors"],
+                        m_neighbors=BORDERLINE_SMOTE_CONFIG["m_neighbors"],
+                        kind=BORDERLINE_SMOTE_CONFIG["kind"],
+                        random_state=BORDERLINE_SMOTE_CONFIG["random_state"],
+                        sampling_strategy=BORDERLINE_SMOTE_CONFIG["sampling_strategy"]
+                    )
+                    
+                    # Apply BorderlineSMOTE
+                    X_resampled, y_resampled = borderline_smote.fit_resample(X_train, y_train)
+                    
+                    # Calculate metrics
+                    final_distribution = Counter(y_resampled)
+                    final_sample_count = len(y_resampled)
+                    synthetic_samples_added = final_sample_count - original_sample_count
+                    augmentation_ratio = final_sample_count / original_sample_count
+                    
+                    print(f"    generate_borderline_smote_data: Final distribution for {file_identifier}: {dict(final_distribution)}")
+                    print(f"    generate_borderline_smote_data: Added {synthetic_samples_added:,} synthetic samples (augmentation ratio: {augmentation_ratio:.2f}x)")
+                    
+                    # Create augmented dataframe
+                    augmented_df = pd.DataFrame(X_resampled, columns=X_train.columns)
+                    augmented_df[DEFAULT_TARGET_FEATURE] = y_resampled
+                    
+                    # Save augmented training data
+                    output_filename = f"borderline_smote_data_{file_identifier}_train_augmented.csv"
+                    output_path = os.path.join(output_dir, output_filename)
+                    augmented_df.to_csv(output_path, index=False)
+                    
+                    # Calculate detailed class distributions with percentages
+                    original_distribution_detailed = {}
+                    final_distribution_detailed = {}
+                    
+                    # Original distribution with counts and percentages
+                    for class_label, count in original_distribution.items():
+                        percentage = (count / original_sample_count) * 100
+                        original_distribution_detailed[str(class_label)] = {
+                            "count": count,
+                            "percentage": round(percentage, 2)
+                        }
+                    
+                    # Final distribution with counts and percentages
+                    for class_label, count in final_distribution.items():
+                        percentage = (count / final_sample_count) * 100
+                        final_distribution_detailed[str(class_label)] = {
+                            "count": count,
+                            "percentage": round(percentage, 2)
+                        }
+                    
+                    # Record results
+                    file_result = {
+                        "file_identifier": file_identifier,
+                        "original_file": train_filename,
+                        "augmented_file": output_filename,
+                        "original_samples": original_sample_count,
+                        "synthetic_samples_added": synthetic_samples_added,
+                        "final_samples": final_sample_count,
+                        "augmentation_ratio": float(augmentation_ratio),
+                        "class_distributions": {
+                            "before_smote": {
+                                "total_samples": original_sample_count,
+                                "distribution": original_distribution_detailed
+                            },
+                            "after_smote": {
+                                "total_samples": final_sample_count,
+                                "distribution": final_distribution_detailed
+                            }
+                        },
+                        "borderline_smote_successful": True
+                    }
+                    
+                    smote_results["file_results"].append(file_result)
+                    
+                    # Update tracking variables
+                    total_original_samples += original_sample_count
+                    total_synthetic_samples += synthetic_samples_added
+                    total_final_samples += final_sample_count
+                    augmentation_ratios.append(augmentation_ratio)
+                    
+                    # Update overall distributions
+                    overall_original_distribution.update(original_distribution)
+                    overall_final_distribution.update(final_distribution)
+                    
+                    successful_generations += 1
+                    print(f"    generate_borderline_smote_data: ✓ {file_identifier} - Added {synthetic_samples_added:,} synthetic samples")
+                    
+                except Exception as e:
+                    print(f"    generate_borderline_smote_data: Error processing {train_file}: {str(e)}")
+                    failed_generations += 1
+                    
+                    # Add failed result
+                    file_identifier = os.path.basename(train_file).replace('_train_scaled.csv', '')
+                    smote_results["file_results"].append({
+                        "file_identifier": file_identifier,
+                        "borderline_smote_successful": False,
+                        "error": str(e)
+                    })
+            
+            # Finalize results
+            if successful_generations > 0:
+                # Calculate overall class distributions with percentages
+                overall_original_detailed = {}
+                overall_final_detailed = {}
+                
+                # Overall original distribution
+                for class_label, count in overall_original_distribution.items():
+                    percentage = (count / total_original_samples) * 100
+                    overall_original_detailed[str(class_label)] = {
+                        "count": count,
+                        "percentage": round(percentage, 2)
+                    }
+                
+                # Overall final distribution
+                for class_label, count in overall_final_distribution.items():
+                    percentage = (count / total_final_samples) * 100
+                    overall_final_detailed[str(class_label)] = {
+                        "count": count,
+                        "percentage": round(percentage, 2)
+                    }
+                
+                smote_results["generation_overview"].update({
+                    "total_files_processed": successful_generations + failed_generations,
+                    "successful_generations": successful_generations,
+                    "failed_generations": failed_generations
+                })
+                
+                smote_results["aggregate_metrics"].update({
+                    "total_original_samples": total_original_samples,
+                    "total_synthetic_samples": total_synthetic_samples,
+                    "total_final_samples": total_final_samples,
+                    "average_augmentation_ratio": float(np.mean(augmentation_ratios)) if augmentation_ratios else 0.0,
+                    "overall_class_distributions": {
+                        "before_smote": {
+                            "total_samples": total_original_samples,
+                            "distribution": overall_original_detailed
+                        },
+                        "after_smote": {
+                            "total_samples": total_final_samples,
+                            "distribution": overall_final_detailed
+                        }
+                    },
+                    "best_performing_file": {
+                        "file_identifier": smote_results["file_results"][np.argmax(augmentation_ratios)]["file_identifier"],
+                        "augmentation_ratio": float(max(augmentation_ratios))
+                    } if augmentation_ratios else None
+                })
+                
+                # Save consolidated results
+                results_file = os.path.join(output_dir, "borderline_smote_generation_results.json")
+                with open(results_file, 'w') as f:
+                    json.dump(smote_results, f, indent=2)
+                
+                # Create summary visualization
+                self._plot_smote_summary(smote_results, output_dir)
+                
+                print(f"    generate_borderline_smote_data: Completed successfully!")
+                print(f"    generate_borderline_smote_data: Generated {total_synthetic_samples:,} synthetic samples across {successful_generations} files")
+                print(f"    generate_borderline_smote_data: Average augmentation ratio: {np.mean(augmentation_ratios):.2f}x")
+                print(f"    generate_borderline_smote_data: Results saved to: {output_dir}")
+                
+                return {
+                    "success": True,
+                    "files_processed": successful_generations,
+                    "total_synthetic_samples": total_synthetic_samples,
+                    "average_augmentation_ratio": float(np.mean(augmentation_ratios)),
+                    "output_directory": output_dir,
+                    "results_file": results_file,
+                    "target_feature": DEFAULT_TARGET_FEATURE
+                }
+            else:
+                error_msg = "No files were successfully processed for BorderlineSMOTE generation"
+                print(f"    generate_borderline_smote_data: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except Exception as e:
+            error_msg = f"generate_borderline_smote_data failed: {str(e)}"
+            print(f"    generate_borderline_smote_data: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    def _plot_smote_summary(self, smote_results, output_dir):
+        """
+        Create summary visualizations for BorderlineSMOTE data generation.
+        
+        Parameters:
+        -----------
+        smote_results : dict
+            Results from BorderlineSMOTE generation
+        output_dir : str
+            Directory to save the plots
+        """
+        try:
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+            
+            # Extract data for plotting
+            file_identifiers = []
+            original_samples = []
+            synthetic_samples = []
+            augmentation_ratios = []
+            
+            for result in smote_results["file_results"]:
+                if result.get("borderline_smote_successful", False):
+                    file_identifiers.append(result["file_identifier"])
+                    original_samples.append(result["original_samples"])
+                    synthetic_samples.append(result["synthetic_samples_added"])
+                    augmentation_ratios.append(result["augmentation_ratio"])
+            
+            # Plot 1: Original vs Synthetic Samples
+            x_pos = np.arange(len(file_identifiers))
+            width = 0.35
+            
+            ax1.bar(x_pos - width/2, original_samples, width, label='Original Samples', alpha=0.8, color='skyblue')
+            ax1.bar(x_pos + width/2, synthetic_samples, width, label='Synthetic Samples Added', alpha=0.8, color='lightcoral')
+            
+            ax1.set_xlabel('File Identifier')
+            ax1.set_ylabel('Number of Samples')
+            ax1.set_title('Original vs Synthetic Samples by File')
+            ax1.set_xticks(x_pos)
+            ax1.set_xticklabels(file_identifiers, rotation=45, ha='right')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Augmentation Ratios
+            bars = ax2.bar(file_identifiers, augmentation_ratios, alpha=0.8, color='lightgreen')
+            ax2.set_xlabel('File Identifier')
+            ax2.set_ylabel('Augmentation Ratio')
+            ax2.set_title('Data Augmentation Ratio by File')
+            ax2.tick_params(axis='x', rotation=45)
+            ax2.grid(True, alpha=0.3)
+            
+            # Add value labels on bars
+            for bar, ratio in zip(bars, augmentation_ratios):
+                height = bar.get_height()
+                ax2.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{ratio:.2f}x', ha='center', va='bottom')
+            
+            # Plot 3: Total Sample Distribution
+            total_original = sum(original_samples)
+            total_synthetic = sum(synthetic_samples)
+            
+            ax3.pie([total_original, total_synthetic], 
+                    labels=['Original Samples', 'Synthetic Samples'], 
+                    autopct='%1.1f%%', 
+                    startangle=90,
+                    colors=['skyblue', 'lightcoral'])
+            ax3.set_title('Overall Distribution: Original vs Synthetic Samples')
+            
+            # Plot 4: Summary Statistics
+            ax4.axis('off')
+            
+            # Get overall class distribution info for display
+            overall_before = smote_results["aggregate_metrics"]["overall_class_distributions"]["before_smote"]["distribution"]
+            overall_after = smote_results["aggregate_metrics"]["overall_class_distributions"]["after_smote"]["distribution"]
+            
+            # Format class distribution strings
+            before_dist_str = ", ".join([f"Class {k}: {v['count']:,} ({v['percentage']}%)" for k, v in overall_before.items()])
+            after_dist_str = ", ".join([f"Class {k}: {v['count']:,} ({v['percentage']}%)" for k, v in overall_after.items()])
+            
+            summary_text = f"""
+    BorderlineSMOTE Generation Summary
+
+    Total Files Processed: {len(file_identifiers)}
+
+    Sample Counts:
+    Original Samples: {total_original:,}
+    Synthetic Samples: {total_synthetic:,}
+    Final Samples: {total_original + total_synthetic:,}
+
+    Class Distribution Before SMOTE:
+    {before_dist_str}
+
+    Class Distribution After SMOTE:
+    {after_dist_str}
+
+    Augmentation Ratios:
+    Average: {np.mean(augmentation_ratios):.2f}x
+    Min: {min(augmentation_ratios):.2f}x
+    Max: {max(augmentation_ratios):.2f}x
+
+    BorderlineSMOTE Configuration:
+    k_neighbors: {BORDERLINE_SMOTE_CONFIG['k_neighbors']}
+    m_neighbors: {BORDERLINE_SMOTE_CONFIG['m_neighbors']}
+    kind: {BORDERLINE_SMOTE_CONFIG['kind']}
+    sampling_strategy: {BORDERLINE_SMOTE_CONFIG['sampling_strategy']}
+            """
+            ax4.text(0.1, 0.9, summary_text, transform=ax4.transAxes, 
+                    fontsize=11, verticalalignment='top', fontfamily='monospace')
+            
+            plt.tight_layout()
+            
+            # Save the plot
+            plot_filename = os.path.join(output_dir, "borderline_smote_generation_summary.png")
+            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"    generate_borderline_smote_data: Summary plot saved to {plot_filename}")
+            
+        except Exception as e:
+            print(f"    generate_borderline_smote_data: Error creating summary plot: {str(e)}")
 
     def _create_correlation_plot(self, correlations, filename, output_dir, title):
             """
