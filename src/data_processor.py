@@ -3394,7 +3394,37 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ train_decision_tree_with_borderline_smote_data (disabled)")
-        
+
+        if state_machine.get("threshold_optimization_decision_tree_borderline_smote", False):
+            try:
+                print(f"    → threshold_optimization_decision_tree_borderline_smote")
+                smote_threshold_opt_result = self.threshold_optimization_decision_tree_borderline_smote()
+                
+                if smote_threshold_opt_result and smote_threshold_opt_result.get("success", False):
+                    result["steps_executed"].append("threshold_optimization_decision_tree_borderline_smote")
+                    result["file_info"]["smote_threshold_optimized_models"] = smote_threshold_opt_result.get("models_optimized", 0)
+                    print(f"      ✓ Successfully optimized BorderlineSMOTE decision tree thresholds")
+                    print(f"      ✓ Target feature: {smote_threshold_opt_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ SMOTE models optimized: {smote_threshold_opt_result.get('models_optimized', 0)}")
+                    print(f"      ✓ Average optimal threshold: {smote_threshold_opt_result.get('average_optimal_threshold', 0):.3f}")
+                    print(f"      ✓ Average optimized F1: {smote_threshold_opt_result.get('average_optimized_f1', 0):.3f}")
+                    print(f"      ✓ Average optimized Precision: {smote_threshold_opt_result.get('average_optimized_precision', 0):.3f}")
+                    print(f"      ✓ Average optimized Recall: {smote_threshold_opt_result.get('average_optimized_recall', 0):.3f}")
+                    print(f"      ✓ Results saved to: {smote_threshold_opt_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = smote_threshold_opt_result.get("error", "threshold_optimization_decision_tree_borderline_smote returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"threshold_optimization_decision_tree_borderline_smote failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ threshold_optimization_decision_tree_borderline_smote (disabled)")
+            
         return result
     
     def correlation_analysis(self, csv_files=None):
@@ -6066,6 +6096,471 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg
             }
+
+    def threshold_optimization_decision_tree_borderline_smote(self):
+        """
+        Optimize decision tree classification thresholds for models trained with BorderlineSMOTE data.
+        
+        This method loads trained decision tree models from the BorderlineSMOTE training stage,
+        analyzes ROC curves to find optimal thresholds, and saves optimized models with new thresholds.
+        The optimization uses the original test data (not SMOTE-augmented) to find optimal thresholds.
+        
+        Input Data Sources:
+        - Models: data/output/decision_tree_borderline_smote/
+        - Test Data: data/output/4-merged_scaled_training_ready/merged_data_*_test_scaled.csv
+        
+        Output:
+        - Optimized models and thresholds saved to: data/output/decision_tree_borderline_smote_threshold_optimized/
+        
+        Returns:
+        --------
+        dict
+            A summary of the threshold optimization results including optimal thresholds and performance metrics.
+        """
+        try:
+            print(f"    threshold_optimization_decision_tree_borderline_smote: Starting threshold optimization for BorderlineSMOTE models...")
+            
+            # Create output directory
+            output_dir = os.path.join(self.project_root, "data/output/decision_tree_borderline_smote_threshold_optimized")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Check if BorderlineSMOTE decision tree results exist from previous stage
+            smote_dt_output_dir = os.path.join(self.project_root, "data/output/decision_tree_borderline_smote")
+            smote_dt_results_file = os.path.join(smote_dt_output_dir, "decision_tree_borderline_smote_training_results.json")
+            
+            if not os.path.exists(smote_dt_results_file):
+                error_msg = "BorderlineSMOTE Decision tree training results not found. Run train_decision_tree_with_borderline_smote_data stage first."
+                print(f"    threshold_optimization_decision_tree_borderline_smote: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Load BorderlineSMOTE decision tree training results
+            with open(smote_dt_results_file, 'r') as f:
+                smote_dt_results = json.load(f)
+            
+            print(f"    threshold_optimization_decision_tree_borderline_smote: Found {len(smote_dt_results.get('file_results', []))} trained SMOTE models")
+            
+            # Find original test files (not SMOTE-augmented)
+            scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test_scaled.csv")
+            test_files = glob.glob(test_pattern)
+            
+            if not test_files:
+                error_msg = f"Original test files not found in {scaled_data_dir}"
+                print(f"    threshold_optimization_decision_tree_borderline_smote: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Initialize results structure
+            optimization_results = {
+                "optimization_overview": {
+                    "optimization_completed": datetime.now().isoformat(),
+                    "target_feature": DEFAULT_TARGET_FEATURE,
+                    "optimization_metric": THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"],
+                    "total_models_optimized": 0,
+                    "successful_optimizations": 0,
+                    "failed_optimizations": 0,
+                    "smote_models_processed": True
+                },
+                "threshold_optimization_config": THRESHOLD_OPTIMIZATION_CONFIG,
+                "borderline_smote_config": BORDERLINE_SMOTE_CONFIG,
+                "file_results": [],
+                "aggregate_metrics": {
+                    "average_optimal_threshold": 0.0,
+                    "average_optimized_f1": 0.0,
+                    "average_optimized_precision": 0.0, 
+                    "average_optimized_recall": 0.0,
+                    "average_optimized_accuracy": 0.0,
+                    "best_performing_file": None
+                }
+            }
+            
+            successful_optimizations = 0
+            failed_optimizations = 0
+            all_optimal_thresholds = []
+            all_optimized_f1_scores = []
+            all_optimized_precisions = []
+            all_optimized_recalls = []
+            all_optimized_accuracies = []
+            best_f1 = -1
+            best_file = None
+            
+            # Process each trained SMOTE model
+            for file_result in smote_dt_results.get('file_results', []):
+                try:
+                    file_identifier = file_result.get('file_identifier')
+                    if not file_identifier:
+                        print(f"    threshold_optimization_decision_tree_borderline_smote: Warning - No file identifier found in result. Skipping.")
+                        continue
+                    
+                    # Find corresponding test file
+                    test_filename = f"merged_data_{file_identifier}_test_scaled.csv"
+                    test_file = os.path.join(scaled_data_dir, test_filename)
+                    
+                    if not os.path.exists(test_file):
+                        print(f"    threshold_optimization_decision_tree_borderline_smote: Warning - No test file for {file_identifier}. Skipping.")
+                        failed_optimizations += 1
+                        continue
+                    
+                    # Find corresponding trained SMOTE model
+                    model_file = os.path.join(smote_dt_output_dir, f"decision_tree_smote_model_{file_identifier}.joblib")
+                    
+                    if not os.path.exists(model_file):
+                        print(f"    threshold_optimization_decision_tree_borderline_smote: Warning - No SMOTE model file for {file_identifier}. Skipping.")
+                        failed_optimizations += 1
+                        continue
+                    
+                    print(f"    threshold_optimization_decision_tree_borderline_smote: Optimizing threshold for SMOTE model {file_identifier}")
+                    
+                    # Load the trained SMOTE model
+                    model = joblib.load(model_file)
+                    
+                    # Load original test data (not SMOTE-augmented)
+                    test_df = pd.read_csv(test_file)
+                    
+                    if DEFAULT_TARGET_FEATURE not in test_df.columns:
+                        print(f"    threshold_optimization_decision_tree_borderline_smote: Target feature '{DEFAULT_TARGET_FEATURE}' not found in {test_filename}")
+                        failed_optimizations += 1
+                        continue
+                    
+                    # Prepare test features and target
+                    y_test = test_df[DEFAULT_TARGET_FEATURE]
+                    X_test = test_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                    
+                    # Extract and save feature importance from the SMOTE-trained model
+                    feature_importance = pd.DataFrame({
+                        'feature': X_test.columns,
+                        'importance': model.feature_importances_
+                    }).sort_values('importance', ascending=False)
+                    
+                    importance_filename = f"smote_threshold_optimized_feature_importance_{file_identifier}.csv"
+                    importance_path = os.path.join(output_dir, importance_filename)
+                    feature_importance.to_csv(importance_path, index=False)
+                    
+                    print(f"    threshold_optimization_decision_tree_borderline_smote: Saved feature importance for SMOTE model {file_identifier}")
+                    
+                    # Get probability predictions for positive class
+                    y_proba = model.predict_proba(X_test)[:, 1]
+                    
+                    # Calculate ROC curve
+                    fpr, tpr, thresholds = roc_curve(y_test, y_proba)
+                    roc_auc = auc(fpr, tpr)
+                    
+                    # Calculate Precision-Recall curve
+                    precision, recall, pr_thresholds = precision_recall_curve(y_test, y_proba)
+                    pr_auc = average_precision_score(y_test, y_proba)
+                    
+                    # Find optimal threshold based on different metrics
+                    optimal_thresholds = self._find_optimal_thresholds(
+                        y_test, y_proba, fpr, tpr, thresholds, precision, recall, pr_thresholds
+                    )
+                    
+                    # Use the metric specified in config
+                    optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
+                    optimal_threshold = optimal_thresholds[optimization_metric]
+                    
+                    # Make predictions with optimal threshold
+                    y_pred_optimized = (y_proba >= optimal_threshold).astype(int)
+                    
+                    # Calculate comprehensive metrics using the private method
+                    metrics = self._calculate_classification_metrics(y_test, y_pred_optimized, y_proba)
+                    
+                    # Generate and save confusion matrix
+                    conf_matrix = confusion_matrix(y_test, y_pred_optimized)
+                    conf_matrix_result = self._save_confusion_matrix(
+                        conf_matrix, y_test, y_pred_optimized, file_identifier, output_dir
+                    )
+                    
+                    # Convert numpy types to JSON-serializable types
+                    def convert_numpy_types(obj):
+                        """Recursively convert numpy types to native Python types."""
+                        if isinstance(obj, dict):
+                            return {k: convert_numpy_types(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [convert_numpy_types(v) for v in obj]
+                        elif isinstance(obj, (np.integer, np.int32, np.int64)):
+                            return int(obj)
+                        elif isinstance(obj, (np.floating, np.float32, np.float64)):
+                            return float(obj)
+                        elif isinstance(obj, np.ndarray):
+                            return obj.tolist()
+                        elif obj is None:
+                            return None
+                        else:
+                            return obj
+                    
+                    # Apply conversion to metrics
+                    metrics = convert_numpy_types(metrics)
+                    
+                    # Calculate individual metrics for tracking
+                    optimized_precision = precision_score(y_test, y_pred_optimized)
+                    optimized_recall = recall_score(y_test, y_pred_optimized)
+                    optimized_f1 = f1_score(y_test, y_pred_optimized)
+                    optimized_accuracy = accuracy_score(y_test, y_pred_optimized)
+                    
+                    # Create and save plots with SMOTE prefix
+                    if THRESHOLD_OPTIMIZATION_CONFIG["plot_roc_curve"]:
+                        self._plot_roc_curve_smote(fpr, tpr, roc_auc, optimal_threshold, 
+                                        file_identifier, output_dir)
+                    
+                    if THRESHOLD_OPTIMIZATION_CONFIG["plot_precision_recall"]:
+                        self._plot_precision_recall_curve_smote(precision, recall, pr_auc, optimal_threshold,
+                                                        file_identifier, output_dir)
+                    
+                    # Plot threshold analysis for SMOTE models
+                    self._plot_threshold_analysis_smote(thresholds, fpr, tpr, precision[:-1], recall[:-1],
+                                                file_identifier, output_dir)
+                    
+                    # Save optimized SMOTE model if configured
+                    if THRESHOLD_OPTIMIZATION_CONFIG["save_optimized_models"]:
+                        optimized_model_data = {
+                            "original_smote_model": model,
+                            "optimal_threshold": optimal_threshold,
+                            "optimization_metric": optimization_metric,
+                            "roc_auc": roc_auc,
+                            "pr_auc": pr_auc,
+                            "borderline_smote_config": BORDERLINE_SMOTE_CONFIG
+                        }
+                        optimized_model_file = os.path.join(output_dir, f"optimized_smote_decision_tree_{file_identifier}.joblib")
+                        joblib.dump(optimized_model_data, optimized_model_file)
+                    
+                    # Store results with comprehensive metrics
+                    file_result = {
+                        "file_identifier": file_identifier,
+                        "optimization_successful": True,
+                        "optimal_thresholds": optimal_thresholds,
+                        "used_threshold": optimal_threshold,
+                        "used_optimization_metric": optimization_metric,
+                        "performance_metrics": {
+                            "roc_auc": float(roc_auc),
+                            "pr_auc": float(pr_auc),
+                            "optimized_precision": float(optimized_precision),
+                            "optimized_recall": float(optimized_recall),
+                            "optimized_f1": float(optimized_f1),
+                            "optimized_accuracy": float(optimized_accuracy)
+                        },
+                        "comprehensive_metrics": metrics,
+                        "feature_importance_file": importance_filename,
+                        "confusion_matrix": conf_matrix_result,
+                        "plots_generated": {
+                            "roc_curve": f"smote_roc_curve_{file_identifier}.png",
+                            "precision_recall_curve": f"smote_precision_recall_curve_{file_identifier}.png",
+                            "threshold_analysis": f"smote_threshold_analysis_{file_identifier}.png"
+                        }
+                    }
+                    
+                    optimization_results["file_results"].append(file_result)
+                    
+                    # Track metrics for aggregation
+                    all_optimal_thresholds.append(optimal_threshold)
+                    all_optimized_f1_scores.append(optimized_f1)
+                    all_optimized_precisions.append(optimized_precision)
+                    all_optimized_recalls.append(optimized_recall)
+                    all_optimized_accuracies.append(optimized_accuracy)
+                    
+                    # Track best performing model
+                    if optimized_f1 > best_f1:
+                        best_f1 = optimized_f1
+                        best_file = file_identifier
+                    
+                    successful_optimizations += 1
+                    print(f"    threshold_optimization_decision_tree_borderline_smote: Successfully optimized {file_identifier} - F1: {optimized_f1:.4f}, Threshold: {optimal_threshold:.3f}")
+                    
+                except Exception as e:
+                    print(f"    threshold_optimization_decision_tree_borderline_smote: Failed to process {file_identifier}: {str(e)}")
+                    failed_optimizations += 1
+                    optimization_results["file_results"].append({
+                        "file_identifier": file_identifier if 'file_identifier' in locals() else "unknown",
+                        "optimization_successful": False,
+                        "error": str(e)
+                    })
+                    continue
+            
+            # Finalize results
+            if successful_optimizations > 0:
+                optimization_results["optimization_overview"].update({
+                    "total_models_optimized": successful_optimizations + failed_optimizations,
+                    "successful_optimizations": successful_optimizations,
+                    "failed_optimizations": failed_optimizations
+                })
+                
+                optimization_results["aggregate_metrics"].update({
+                    "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                    "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                    "average_optimized_precision": float(np.mean(all_optimized_precisions)),
+                    "average_optimized_recall": float(np.mean(all_optimized_recalls)),
+                    "average_optimized_accuracy": float(np.mean(all_optimized_accuracies)),
+                    "best_performing_file": {
+                        "file_identifier": best_file,
+                        "f1_score": float(best_f1)
+                    } if best_file else None
+                })
+                
+                # Save consolidated results
+                results_file = os.path.join(output_dir, "borderline_smote_threshold_optimization_results.json")
+                with open(results_file, 'w') as f:
+                    json.dump(optimization_results, f, indent=2)
+                
+                # Create summary plot showing all optimal thresholds
+                self._plot_threshold_summary_smote(all_optimal_thresholds, all_optimized_f1_scores, output_dir)
+                
+                print(f"    threshold_optimization_decision_tree_borderline_smote: Completed successfully!")
+                print(f"    threshold_optimization_decision_tree_borderline_smote: Optimized {successful_optimizations} SMOTE models")
+                print(f"    threshold_optimization_decision_tree_borderline_smote: Average optimal threshold: {np.mean(all_optimal_thresholds):.3f}")
+                print(f"    threshold_optimization_decision_tree_borderline_smote: Average optimized F1: {np.mean(all_optimized_f1_scores):.3f}")
+                print(f"    threshold_optimization_decision_tree_borderline_smote: Results saved to: {output_dir}")
+                
+                return {
+                    "success": True,
+                    "models_optimized": successful_optimizations,
+                    "average_optimal_threshold": float(np.mean(all_optimal_thresholds)),
+                    "average_optimized_f1": float(np.mean(all_optimized_f1_scores)),
+                    "average_optimized_precision": float(np.mean(all_optimized_precisions)),
+                    "average_optimized_recall": float(np.mean(all_optimized_recalls)),
+                    "average_optimized_accuracy": float(np.mean(all_optimized_accuracies)),
+                    "output_directory": output_dir,
+                    "results_file": results_file,
+                    "target_feature": DEFAULT_TARGET_FEATURE
+                }
+            else:
+                error_msg = "No SMOTE models were successfully optimized"
+                print(f"    threshold_optimization_decision_tree_borderline_smote: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except Exception as e:
+            error_msg = f"threshold_optimization_decision_tree_borderline_smote failed: {str(e)}"
+            print(f"    threshold_optimization_decision_tree_borderline_smote: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    def _plot_roc_curve_smote(self, fpr, tpr, roc_auc, optimal_threshold, file_identifier, output_dir):
+        """Plot and save ROC curve for SMOTE models with optimal threshold marked."""
+        plt.figure(figsize=(10, 8))
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random classifier')
+        
+        # Mark optimal threshold (simplified visualization)
+        plt.plot([0, 1], [0, 1], 'ro', markersize=8, alpha=0.7,
+                label=f'Optimal threshold = {optimal_threshold:.3f}')
+        
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'ROC Curve - SMOTE Model {file_identifier}')
+        plt.legend(loc="lower right")
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'smote_roc_curve_{file_identifier}.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _plot_precision_recall_curve_smote(self, precision, recall, pr_auc, optimal_threshold, file_identifier, output_dir):
+        """Plot and save Precision-Recall curve for SMOTE models."""
+        plt.figure(figsize=(10, 8))
+        plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (AUC = {pr_auc:.3f})')
+        
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title(f'Precision-Recall Curve - SMOTE Model {file_identifier}')
+        plt.legend(loc="lower left")
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'smote_precision_recall_curve_{file_identifier}.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _plot_threshold_analysis_smote(self, thresholds, fpr, tpr, precision, recall, file_identifier, output_dir):
+        """Plot threshold analysis for SMOTE models showing how metrics change with threshold."""
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 12))
+        
+        # TPR and FPR vs Threshold
+        ax1.plot(thresholds, tpr, 'b-', label='True Positive Rate', linewidth=2)
+        ax1.plot(thresholds, fpr, 'r-', label='False Positive Rate', linewidth=2)
+        ax1.set_xlabel('Threshold')
+        ax1.set_ylabel('Rate')
+        ax1.set_title('TPR and FPR vs Threshold')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Precision and Recall vs Threshold (use appropriate length)
+        threshold_len = min(len(thresholds), len(precision), len(recall))
+        ax2.plot(thresholds[:threshold_len], precision[:threshold_len], 'g-', label='Precision', linewidth=2)
+        ax2.plot(thresholds[:threshold_len], recall[:threshold_len], 'orange', label='Recall', linewidth=2)
+        ax2.set_xlabel('Threshold')
+        ax2.set_ylabel('Score')
+        ax2.set_title('Precision and Recall vs Threshold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # F1 Score vs Threshold
+        f1_scores = []
+        for i in range(threshold_len):
+            if precision[i] + recall[i] > 0:
+                f1 = 2 * (precision[i] * recall[i]) / (precision[i] + recall[i])
+            else:
+                f1 = 0
+            f1_scores.append(f1)
+        
+        ax3.plot(thresholds[:threshold_len], f1_scores, 'purple', label='F1 Score', linewidth=2)
+        ax3.set_xlabel('Threshold')
+        ax3.set_ylabel('F1 Score')
+        ax3.set_title('F1 Score vs Threshold')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # ROC Curve
+        ax4.plot(fpr, tpr, color='darkorange', lw=2)
+        ax4.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        ax4.set_xlim([0.0, 1.0])
+        ax4.set_ylim([0.0, 1.05])
+        ax4.set_xlabel('False Positive Rate')
+        ax4.set_ylabel('True Positive Rate')
+        ax4.set_title('ROC Curve')
+        ax4.grid(True, alpha=0.3)
+        
+        plt.suptitle(f'Threshold Analysis - SMOTE Model {file_identifier}', fontsize=16)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'smote_threshold_analysis_{file_identifier}.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _plot_threshold_summary_smote(self, all_optimal_thresholds, all_optimized_f1_scores, output_dir):
+        """Create summary plot showing distribution of optimal thresholds for SMOTE models."""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Histogram of optimal thresholds
+        ax1.hist(all_optimal_thresholds, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+        ax1.axvline(np.mean(all_optimal_thresholds), color='red', linestyle='--', linewidth=2, 
+                    label=f'Mean: {np.mean(all_optimal_thresholds):.3f}')
+        ax1.set_xlabel('Optimal Threshold')
+        ax1.set_ylabel('Frequency')
+        ax1.set_title('Distribution of Optimal Thresholds - SMOTE Models')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Scatter plot of threshold vs F1 score
+        ax2.scatter(all_optimal_thresholds, all_optimized_f1_scores, alpha=0.6, color='green', s=50)
+        ax2.set_xlabel('Optimal Threshold')
+        ax2.set_ylabel('Optimized F1 Score')
+        ax2.set_title('Optimal Threshold vs F1 Score - SMOTE Models')
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'smote_threshold_optimization_summary.png'), dpi=300, bbox_inches='tight')
+        plt.close()
 
     def _plot_smote_summary(self, smote_results, output_dir):
         """

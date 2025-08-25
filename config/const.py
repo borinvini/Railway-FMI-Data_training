@@ -20,8 +20,9 @@ DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
-DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decishin_tree_threshold_optimized"
+DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_threshold_optimized"
 BORDERLINE_SMOTE_OUTPUT_FOLDER = "data/output/borderline_smote_synthetic"
+DECISION_TREE_BORDERLINE_SMOTE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_borderline_smote_threshold_optimized"
 
 
 
@@ -58,6 +59,8 @@ TRAINING_STATE_MACHINE = {
     "threshold_optimization_decision_tree": True,
     "generate_borderline_smote_data": True,
     "train_decision_tree_with_borderline_smote_data": True,
+    "threshold_optimization_decision_tree_borderline_smote": True
+    
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
