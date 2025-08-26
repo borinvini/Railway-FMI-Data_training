@@ -36,7 +36,6 @@ from config.const import (
     DECISION_TREE_PARAM_DISTRIBUTIONS,
     DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
-    IMPORTANT_WEATHER_CONDITIONS,
     BOOLEAN_FEATURES,
     MAX_SAMPLE_WEIGHT_REGRESSION,
     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
@@ -97,8 +96,6 @@ class TrainingPipeline:
         # Add this line to make the constant available as an instance attribute
         self.DATA_FILE_PREFIX_FOR_TRAINING = DATA_FILE_PREFIX_FOR_TRAINING
 
-        # Use the imported constant instead of defining it here
-        self.important_conditions = IMPORTANT_WEATHER_CONDITIONS
 
     @contextmanager
     def get_logger(self, log_filename, logger_name=None, month_id=None):
@@ -3294,6 +3291,33 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ merge_data_files (disabled)")
 
+        if state_machine.get("drop_nan_columns", False):
+            try:
+                print(f"    → drop_nan_columns")
+                
+                # Use the data from merge_data_files if available
+                cleanup_result = self.drop_nan_columns(
+                    data=result["data"] if result["data"] is not None else None
+                )
+                
+                if cleanup_result and cleanup_result.get("success", False):
+                    result["data"] = cleanup_result.get("data")  # Update with cleaned data
+                    result["steps_executed"].append("drop_nan_columns")
+                    print(f"      ✓ Successfully cleaned NaN columns - dropped {cleanup_result.get('columns_dropped', 0)} columns")
+                    result["success"] = True
+                else:
+                    error_msg = cleanup_result.get("error", "drop_nan_columns returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"drop_nan_columns failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ drop_nan_columns (disabled)")
+
         if state_machine.get("split_dataset", False):
             try:
                 print(f"    → split_dataset")
@@ -6175,39 +6199,27 @@ class TrainingPipeline:
                     "borderline_smote_config": BORDERLINE_SMOTE_CONFIG
                 },
                 "file_results": [],
-                "aggregate_metrics": {
-                    "total_original_samples": 0,
-                    "total_synthetic_samples": 0,
-                    "total_final_samples": 0,
-                    "average_augmentation_ratio": 0.0,
-                    "overall_class_distributions": {
-                        "before_smote": {
-                            "total_samples": 0,
-                            "distribution": {}
-                        },
-                        "after_smote": {
-                            "total_samples": 0,
-                            "distribution": {}
-                        }
-                    },
-                    "best_performing_file": None
-                }
+                "aggregate_metrics": {}
             }
             
+            # Initialize tracking variables
             successful_generations = 0
             failed_generations = 0
+            file_identifiers = []
+            augmentation_ratios = []
             total_original_samples = 0
             total_synthetic_samples = 0
             total_final_samples = 0
-            augmentation_ratios = []
-            overall_original_distribution = Counter()
-            overall_final_distribution = Counter()
+            overall_original_counter = Counter()
+            overall_final_counter = Counter()
             
             # Process each training file
             for train_file in train_files:
                 try:
+                    # Extract file identifier
                     train_filename = os.path.basename(train_file)
-                    file_identifier = train_filename.replace('merged_data_', '').replace('_train_scaled.csv', '')
+                    file_identifier = train_filename.replace("merged_data_", "").replace("_train_scaled.csv", "")
+                    file_identifiers.append(file_identifier)
                     
                     print(f"    generate_borderline_smote_data: Processing {file_identifier}")
                     
@@ -6222,6 +6234,58 @@ class TrainingPipeline:
                     # Prepare features and target
                     y_train = train_df[DEFAULT_TARGET_FEATURE]
                     X_train = train_df.drop(columns=[DEFAULT_TARGET_FEATURE])
+                    
+                    # ===== NEW: NaN Detection and Reporting =====
+                    print(f"    generate_borderline_smote_data: Checking for NaN values in {file_identifier}...")
+                    
+                    # Check for NaN values in features (X_train)
+                    nan_columns = []
+                    nan_info = {}
+                    total_samples = len(X_train)
+                    
+                    for column in X_train.columns:
+                        nan_count = X_train[column].isna().sum()
+                        if nan_count > 0:
+                            nan_percentage = (nan_count / total_samples) * 100
+                            nan_columns.append(column)
+                            nan_info[column] = {
+                                'count': nan_count,
+                                'percentage': round(nan_percentage, 2)
+                            }
+                            print(f"    generate_borderline_smote_data: Column '{column}': {nan_count:,} NaN values ({nan_percentage:.2f}%)")
+                    
+                    # Check for NaN values in target (y_train)
+                    target_nan_count = y_train.isna().sum()
+                    if target_nan_count > 0:
+                        target_nan_percentage = (target_nan_count / total_samples) * 100
+                        nan_info[DEFAULT_TARGET_FEATURE] = {
+                            'count': target_nan_count,
+                            'percentage': round(target_nan_percentage, 2)
+                        }
+                        print(f"    generate_borderline_smote_data: Target feature '{DEFAULT_TARGET_FEATURE}': {target_nan_count:,} NaN values ({target_nan_percentage:.2f}%)")
+                    
+                    # Report NaN summary
+                    if nan_columns or target_nan_count > 0:
+                        total_nan_columns = len(nan_columns) + (1 if target_nan_count > 0 else 0)
+                        total_columns = len(X_train.columns) + 1  # +1 for target
+                        print(f"    generate_borderline_smote_data: NaN SUMMARY for {file_identifier}:")
+                        print(f"    generate_borderline_smote_data: - Total columns with NaN: {total_nan_columns}/{total_columns}")
+                        print(f"    generate_borderline_smote_data: - Feature columns with NaN: {len(nan_columns)}/{len(X_train.columns)}")
+                        if target_nan_count > 0:
+                            print(f"    generate_borderline_smote_data: - Target column has NaN: YES")
+                        
+                        # Skip this file due to NaN values
+                        error_msg = f"Input X contains NaN. BorderlineSMOTE does not accept missing values encoded as NaN natively."
+                        print(f"    generate_borderline_smote_data: Error processing {train_file}: {error_msg}")
+                        print(f"    generate_borderline_smote_data: Columns with NaN values: {', '.join(nan_columns) if nan_columns else 'None in features'}")
+                        if target_nan_count > 0:
+                            print(f"    generate_borderline_smote_data: Target feature also contains NaN values")
+                        print(f"    generate_borderline_smote_data: Consider using imputation or dropping NaN values before applying BorderlineSMOTE")
+                        failed_generations += 1
+                        continue
+                    else:
+                        print(f"    generate_borderline_smote_data: ✓ No NaN values found in {file_identifier}")
+                    # ===== END NaN Detection and Reporting =====
                     
                     # Check class distribution before SMOTE
                     original_distribution = Counter(y_train)
@@ -6270,7 +6334,6 @@ class TrainingPipeline:
                     original_distribution_detailed = {}
                     final_distribution_detailed = {}
                     
-                    # Original distribution with counts and percentages
                     for class_label, count in original_distribution.items():
                         percentage = (count / original_sample_count) * 100
                         original_distribution_detailed[str(class_label)] = {
@@ -6278,7 +6341,6 @@ class TrainingPipeline:
                             "percentage": round(percentage, 2)
                         }
                     
-                    # Final distribution with counts and percentages
                     for class_label, count in final_distribution.items():
                         percentage = (count / final_sample_count) * 100
                         final_distribution_detailed[str(class_label)] = {
@@ -6286,71 +6348,47 @@ class TrainingPipeline:
                             "percentage": round(percentage, 2)
                         }
                     
-                    # Record results
+                    # Store file-specific results
                     file_result = {
                         "file_identifier": file_identifier,
-                        "original_file": train_filename,
-                        "augmented_file": output_filename,
-                        "original_samples": original_sample_count,
+                        "original_sample_count": original_sample_count,
+                        "final_sample_count": final_sample_count,
                         "synthetic_samples_added": synthetic_samples_added,
-                        "final_samples": final_sample_count,
-                        "augmentation_ratio": float(augmentation_ratio),
-                        "class_distributions": {
-                            "before_smote": {
-                                "total_samples": original_sample_count,
-                                "distribution": original_distribution_detailed
-                            },
-                            "after_smote": {
-                                "total_samples": final_sample_count,
-                                "distribution": final_distribution_detailed
-                            }
-                        },
-                        "borderline_smote_successful": True
+                        "augmentation_ratio": round(augmentation_ratio, 3),
+                        "original_distribution": original_distribution_detailed,
+                        "final_distribution": final_distribution_detailed,
+                        "output_file": output_filename
                     }
-                    
                     smote_results["file_results"].append(file_result)
                     
-                    # Update tracking variables
+                    # Update aggregate tracking
+                    successful_generations += 1
+                    augmentation_ratios.append(augmentation_ratio)
                     total_original_samples += original_sample_count
                     total_synthetic_samples += synthetic_samples_added
                     total_final_samples += final_sample_count
-                    augmentation_ratios.append(augmentation_ratio)
-                    
-                    # Update overall distributions
-                    overall_original_distribution.update(original_distribution)
-                    overall_final_distribution.update(final_distribution)
-                    
-                    successful_generations += 1
-                    print(f"    generate_borderline_smote_data: ✓ {file_identifier} - Added {synthetic_samples_added:,} synthetic samples")
+                    overall_original_counter.update(original_distribution)
+                    overall_final_counter.update(final_distribution)
                     
                 except Exception as e:
                     print(f"    generate_borderline_smote_data: Error processing {train_file}: {str(e)}")
                     failed_generations += 1
-                    
-                    # Add failed result
-                    file_identifier = os.path.basename(train_file).replace('_train_scaled.csv', '')
-                    smote_results["file_results"].append({
-                        "file_identifier": file_identifier,
-                        "borderline_smote_successful": False,
-                        "error": str(e)
-                    })
+                    continue
             
-            # Finalize results
+            # Final results compilation
             if successful_generations > 0:
-                # Calculate overall class distributions with percentages
+                # Calculate overall distributions with percentages
                 overall_original_detailed = {}
                 overall_final_detailed = {}
                 
-                # Overall original distribution
-                for class_label, count in overall_original_distribution.items():
+                for class_label, count in overall_original_counter.items():
                     percentage = (count / total_original_samples) * 100
                     overall_original_detailed[str(class_label)] = {
                         "count": count,
                         "percentage": round(percentage, 2)
                     }
                 
-                # Overall final distribution
-                for class_label, count in overall_final_distribution.items():
+                for class_label, count in overall_final_counter.items():
                     percentage = (count / total_final_samples) * 100
                     overall_final_detailed[str(class_label)] = {
                         "count": count,
@@ -7568,7 +7606,6 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg
             }
-
 
     def _plot_roc_curve_smote(self, fpr, tpr, roc_auc, optimal_threshold, file_identifier, output_dir):
         """Plot and save ROC curve for SMOTE models with optimal threshold marked."""
@@ -8963,6 +9000,7 @@ class TrainingPipeline:
         plt.close()
     
     def _plot_threshold_summary(self, optimal_thresholds, f1_scores, output_dir):
+        
         """Plot summary of optimal thresholds across all models."""
         plt.figure(figsize=(12, 8))
         
@@ -8983,3 +9021,272 @@ class TrainingPipeline:
         plt.tight_layout()
         plt.savefig(os.path.join(output_dir, 'threshold_optimization_summary.png'), dpi=300, bbox_inches='tight')
         plt.close()
+
+    def drop_nan_columns(self, data=None, input_path=None, save_results=True):
+        """
+        Drop columns that contain at least one NaN value from the merged dataset.
+        
+        This method analyzes the merged dataset and removes any columns that have
+        at least one NaN/null value, ensuring a clean dataset for model training.
+        Provides detailed reporting on which columns were dropped and why.
+        
+        Parameters:
+        -----------
+        data : pandas.DataFrame, optional
+            DataFrame to process. If None, will look for merged data files.
+        input_path : str, optional
+            Specific file path to process. If None, auto-discovers merged data files.
+        save_results : bool, optional
+            Whether to save the cleaned dataset to disk. Defaults to True.
+            
+        Returns:
+        --------
+        dict
+            Results of the NaN column cleanup operation including success status and metadata
+        """
+        try:
+            print(f"    drop_nan_columns: Starting NaN column cleanup operation...")
+            
+            # Determine data source
+            df = None
+            original_file_path = None
+            
+            if data is not None:
+                # Use provided DataFrame
+                df = data.copy()
+                print(f"    drop_nan_columns: Using provided DataFrame with shape {df.shape}")
+            elif input_path is not None:
+                # Use specific file path
+                df = pd.read_csv(input_path)
+                original_file_path = input_path
+                print(f"    drop_nan_columns: Loaded data from {input_path} with shape {df.shape}")
+            else:
+                # Auto-discover merged data files
+                merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                # Filter out train/test files
+                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                
+                if not merged_data_files:
+                    error_msg = "No merged data files found for NaN column cleanup"
+                    print(f"    drop_nan_columns: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "columns_dropped": 0
+                    }
+                
+                # Use the most recent merged file
+                original_file_path = max(merged_data_files, key=os.path.getmtime)
+                df = pd.read_csv(original_file_path)
+                print(f"    drop_nan_columns: Auto-discovered and loaded {os.path.basename(original_file_path)} with shape {df.shape}")
+            
+            if df.empty:
+                error_msg = "Dataset is empty - cannot perform NaN column cleanup"
+                print(f"    drop_nan_columns: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "columns_dropped": 0
+                }
+            
+            # Analyze NaN values in each column
+            print(f"    drop_nan_columns: Analyzing NaN values across {len(df.columns)} columns...")
+            
+            # Get detailed NaN statistics
+            nan_stats = {}
+            columns_to_drop = []
+            columns_to_keep = []
+            
+            for column in df.columns:
+                nan_count = df[column].isnull().sum()
+                nan_percentage = (nan_count / len(df)) * 100
+                
+                nan_stats[column] = {
+                    'nan_count': int(nan_count),
+                    'nan_percentage': round(nan_percentage, 2),
+                    'total_rows': len(df)
+                }
+                
+                if nan_count > 0:
+                    columns_to_drop.append(column)
+                    print(f"      → Will DROP '{column}': {nan_count:,} NaN values ({nan_percentage:.2f}%)")
+                else:
+                    columns_to_keep.append(column)
+            
+            print(f"    drop_nan_columns: Analysis complete")
+            print(f"      • Columns with NaN values: {len(columns_to_drop)}")
+            print(f"      • Clean columns to keep: {len(columns_to_keep)}")
+            
+            if len(columns_to_drop) == 0:
+                print(f"    drop_nan_columns: No columns contain NaN values - dataset is already clean!")
+                
+                result = {
+                    "success": True,
+                    "data": df,  # Return original data since no changes needed
+                    "original_shape": df.shape,
+                    "final_shape": df.shape,
+                    "columns_dropped": 0,
+                    "columns_kept": len(df.columns),
+                    "dropped_column_names": [],
+                    "nan_analysis": nan_stats,
+                    "message": "No NaN columns found - dataset is already clean"
+                }
+                
+                # No need to save since no changes were made, but update output_path for consistency
+                if original_file_path:
+                    result["output_path"] = original_file_path
+                
+                if save_results and original_file_path:
+                    # Still save a summary even if no changes were made
+                    self._save_nan_cleanup_summary(result, original_file_path)
+                
+                return result
+            
+            if len(columns_to_keep) == 0:
+                error_msg = "All columns contain NaN values - cannot proceed with dataset"
+                print(f"    drop_nan_columns: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "columns_dropped": len(columns_to_drop),
+                    "nan_analysis": nan_stats
+                }
+            
+            # Drop columns with NaN values
+            original_shape = df.shape
+            df_cleaned = df[columns_to_keep].copy()
+            final_shape = df_cleaned.shape
+            
+            print(f"    drop_nan_columns: Dropped {len(columns_to_drop)} columns with NaN values")
+            print(f"      • Original shape: {original_shape}")
+            print(f"      • Final shape: {final_shape}")
+            print(f"      • Rows preserved: {final_shape[0]:,}")
+            print(f"      • Columns preserved: {final_shape[1]}")
+            
+            # Save cleaned dataset back to original file if requested
+            output_path = None
+            if save_results:
+                if original_file_path:
+                    # Save back to the original file path (overwrite with cleaned data)
+                    output_path = original_file_path
+                else:
+                    # When no original file path is provided, find the merged file to overwrite
+                    merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                    merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                    merged_data_files = glob.glob(merged_data_pattern)
+                    
+                    # Filter out train/test files
+                    merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                    
+                    if merged_data_files:
+                        # Use the most recent merged file
+                        output_path = max(merged_data_files, key=os.path.getmtime)
+                    else:
+                        # Fallback: create a generic merged data file name
+                        os.makedirs(merged_training_ready_dir, exist_ok=True)
+                        output_filename = "merged_data.csv"
+                        output_path = os.path.join(merged_training_ready_dir, output_filename)
+                
+                # Save cleaned dataset back to the original merged file
+                df_cleaned.to_csv(output_path, index=False)
+                print(f"    drop_nan_columns: Saved cleaned dataset back to original merged file {os.path.basename(output_path)}")
+            
+            # Prepare detailed result
+            result = {
+                "success": True,
+                "data": df_cleaned,
+                "output_path": output_path,
+                "original_shape": original_shape,
+                "final_shape": final_shape,
+                "columns_dropped": len(columns_to_drop),
+                "columns_kept": len(columns_to_keep),
+                "dropped_column_names": columns_to_drop,
+                "kept_column_names": columns_to_keep,
+                "nan_analysis": nan_stats,
+                "message": f"Successfully dropped {len(columns_to_drop)} columns with NaN values"
+            }
+            
+            # Save detailed summary
+            if save_results:
+                self._save_nan_cleanup_summary(result, original_file_path or "provided_data")
+            
+            print(f"    drop_nan_columns: NaN column cleanup completed successfully")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"drop_nan_columns failed: {str(e)}"
+            print(f"    drop_nan_columns: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "columns_dropped": 0
+            }
+
+    def _save_nan_cleanup_summary(self, result, source_info):
+        """
+        Save a detailed summary of the NaN column cleanup operation.
+        
+        Parameters:
+        -----------
+        result : dict
+            Results from the drop_nan_columns operation
+        source_info : str
+            Information about the source data (file path or description)
+        """
+        try:
+            # Determine output directory
+            if result.get("output_path"):
+                summary_dir = os.path.dirname(result["output_path"])
+            else:
+                summary_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                os.makedirs(summary_dir, exist_ok=True)
+            
+            # Generate summary filename
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            summary_filename = f"nan_cleanup_summary_{timestamp}.txt"
+            summary_path = os.path.join(summary_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write("NaN Column Cleanup Summary\n")
+                f.write("=" * 50 + "\n\n")
+                
+                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Source: {source_info}\n")
+                f.write(f"Output file: {os.path.basename(result.get('output_path', 'N/A'))}\n\n")
+                
+                f.write("Dataset Shape Changes:\n")
+                f.write("-" * 25 + "\n")
+                f.write(f"Original shape: {result['original_shape']}\n")
+                f.write(f"Final shape: {result['final_shape']}\n")
+                f.write(f"Columns dropped: {result['columns_dropped']}\n")
+                f.write(f"Columns kept: {result['columns_kept']}\n\n")
+                
+                if result['columns_dropped'] > 0:
+                    f.write("Dropped Columns (contained NaN values):\n")
+                    f.write("-" * 40 + "\n")
+                    nan_analysis = result.get('nan_analysis', {})
+                    for col in result['dropped_column_names']:
+                        stats = nan_analysis.get(col, {})
+                        f.write(f"• {col}: {stats.get('nan_count', 'N/A')} NaN values "
+                            f"({stats.get('nan_percentage', 'N/A')}%)\n")
+                    f.write("\n")
+                
+                f.write("Preserved Columns (clean):\n")
+                f.write("-" * 25 + "\n")
+                for i, col in enumerate(result['kept_column_names'], 1):
+                    f.write(f"{i:3d}. {col}\n")
+                
+                f.write(f"\nOperation Status: {'SUCCESS' if result['success'] else 'FAILED'}\n")
+                if not result['success']:
+                    f.write(f"Error: {result.get('error', 'Unknown error')}\n")
+            
+            print(f"    drop_nan_columns: Summary saved to {summary_path}")
+            
+        except Exception as e:
+            print(f"    drop_nan_columns: Warning - Could not save summary: {str(e)}")

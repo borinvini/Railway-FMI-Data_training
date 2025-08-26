@@ -2,8 +2,8 @@ from scipy.stats import randint
 import numpy as np
 
 # Pipeline execution control flag
-EXECUTE_PREPROCESSING_DATA_PIPELINE = True
-EXECUTE_TRAINING_PIPELINE = False
+EXECUTE_PREPROCESSING_DATA_PIPELINE = False
+EXECUTE_TRAINING_PIPELINE = True
 
 # Constants for file processing
 FOLDER_NAME = "data"
@@ -52,6 +52,7 @@ PREPROCESSING_STATE_MACHINE = {
 
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
+    "drop_nan_columns": True,
     "split_dataset": True,
     "scale_weather_features": True,
     "correlation_analysis": True,
