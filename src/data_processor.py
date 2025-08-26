@@ -9140,8 +9140,16 @@ class TrainingPipeline:
                 else:
                     merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
                     os.makedirs(merged_training_ready_dir, exist_ok=True)
-                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    output_path = os.path.join(merged_training_ready_dir, f"merged_data_{timestamp}.csv")
+                    
+                    # Look for existing merged files to preserve naming pattern
+                    merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                    merged_data_files = glob.glob(merged_data_pattern)
+                    merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                    
+                    if merged_data_files:
+                        output_path = max(merged_data_files, key=os.path.getmtime)
+                    else:
+                        output_path = os.path.join(merged_training_ready_dir, "merged_data.csv")
                 
                 result = {
                     "success": True,
@@ -9183,22 +9191,35 @@ class TrainingPipeline:
             print(f"      • {len(specific_drops)} columns dropped for training optimization")
             print(f"      • Dataset shape: {original_shape} → {final_shape}")
             
-            # Determine output path for cleaned dataset
+            # Determine output path for cleaned dataset - MODIFIED SECTION
             if original_file_path:
                 # Save cleaned dataset back to the original merged file
                 output_path = original_file_path
+                print(f"    drop_nan_columns: Will overwrite original file: {os.path.basename(output_path)}")
             else:
-                # Create new file with timestamp
+                # Auto-discover existing merged files to preserve naming pattern
                 merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
                 os.makedirs(merged_training_ready_dir, exist_ok=True)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                output_path = os.path.join(merged_training_ready_dir, f"merged_data_{timestamp}.csv")
+                
+                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                # Filter out train/test files
+                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                
+                if merged_data_files:
+                    # Use the most recent merged file to maintain original naming pattern
+                    output_path = max(merged_data_files, key=os.path.getmtime)
+                    print(f"    drop_nan_columns: Will overwrite existing merged file: {os.path.basename(output_path)}")
+                else:
+                    # Fallback: create a generic merged file (should rarely happen)
+                    output_path = os.path.join(merged_training_ready_dir, "merged_data.csv")
+                    print(f"    drop_nan_columns: Will create new file: {os.path.basename(output_path)}")
             
             # Save cleaned dataset
             if save_results:
-                # Save cleaned dataset back to the original merged file
                 df_cleaned.to_csv(output_path, index=False)
-                print(f"    drop_nan_columns: Saved cleaned dataset back to original merged file {os.path.basename(output_path)}")
+                print(f"    drop_nan_columns: Saved cleaned dataset back to {os.path.basename(output_path)}")
             
             # Prepare detailed result
             result = {
@@ -9234,6 +9255,7 @@ class TrainingPipeline:
                 "error": error_msg,
                 "columns_dropped": 0
             }
+
 
     def _save_nan_cleanup_summary(self, result, source_info):
         """
