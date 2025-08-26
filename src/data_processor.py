@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import glob
 import os
+from typing import Counter
 import joblib
 import json
 import pandas as pd
@@ -15,6 +16,7 @@ from sklearn.preprocessing import RobustScaler
 from src.file_utils import format_param_distributions_for_json, generate_output_path
 import xgboost as xgb
 
+from imblearn.over_sampling import BorderlineSMOTE
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import (
@@ -6167,10 +6169,6 @@ class TrainingPipeline:
         try:
             print(f"    generate_borderline_smote_data: Starting BorderlineSMOTE synthetic data generation...")
             
-            # Import required libraries
-            from imblearn.over_sampling import BorderlineSMOTE
-            from collections import Counter
-            
             # Create output directory
             output_dir = os.path.join(self.project_root, BORDERLINE_SMOTE_OUTPUT_FOLDER)
             os.makedirs(output_dir, exist_ok=True)
@@ -7373,7 +7371,7 @@ class TrainingPipeline:
                         cv=cv_splitter,
                         random_state=42,
                         n_jobs=1,  # Prevent memory issues
-                        verbose=0
+                        verbose=2
                     )
                     
                     # Fit with sample weights if available
@@ -9025,9 +9023,12 @@ class TrainingPipeline:
     def drop_nan_columns(self, data=None, input_path=None, save_results=True):
         """
         Drop columns that contain at least one NaN value from the merged dataset.
+        Also drops the 'causes_related_to_weather' column as it's no longer needed for training.
         
         This method analyzes the merged dataset and removes any columns that have
         at least one NaN/null value, ensuring a clean dataset for model training.
+        Additionally removes the 'causes_related_to_weather' column since it's typically
+        used for filtering purposes and not needed in the final training dataset.
         Provides detailed reporting on which columns were dropped and why.
         
         Parameters:
@@ -9100,6 +9101,9 @@ class TrainingPipeline:
             columns_to_drop = []
             columns_to_keep = []
             
+            # Track specific columns to drop
+            specific_drops = []
+            
             for column in df.columns:
                 nan_count = df[column].isnull().sum()
                 nan_percentage = (nan_count / len(df)) * 100
@@ -9110,34 +9114,48 @@ class TrainingPipeline:
                     'total_rows': len(df)
                 }
                 
+                # Check if column should be dropped due to NaN values
                 if nan_count > 0:
                     columns_to_drop.append(column)
                     print(f"      → Will DROP '{column}': {nan_count:,} NaN values ({nan_percentage:.2f}%)")
+                # Check if it's the causes_related_to_weather column (drop regardless of NaN status)
+                elif column == 'causes_related_to_weather':
+                    columns_to_drop.append(column)
+                    specific_drops.append(column)
+                    print(f"      → Will DROP '{column}': Explicitly removed (not needed for training)")
                 else:
                     columns_to_keep.append(column)
             
             print(f"    drop_nan_columns: Analysis complete")
-            print(f"      • Columns with NaN values: {len(columns_to_drop)}")
+            print(f"      • Columns with NaN values: {len([c for c in columns_to_drop if c not in specific_drops])}")
+            print(f"      • Columns dropped for other reasons: {len(specific_drops)}")
             print(f"      • Clean columns to keep: {len(columns_to_keep)}")
             
             if len(columns_to_drop) == 0:
-                print(f"    drop_nan_columns: No columns contain NaN values - dataset is already clean!")
+                print(f"    drop_nan_columns: No columns to drop - dataset is already clean!")
+                
+                # Determine output path
+                if original_file_path:
+                    output_path = original_file_path
+                else:
+                    merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                    os.makedirs(merged_training_ready_dir, exist_ok=True)
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    output_path = os.path.join(merged_training_ready_dir, f"merged_data_{timestamp}.csv")
                 
                 result = {
                     "success": True,
                     "data": df,  # Return original data since no changes needed
+                    "output_path": output_path,
                     "original_shape": df.shape,
                     "final_shape": df.shape,
                     "columns_dropped": 0,
                     "columns_kept": len(df.columns),
                     "dropped_column_names": [],
+                    "kept_column_names": list(df.columns),
                     "nan_analysis": nan_stats,
-                    "message": "No NaN columns found - dataset is already clean"
+                    "message": "No columns to drop - dataset is already clean"
                 }
-                
-                # No need to save since no changes were made, but update output_path for consistency
-                if original_file_path:
-                    result["output_path"] = original_file_path
                 
                 if save_results and original_file_path:
                     # Still save a summary even if no changes were made
@@ -9146,7 +9164,7 @@ class TrainingPipeline:
                 return result
             
             if len(columns_to_keep) == 0:
-                error_msg = "All columns contain NaN values - cannot proceed with dataset"
+                error_msg = "All columns would be dropped - cannot proceed with dataset"
                 print(f"    drop_nan_columns: {error_msg}")
                 return {
                     "success": False,
@@ -9155,41 +9173,29 @@ class TrainingPipeline:
                     "nan_analysis": nan_stats
                 }
             
-            # Drop columns with NaN values
+            # Drop columns with NaN values and specific columns
             original_shape = df.shape
             df_cleaned = df[columns_to_keep].copy()
             final_shape = df_cleaned.shape
             
-            print(f"    drop_nan_columns: Dropped {len(columns_to_drop)} columns with NaN values")
-            print(f"      • Original shape: {original_shape}")
-            print(f"      • Final shape: {final_shape}")
-            print(f"      • Rows preserved: {final_shape[0]:,}")
-            print(f"      • Columns preserved: {final_shape[1]}")
+            print(f"    drop_nan_columns: Dropped {len(columns_to_drop)} columns total:")
+            print(f"      • {len([c for c in columns_to_drop if c not in specific_drops])} columns with NaN values")
+            print(f"      • {len(specific_drops)} columns dropped for training optimization")
+            print(f"      • Dataset shape: {original_shape} → {final_shape}")
             
-            # Save cleaned dataset back to original file if requested
-            output_path = None
+            # Determine output path for cleaned dataset
+            if original_file_path:
+                # Save cleaned dataset back to the original merged file
+                output_path = original_file_path
+            else:
+                # Create new file with timestamp
+                merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                os.makedirs(merged_training_ready_dir, exist_ok=True)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                output_path = os.path.join(merged_training_ready_dir, f"merged_data_{timestamp}.csv")
+            
+            # Save cleaned dataset
             if save_results:
-                if original_file_path:
-                    # Save back to the original file path (overwrite with cleaned data)
-                    output_path = original_file_path
-                else:
-                    # When no original file path is provided, find the merged file to overwrite
-                    merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
-                    merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
-                    merged_data_files = glob.glob(merged_data_pattern)
-                    
-                    # Filter out train/test files
-                    merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
-                    
-                    if merged_data_files:
-                        # Use the most recent merged file
-                        output_path = max(merged_data_files, key=os.path.getmtime)
-                    else:
-                        # Fallback: create a generic merged data file name
-                        os.makedirs(merged_training_ready_dir, exist_ok=True)
-                        output_filename = "merged_data.csv"
-                        output_path = os.path.join(merged_training_ready_dir, output_filename)
-                
                 # Save cleaned dataset back to the original merged file
                 df_cleaned.to_csv(output_path, index=False)
                 print(f"    drop_nan_columns: Saved cleaned dataset back to original merged file {os.path.basename(output_path)}")
@@ -9206,7 +9212,8 @@ class TrainingPipeline:
                 "dropped_column_names": columns_to_drop,
                 "kept_column_names": columns_to_keep,
                 "nan_analysis": nan_stats,
-                "message": f"Successfully dropped {len(columns_to_drop)} columns with NaN values"
+                "specific_drops": specific_drops,
+                "message": f"Successfully dropped {len(columns_to_drop)} columns ({len([c for c in columns_to_drop if c not in specific_drops])} with NaN, {len(specific_drops)} for optimization)"
             }
             
             # Save detailed summary
@@ -9268,23 +9275,49 @@ class TrainingPipeline:
                 f.write(f"Columns kept: {result['columns_kept']}\n\n")
                 
                 if result['columns_dropped'] > 0:
-                    f.write("Dropped Columns (contained NaN values):\n")
-                    f.write("-" * 40 + "\n")
+                    # Separate different types of drops
+                    specific_drops = result.get('specific_drops', [])
                     nan_analysis = result.get('nan_analysis', {})
-                    for col in result['dropped_column_names']:
-                        stats = nan_analysis.get(col, {})
-                        f.write(f"• {col}: {stats.get('nan_count', 'N/A')} NaN values "
-                            f"({stats.get('nan_percentage', 'N/A')}%)\n")
-                    f.write("\n")
+                    
+                    # Columns dropped due to NaN values
+                    nan_dropped_cols = [col for col in result['dropped_column_names'] if col not in specific_drops]
+                    
+                    if nan_dropped_cols:
+                        f.write("Columns Dropped (contained NaN values):\n")
+                        f.write("-" * 40 + "\n")
+                        for col in nan_dropped_cols:
+                            stats = nan_analysis.get(col, {})
+                            f.write(f"• {col}: {stats.get('nan_count', 'N/A')} NaN values "
+                                f"({stats.get('nan_percentage', 'N/A')}%)\n")
+                        f.write("\n")
+                    
+                    # Columns dropped for optimization/training purposes
+                    if specific_drops:
+                        f.write("Columns Dropped (optimization/training purposes):\n")
+                        f.write("-" * 45 + "\n")
+                        for col in specific_drops:
+                            if col == 'causes_related_to_weather':
+                                f.write(f"• {col}: Not needed for training (used only for filtering)\n")
+                            else:
+                                f.write(f"• {col}: Training optimization\n")
+                        f.write("\n")
                 
-                f.write("Preserved Columns (clean):\n")
-                f.write("-" * 25 + "\n")
+                f.write("Preserved Columns (clean and needed for training):\n")
+                f.write("-" * 50 + "\n")
                 for i, col in enumerate(result['kept_column_names'], 1):
                     f.write(f"{i:3d}. {col}\n")
                 
                 f.write(f"\nOperation Status: {'SUCCESS' if result['success'] else 'FAILED'}\n")
                 if not result['success']:
                     f.write(f"Error: {result.get('error', 'Unknown error')}\n")
+                
+                # Add optimization notes
+                f.write(f"\nOptimization Notes:\n")
+                f.write(f"-" * 20 + "\n")
+                f.write(f"• Total columns processed: {len(result.get('nan_analysis', {}))}\n")
+                f.write(f"• Columns with NaN values removed: {result['columns_dropped'] - len(result.get('specific_drops', []))}\n")
+                f.write(f"• Columns specifically removed for training: {len(result.get('specific_drops', []))}\n")
+                f.write(f"• Final dataset ready for model training: {'Yes' if result['success'] else 'No'}\n")
             
             print(f"    drop_nan_columns: Summary saved to {summary_path}")
             

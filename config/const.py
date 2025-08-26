@@ -269,13 +269,12 @@ RANDOM_FOREST_PARAM_DISTRIBUTIONS = {
 
 # Parameter distributions for XGBoost with RandomizedSearchCV
 XGBOOST_PARAM_DISTRIBUTIONS = {
-    'n_estimators': randint(50, 500),
-    'max_depth': randint(3, 10),
-    'learning_rate': [0.01, 0.05, 0.1, 0.2],
-    'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-    'gamma': [0, 0.1, 0.2, 0.3, 0.4],
-    'max_delta_step': [0, 1, 3, 5, 7, 10]
+    'n_estimators': randint(100, 400),
+    'max_depth': randint(4, 8),
+    'learning_rate': [0.01, 0.05, 0.1],
+    'subsample': [0.7, 0.8, 0.9],
+    'colsample_bytree': [0.7, 0.8, 1.0],
+    'scale_pos_weight': [3.9, 4.9, 5.9]
 }
 
 # ===================================================================================================================
