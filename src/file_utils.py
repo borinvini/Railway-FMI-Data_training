@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 import os
 import glob
 import re
@@ -440,6 +441,110 @@ def plot_precision_recall_xgboost(y_true, y_proba, optimal_threshold, file_ident
     except Exception as e:
         print(f"      Warning: Could not create Precision-Recall plot for {file_identifier}_{method_name}: {str(e)}")
     
+def optimize_threshold_xgboost(y_true, y_proba, file_identifier, method_name, output_dir):
+    """
+    Find optimal threshold for XGBoost classification using ROC analysis.
+        
+    Parameters:
+    -----------
+    y_true : array-like
+        True binary labels
+    y_proba : array-like
+        Probability predictions from XGBoost model
+    file_identifier : str
+        Identifier for the file being processed
+    method_name : str
+        Name of the XGBoost method being optimized
+    output_dir : str
+        Directory to save plots and results
+            
+    Returns:
+    --------
+    tuple
+        (optimal_threshold, metrics_dict)
+    """
+    # Generate threshold range
+    thresholds = np.arange(
+        THRESHOLD_OPTIMIZATION_CONFIG["min_threshold"], 
+        THRESHOLD_OPTIMIZATION_CONFIG["max_threshold"] + THRESHOLD_OPTIMIZATION_CONFIG["threshold_step"], 
+        THRESHOLD_OPTIMIZATION_CONFIG["threshold_step"]
+    )
+        
+    # Initialize tracking variables
+    best_threshold = 0.5
+    best_score = -1
+    threshold_results = []
+        
+    optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
+        
+    # Test each threshold
+    for threshold in thresholds:
+        y_pred = (y_proba >= threshold).astype(int)
+        
+        # Calculate metrics
+        f1 = f1_score(y_true, y_pred, zero_division=0)
+        precision = precision_score(y_true, y_pred, zero_division=0)
+        recall = recall_score(y_true, y_pred, zero_division=0)
+        accuracy = accuracy_score(y_true, y_pred)
+            
+        # Select metric for optimization
+        if optimization_metric == "f1":
+            score = f1
+        elif optimization_metric == "precision":
+            score = precision
+        elif optimization_metric == "recall":
+            score = recall
+        elif optimization_metric == "accuracy":
+            score = accuracy
+        else:
+            score = f1  # Default to F1
+            
+        threshold_results.append({
+            "threshold": threshold,
+            "f1_score": f1,
+            "precision": precision,
+            "recall": recall,
+            "accuracy": accuracy,
+            "optimization_score": score
+        })
+            
+        if score > best_score:
+            best_score = score
+            best_threshold = threshold
+        
+    # Get metrics for optimal threshold
+    optimal_metrics = next(
+        result for result in threshold_results 
+        if result["threshold"] == best_threshold
+    )
+        
+    # Create plots if enabled
+    if THRESHOLD_OPTIMIZATION_CONFIG["plot_roc_curve"]:
+        plot_roc_curve_xgboost(y_true, y_proba, best_threshold, file_identifier, method_name, output_dir)
+        
+    if THRESHOLD_OPTIMIZATION_CONFIG["plot_precision_recall"]:
+        plot_precision_recall_xgboost(y_true, y_proba, best_threshold, file_identifier, method_name, output_dir)
+        
+    # Save threshold analysis results
+    threshold_analysis_file = os.path.join(output_dir, f"threshold_analysis_{file_identifier}_{method_name}.json")
+    with open(threshold_analysis_file, 'w') as f:
+        json.dump({
+            "file_identifier": file_identifier,
+            "method_name": method_name,
+            "optimization_metric": optimization_metric,
+            "optimal_threshold": best_threshold,
+            "optimal_metrics": optimal_metrics,
+            "all_thresholds": threshold_results
+        }, f, indent=2)
+        
+    return best_threshold, {
+        "f1_score": optimal_metrics["f1_score"],
+        "precision": optimal_metrics["precision"],
+        "recall": optimal_metrics["recall"],
+        "accuracy": optimal_metrics["accuracy"]
+    }
+
+
 def plot_smote_summary(smote_results, output_dir):
     """
     Create summary visualizations for BorderlineSMOTE data generation.
@@ -760,6 +865,139 @@ def create_distribution_plots(df, weather_features, filename, output_dir):
         
     except Exception as e:
         print(f"        Warning: Failed to create distribution plots for {filename}: {str(e)}")
+
+def create_comparative_distributions(df, weather_features, filename, output_dir):
+    """
+    Create comparative distribution plots (box plots and violin plots) 
+    comparing weather features between delayed and non-delayed cases.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        The dataset containing all features
+    weather_features : list
+        List of weather feature column names
+    filename : str
+        Name of the source file
+    output_dir : str
+        Directory to save the plots
+    """
+    try:
+        print(f"        Creating comparative distribution plots for {filename}...")
+        
+        # Import required constant (assuming it's defined in your config)
+        # DEFAULT_TARGET_FEATURE should be imported from your config
+        from config.const import DEFAULT_TARGET_FEATURE
+        
+        # Check if target feature exists
+        if DEFAULT_TARGET_FEATURE not in df.columns:
+            print(f"        Warning: Target feature '{DEFAULT_TARGET_FEATURE}' not found for comparative plots")
+            return
+        
+        # Filter weather features that exist in the dataframe
+        valid_weather_features = [col for col in weather_features if col in df.columns]
+        
+        if not valid_weather_features:
+            print(f"        Warning: No valid weather features found for comparative plots")
+            return
+        
+        # Create comparative analysis
+        n_features = len(valid_weather_features)
+        n_cols = 2  # Two columns for better readability
+        n_rows = (n_features + n_cols - 1) // n_cols
+        
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+        if n_rows == 1:
+            axes = axes.reshape(1, -1) if n_features > 1 else [axes]
+        elif n_features == 1:
+            axes = axes.reshape(-1, 1)
+        
+        for i, feature in enumerate(valid_weather_features):
+            row = i // n_cols
+            col = i % n_cols
+            ax = axes[row, col] if n_rows > 1 else axes[col]
+            
+            # Get feature data, handling missing values
+            feature_data = df[[feature, DEFAULT_TARGET_FEATURE]].dropna()
+            
+            if len(feature_data) == 0:
+                ax.text(0.5, 0.5, f'No valid data\nfor {feature}', 
+                       ha='center', va='center', transform=ax.transAxes,
+                       fontsize=12, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                ax.set_title(f'{feature} - No Data', fontsize=12, fontweight='bold')
+                continue
+            
+            # Create box plot comparing delayed vs non-delayed
+            delayed_data = feature_data[feature_data[DEFAULT_TARGET_FEATURE] == True][feature]
+            not_delayed_data = feature_data[feature_data[DEFAULT_TARGET_FEATURE] == False][feature]
+            
+            # Create violin plot for better distribution visualization
+            violin_data = [not_delayed_data.values, delayed_data.values]
+            violin_labels = ['Not Delayed', 'Delayed']
+            
+            # Create violin plot
+            parts = ax.violinplot(violin_data, positions=[1, 2], showmeans=True, showmedians=True)
+            
+            # Customize violin plot colors
+            colors = ['lightgreen', 'lightcoral']
+            for i, (pc, color) in enumerate(zip(parts['bodies'], colors)):
+                pc.set_facecolor(color)
+                pc.set_alpha(0.7)
+            
+            # Add box plot overlay for quartiles
+            bp = ax.boxplot(violin_data, positions=[1, 2], widths=0.3, 
+                          patch_artist=True, showfliers=False)
+            
+            for patch, color in zip(bp['boxes'], colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.8)
+            
+            ax.set_xticks([1, 2])
+            ax.set_xticklabels(violin_labels)
+            ax.set_title(f'{feature}\nDelayed vs Not Delayed', fontsize=11, fontweight='bold')
+            ax.set_ylabel(feature, fontsize=10)
+            ax.grid(axis='y', alpha=0.3)
+            
+            # Add statistics text
+            delayed_count = len(delayed_data)
+            not_delayed_count = len(not_delayed_data)
+            delayed_mean = delayed_data.mean() if len(delayed_data) > 0 else 0
+            not_delayed_mean = not_delayed_data.mean() if len(not_delayed_data) > 0 else 0
+            
+            stats_text = (f'Not Delayed: n={not_delayed_count:,}, μ={not_delayed_mean:.2f}\n'
+                         f'Delayed: n={delayed_count:,}, μ={delayed_mean:.2f}')
+            
+            ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                   verticalalignment='top', fontsize=9,
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+        
+        # Hide empty subplots if we have an odd number of features
+        if n_features % n_cols != 0:
+            for i in range(n_features, n_rows * n_cols):
+                row = i // n_cols
+                col = i % n_cols
+                if n_rows > 1:
+                    axes[row, col].set_visible(False)
+                else:
+                    axes[col].set_visible(False)
+        
+        plt.suptitle(f'Comparative Weather Feature Distributions: {filename}', 
+                    fontsize=16, y=0.98)
+        plt.tight_layout()
+        
+        # Save comparative distribution plot
+        safe_filename = filename.replace('.csv', '').replace(' ', '_')
+        comp_plot_filename = f"comparative_distributions_{safe_filename}.png"
+        comp_plot_path = os.path.join(output_dir, comp_plot_filename)
+        plt.savefig(comp_plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"        Saved comparative distribution plots: {comp_plot_filename}")
+        
+    except Exception as e:
+        print(f"        Warning: Failed to create comparative distribution plots for {filename}: {str(e)}")
+        import traceback
+        traceback.print_exc()  # For debugging purposes
 
 def create_combined_correlation_analysis(correlation_results, output_dir):
     """
@@ -1637,16 +1875,18 @@ def plot_threshold_summary(optimal_thresholds, f1_scores, output_dir):
     plt.savefig(os.path.join(output_dir, 'threshold_optimization_summary.png'), dpi=300, bbox_inches='tight')
     plt.close()
 
-def save_nan_cleanup_summary(result, source_info):
+def save_nan_cleanup_summary(result, source_info, project_root):
     """
     Save a detailed summary of the NaN column cleanup operation.
-
+    
     Parameters:
     -----------
     result : dict
         Results from the drop_nan_columns operation
     source_info : str
         Information about the source data (file path or description)
+    project_root : str
+        Root directory of the project
     """
     try:
         # Determine output directory

@@ -31,6 +31,7 @@ import seaborn as sns
 from src.file_utils import (
     format_param_distributions_for_json, 
     generate_output_path,
+    optimize_threshold_xgboost,
     plot_precision_recall_xgboost,
     plot_roc_curve_smote,
     plot_precision_recall_curve_smote,
@@ -3846,7 +3847,7 @@ class TrainingPipeline:
                             y_proba = model.predict_proba(X_test)[:, 1]  # Probability of positive class
                             
                             # Perform threshold optimization
-                            optimal_threshold, optimal_metrics = self._optimize_threshold_xgboost(
+                            optimal_threshold, optimal_metrics = optimize_threshold_xgboost(
                                 y_test, y_proba, file_identifier, method_name, output_dir
                             )
                             
@@ -3978,110 +3979,6 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg
             }
-
-    def _optimize_threshold_xgboost(self, y_true, y_proba, file_identifier, method_name, output_dir):
-        """
-        Find optimal threshold for XGBoost classification using ROC analysis.
-        
-        Parameters:
-        -----------
-        y_true : array-like
-            True binary labels
-        y_proba : array-like
-            Probability predictions from XGBoost model
-        file_identifier : str
-            Identifier for the file being processed
-        method_name : str
-            Name of the XGBoost method being optimized
-        output_dir : str
-            Directory to save plots and results
-            
-        Returns:
-        --------
-        tuple
-            (optimal_threshold, metrics_dict)
-        """
-        # Generate threshold range
-        thresholds = np.arange(
-            THRESHOLD_OPTIMIZATION_CONFIG["min_threshold"], 
-            THRESHOLD_OPTIMIZATION_CONFIG["max_threshold"] + THRESHOLD_OPTIMIZATION_CONFIG["threshold_step"], 
-            THRESHOLD_OPTIMIZATION_CONFIG["threshold_step"]
-        )
-        
-        # Initialize tracking variables
-        best_threshold = 0.5
-        best_score = -1
-        threshold_results = []
-        
-        optimization_metric = THRESHOLD_OPTIMIZATION_CONFIG["optimization_metric"]
-        
-        # Test each threshold
-        for threshold in thresholds:
-            y_pred = (y_proba >= threshold).astype(int)
-            
-            # Calculate metrics
-            f1 = f1_score(y_true, y_pred, zero_division=0)
-            precision = precision_score(y_true, y_pred, zero_division=0)
-            recall = recall_score(y_true, y_pred, zero_division=0)
-            accuracy = accuracy_score(y_true, y_pred)
-            
-            # Select metric for optimization
-            if optimization_metric == "f1":
-                score = f1
-            elif optimization_metric == "precision":
-                score = precision
-            elif optimization_metric == "recall":
-                score = recall
-            elif optimization_metric == "accuracy":
-                score = accuracy
-            else:
-                score = f1  # Default to F1
-            
-            threshold_results.append({
-                "threshold": threshold,
-                "f1_score": f1,
-                "precision": precision,
-                "recall": recall,
-                "accuracy": accuracy,
-                "optimization_score": score
-            })
-            
-            if score > best_score:
-                best_score = score
-                best_threshold = threshold
-        
-        # Get metrics for optimal threshold
-        optimal_metrics = next(
-            result for result in threshold_results 
-            if result["threshold"] == best_threshold
-        )
-        
-        # Create plots if enabled
-        if THRESHOLD_OPTIMIZATION_CONFIG["plot_roc_curve"]:
-            plot_roc_curve_xgboost(y_true, y_proba, best_threshold, file_identifier, method_name, output_dir)
-        
-        if THRESHOLD_OPTIMIZATION_CONFIG["plot_precision_recall"]:
-            plot_precision_recall_xgboost(y_true, y_proba, best_threshold, file_identifier, method_name, output_dir)
-        
-        # Save threshold analysis results
-        threshold_analysis_file = os.path.join(output_dir, f"threshold_analysis_{file_identifier}_{method_name}.json")
-        with open(threshold_analysis_file, 'w') as f:
-            json.dump({
-                "file_identifier": file_identifier,
-                "method_name": method_name,
-                "optimization_metric": optimization_metric,
-                "optimal_threshold": best_threshold,
-                "optimal_metrics": optimal_metrics,
-                "all_thresholds": threshold_results
-            }, f, indent=2)
-        
-        return best_threshold, {
-            "f1_score": optimal_metrics["f1_score"],
-            "precision": optimal_metrics["precision"],
-            "recall": optimal_metrics["recall"],
-            "accuracy": optimal_metrics["accuracy"]
-        }
-
 
     def correlation_analysis(self, csv_files=None):
         """
@@ -7698,7 +7595,7 @@ class TrainingPipeline:
                 
                 if save_results and original_file_path:
                     # Still save a summary even if no changes were made
-                    save_nan_cleanup_summary(result, original_file_path)
+                    save_nan_cleanup_summary(result, original_file_path, self.project_root)
                 
                 return result
             
@@ -7770,7 +7667,7 @@ class TrainingPipeline:
             
             # Save detailed summary
             if save_results:
-                save_nan_cleanup_summary(result, original_file_path or "provided_data")
+                save_nan_cleanup_summary(result, original_file_path or "provided_data", self.project_root)
             
             print(f"    drop_nan_columns: NaN column cleanup completed successfully")
             
