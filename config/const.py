@@ -214,7 +214,14 @@ WEATHER_COLS_TO_MERGE = [
 ]
 
 SELECTED_WEATHER_FEATURES = [
-
+    'Air temperature', 
+    'Wind speed', 
+    'Gust speed', 
+    'Relative humidity', 
+    'Precipitation amount',
+    'Precipitation intensity',
+    'Snow depth',
+    'Horizontal visibility',
 ]
 
 

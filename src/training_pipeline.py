@@ -4726,11 +4726,14 @@ class TrainingPipeline:
                     # Identify available selected weather features
                     available_selected_weather = [col for col in SELECTED_WEATHER_FEATURES if col in train_df.columns]
                     print(f"        Available selected weather features ({len(available_selected_weather)}): {available_selected_weather}")
-                    
-                    if not available_selected_weather:
-                        print(f"        Warning: No selected weather features found in dataset. Skipping {identifier}")
-                        failed_trainings += 1
-                        continue
+
+                    # MODIFIED LOGIC: Handle empty SELECTED_WEATHER_FEATURES
+                    if not SELECTED_WEATHER_FEATURES:
+                        print(f"        SELECTED_WEATHER_FEATURES is empty - training with NO weather features")
+                        available_selected_weather = []
+                    elif not available_selected_weather:
+                        print(f"        Warning: None of the selected weather features found in dataset. Training with NO weather features for {identifier}")
+                        available_selected_weather = []
                     
                     # Identify non-weather features (excluding target and index columns)
                     all_weather_cols = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
