@@ -1,5 +1,6 @@
 from src.file_utils import check_csv_files, extract_date_range, ensure_folder_structure
-from src.data_processor import TrainingPipeline
+from src.training_pipeline import TrainingPipeline
+from src.preprocessing_pipeline import PreprocessingPipeline  
 from config.const import (
     DEFAULT_TARGET_FEATURE,
     EXECUTE_PREPROCESSING_DATA_PIPELINE, 
@@ -8,6 +9,7 @@ from config.const import (
     IMPORTANCE_THRESHOLD, 
     REQUIRED_STATIONS,
     INPUT_FOLDER,
+    PREPROCESSING_STATE_MACHINE,  
     TRAINING_STATE_MACHINE
 )
 
@@ -75,13 +77,18 @@ def main():
         print(f"Found {len(csv_files)} CSV files ready for processing when enabled.")
     else:
         # STEP 7: Initialize and run the preprocessing pipeline
-        print(f"\nInitializing Preprocessing Pipeline...")
-        pipeline = TrainingPipeline()
+        print("\n" + "="*60)
+        print("PREPROCESSING PIPELINE INITIALIZATION")
+        print("="*60)
         
+        print(f"Initializing Preprocessing Pipeline...")
+        preprocessing_pipeline = PreprocessingPipeline()  # CHANGED: Use new PreprocessingPipeline class
+        
+        print(f"Preprocessing state machine configuration: {PREPROCESSING_STATE_MACHINE}")
         print(f"Starting preprocessing pipeline execution with target feature: '{DEFAULT_TARGET_FEATURE}'")
         
         # Run the full preprocessing pipeline on all CSV files with the default target feature
-        preprocessing_results = pipeline.run_pipeline(
+        preprocessing_results = preprocessing_pipeline.run_pipeline(  # CHANGED: Use PreprocessingPipeline instance
             csv_files, 
             target_feature=DEFAULT_TARGET_FEATURE
         )
@@ -99,6 +106,8 @@ def main():
                 print(f"⚠️  {preprocessing_results.get('failed_files', 0)} months failed preprocessing")
             else:
                 print("✓ All months preprocessed successfully!")
+        else:
+            print("✗ Preprocessing pipeline returned no results!")
 
     # STEP 8: Check if training pipeline execution is enabled
     if not EXECUTE_TRAINING_PIPELINE:
@@ -115,13 +124,13 @@ def main():
         print("="*60)
         
         print(f"Initializing Training Pipeline...")
-        pipeline = TrainingPipeline()
+        training_pipeline = TrainingPipeline()  # UNCHANGED: Still use TrainingPipeline for training operations
         
         print(f"Training state machine configuration: {TRAINING_STATE_MACHINE}")
         print(f"Starting training pipeline execution...")
         
         # Run the training pipeline steps
-        training_results = pipeline.execute_training_pipeline_steps(
+        training_results = training_pipeline.execute_training_pipeline_steps(
             csv_files,
             state_machine=TRAINING_STATE_MACHINE
         )
