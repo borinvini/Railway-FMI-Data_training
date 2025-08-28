@@ -4,6 +4,7 @@ import os
 import glob
 import re
 
+import joblib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -24,6 +25,7 @@ from config.const import (
     INPUT_FOLDER,
     MERGED_TRAINING_READY_OUTPUT_FOLDER, 
     OUTPUT_FOLDER,
+    SELECTED_WEATHER_FEATURES,
     THRESHOLD_OPTIMIZATION_CONFIG
 )
 
@@ -543,7 +545,6 @@ def optimize_threshold_xgboost(y_true, y_proba, file_identifier, method_name, ou
         "recall": optimal_metrics["recall"],
         "accuracy": optimal_metrics["accuracy"]
     }
-
 
 def plot_smote_summary(smote_results, output_dir):
     """
@@ -1965,3 +1966,104 @@ def save_nan_cleanup_summary(result, source_info, project_root):
         
     except Exception as e:
         print(f"    drop_nan_columns: Warning - Could not save summary: {str(e)}")
+
+def generate_feature_importance_report(training_results, output_dir):
+    """Generate a feature importance report across all trained models."""
+    try:
+        print(f"    Generating feature importance report...")
+        
+        # Collect feature importances from all models
+        all_importances = {}
+        
+        for file_result in training_results["file_results"]:
+            try:
+                model_path = file_result["model_path"]
+                if os.path.exists(model_path):
+                    model = joblib.load(model_path)
+                    
+                    if hasattr(model, 'feature_importances_'):
+                        feature_names = file_result["selected_weather_features"] + file_result["non_weather_features"]
+                        importances = model.feature_importances_
+                        
+                        for feature, importance in zip(feature_names, importances):
+                            if feature not in all_importances:
+                                all_importances[feature] = []
+                            all_importances[feature].append(float(importance))
+            except Exception as e:
+                print(f"      Warning: Could not load model from {file_result.get('model_path', 'unknown')}: {e}")
+                continue
+        
+        if all_importances:
+            # Calculate average importance for each feature
+            importance_summary = {}
+            for feature, importances in all_importances.items():
+                importance_summary[feature] = {
+                    "mean_importance": float(np.mean(importances)),
+                    "std_importance": np.std(importances),
+                    "min_importance": np.min(importances),
+                    "max_importance": np.max(importances),
+                    "count": len(importances)
+                }
+            
+            # Sort by mean importance
+            sorted_features = sorted(importance_summary.items(), 
+                                   key=lambda x: x[1]["mean_importance"], 
+                                   reverse=True)
+            
+            # Save feature importance report
+            importance_file = os.path.join(output_dir, "feature_importance_report.json")
+            with open(importance_file, 'w') as f:
+                json.dump({
+                    "feature_importance_summary": dict(sorted_features),
+                    "selected_weather_features": SELECTED_WEATHER_FEATURES,
+                    "generation_timestamp": datetime.now().isoformat()
+                }, f, indent=2)
+            
+            # Create visualization
+            plot_feature_importance(sorted_features[:20], output_dir)  # Top 20 features
+            
+            print(f"      Feature importance report saved to: {importance_file}")
+        else:
+            print(f"      Warning: No feature importances could be extracted from models")
+            
+    except Exception as e:
+        print(f"      Error generating feature importance report: {e}")
+
+def plot_feature_importance(sorted_features, output_dir):
+    """Create feature importance visualization."""
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        features, importance_data = zip(*sorted_features)
+        mean_importances = [data["mean_importance"] for data in importance_data]
+        std_importances = [data["std_importance"] for data in importance_data]
+        
+        plt.figure(figsize=(12, 8))
+        y_pos = np.arange(len(features))
+        
+        # Create horizontal bar plot with error bars
+        bars = plt.barh(y_pos, mean_importances, xerr=std_importances, 
+                       capsize=5, alpha=0.7, color='skyblue', edgecolor='navy')
+        
+        plt.yticks(y_pos, features)
+        plt.xlabel('Feature Importance (Mean ± Std)')
+        plt.title('XGBoost Feature Importance - Selected Weather Features Model')
+        plt.gca().invert_yaxis()  # Highest importance at top
+        
+        # Add value labels on bars
+        for i, (bar, mean_imp, std_imp) in enumerate(zip(bars, mean_importances, std_importances)):
+            plt.text(bar.get_width() + std_imp + 0.001, bar.get_y() + bar.get_height()/2,
+                    f'{mean_imp:.3f}', ha='left', va='center', fontsize=9)
+        
+        plt.tight_layout()
+        
+        # Save plot
+        plot_file = os.path.join(output_dir, "feature_importance_plot.png")
+        plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"      Feature importance plot saved to: {plot_file}")
+        
+    except Exception as e:
+        print(f"      Error creating feature importance plot: {e}")

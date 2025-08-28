@@ -24,6 +24,8 @@ DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_thr
 BORDERLINE_SMOTE_OUTPUT_FOLDER = "data/output/borderline_smote_synthetic"
 DECISION_TREE_BORDERLINE_SMOTE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_borderline_smote_threshold_optimized"
 XGBOOST_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/xgboost_threshold_optimized"
+XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER = "data/output/xgboost_selected_features"
+
 
 
 # Pipeline State Machine Configuration
@@ -63,7 +65,8 @@ TRAINING_STATE_MACHINE = {
     "train_decision_tree_with_borderline_smote_data": True,
     "threshold_optimization_decision_tree_borderline_smote": True,
     "train_xgboost_with_randomized_search_cv": True,
-    "threshold_optimization_xgboost": True  
+    "threshold_optimization_xgboost": True,
+    "train_xgboost_selected_features": True
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
@@ -208,6 +211,10 @@ WEATHER_COLS_TO_MERGE = [
     "Horizontal visibility", 
     "Wind speed", 
     "Gust speed"
+]
+
+SELECTED_WEATHER_FEATURES = [
+
 ]
 
 

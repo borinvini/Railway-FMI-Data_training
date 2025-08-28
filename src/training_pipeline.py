@@ -29,7 +29,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
             
 from src.file_utils import (
-    format_param_distributions_for_json, 
+    format_param_distributions_for_json,
+    generate_feature_importance_report, 
     generate_output_path,
     optimize_threshold_xgboost,
     plot_precision_recall_xgboost,
@@ -78,6 +79,7 @@ from config.const import (
     REGRESSION_PROBLEM,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     SCORE_METRIC,
+    SELECTED_WEATHER_FEATURES,
     STRONG_INDICATORS,
     TARGET_STATION_CODE,
     TEST_SIZE,
@@ -95,6 +97,7 @@ from config.const import (
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     MAX_SAMPLE_WEIGHT_CLASSIFICATION,
+    XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER,
     XGBOOST_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER,
 )
 
@@ -533,6 +536,44 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ threshold_optimization_xgboost (disabled)")
+
+        if state_machine.get("train_xgboost_selected_features", False):
+            try:
+                print(f"    → train_xgboost_selected_features")
+                selected_xgboost_result = self.train_xgboost_selected_features()
+                
+                if selected_xgboost_result and selected_xgboost_result.get("success", False):
+                    result["steps_executed"].append("train_xgboost_selected_features")
+                    result["file_info"]["selected_xgboost_models_trained"] = selected_xgboost_result.get("models_trained", 0)
+                    result["file_info"]["selected_xgboost_problem_type"] = selected_xgboost_result.get("problem_type", "unknown")
+                    print(f"      ✓ Successfully trained XGBoost models with selected features")
+                    print(f"      ✓ Problem type: {selected_xgboost_result.get('problem_type', 'N/A')}")
+                    print(f"      ✓ Models trained: {selected_xgboost_result.get('models_trained', 0)}")
+                    print(f"      ✓ Selected weather features: {selected_xgboost_result.get('selected_weather_features', [])}")
+                    print(f"      ✓ Average CV Score: {selected_xgboost_result.get('average_cv_score', 0):.4f}")
+                    
+                    # Print problem-specific metrics
+                    if selected_xgboost_result.get('problem_type') == 'classification':
+                        print(f"      ✓ Average Test F1: {selected_xgboost_result.get('average_test_f1', 0):.4f}")
+                        print(f"      ✓ Average Test Accuracy: {selected_xgboost_result.get('average_test_accuracy', 0):.4f}")
+                    else:
+                        print(f"      ✓ Average Test RMSE: {selected_xgboost_result.get('average_test_rmse', 0):.4f}")
+                        print(f"      ✓ Average Test R²: {selected_xgboost_result.get('average_test_r2', 0):.4f}")
+                        
+                    print(f"      ✓ Results saved to: {selected_xgboost_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = selected_xgboost_result.get("error", "train_xgboost_selected_features returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"train_xgboost_selected_features failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ train_xgboost_selected_features (disabled)")
 
             
         return result
@@ -4548,3 +4589,413 @@ class TrainingPipeline:
                 "columns_dropped": 0
             }
 
+    def train_xgboost_selected_features(self):
+        """
+        Train XGBoost models using only selected weather features from SELECTED_WEATHER_FEATURES.
+        
+        This method:
+        1. Loads the scaled training/test data files
+        2. Filters weather features to keep only those specified in SELECTED_WEATHER_FEATURES
+        3. Trains XGBoost models with hyperparameter optimization
+        4. Evaluates and saves the trained models
+        
+        The method processes files from:
+        - data/output/4-merged_scaled_training_ready/merged_data_*_train_scaled.csv
+        - data/output/4-merged_scaled_training_ready/merged_data_*_test_scaled.csv
+        
+        Returns:
+        --------
+        dict
+            Training results summary including model performance metrics
+        """
+        try:
+            print(f"    train_xgboost_selected_features: Starting XGBoost training with selected weather features...")
+            print(f"    train_xgboost_selected_features: Selected features: {SELECTED_WEATHER_FEATURES}")
+            
+            # Create output directory
+            output_dir = os.path.join(self.project_root, XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            
+            print(f"    train_xgboost_selected_features: Output directory: {output_dir}")
+            
+            # Find training and test files
+            train_pattern = os.path.join(self.project_root, "data/output/4-merged_scaled_training_ready/merged_data_*_train_scaled.csv")
+            test_pattern = os.path.join(self.project_root, "data/output/4-merged_scaled_training_ready/merged_data_*_test_scaled.csv")
+            
+            train_files = glob.glob(train_pattern)
+            test_files = glob.glob(test_pattern)
+            
+            if not train_files or not test_files:
+                error_msg = f"Training or test files not found. Train files: {len(train_files)}, Test files: {len(test_files)}"
+                print(f"    train_xgboost_selected_features: {error_msg}")
+                return {"success": False, "error": error_msg}
+            
+            print(f"    train_xgboost_selected_features: Found {len(train_files)} training files and {len(test_files)} test files")
+            
+            # Determine problem type
+            target_feature = DEFAULT_TARGET_FEATURE
+            is_classification = target_feature in CLASSIFICATION_PROBLEM
+            is_regression = target_feature in REGRESSION_PROBLEM
+            
+            if not (is_classification or is_regression):
+                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
+                print(f"    train_xgboost_selected_features: {error_msg}")
+                return {"success": False, "error": error_msg}
+            
+            problem_type = "classification" if is_classification else "regression"
+            print(f"    train_xgboost_selected_features: Detected {problem_type} problem for target '{target_feature}'")
+            
+            # Initialize results structure
+            training_results = {
+                "training_overview": {
+                    "training_completed": datetime.now().isoformat(),
+                    "problem_type": problem_type,
+                    "target_feature": target_feature,
+                    "selected_weather_features": SELECTED_WEATHER_FEATURES,
+                    "total_files_processed": 0,
+                    "successful_trainings": 0,
+                    "failed_trainings": 0,
+                    "hyperparameter_search_iterations": RANDOM_SEARCH_ITERATIONS,
+                    "cross_validation_folds": RANDOM_SEARCH_CV_FOLDS
+                },
+                "xgboost_config": {
+                    "param_distributions": format_param_distributions_for_json(XGBOOST_PARAM_DISTRIBUTIONS),
+                    "methods_config": XGBOOST_METHODS_CONFIG.get(problem_type, [])
+                },
+                "file_results": [],
+                "aggregate_metrics": {}
+            }
+            
+            successful_trainings = 0
+            failed_trainings = 0
+            all_cv_scores = []
+            all_test_scores = []
+            
+            # Memory tracking
+            process = psutil.Process()
+            initial_memory = process.memory_info().rss / 1024 / 1024
+            print(f"    train_xgboost_selected_features: Initial memory usage: {initial_memory:.2f} MB")
+            
+            # Process each training/test file pair
+            for train_file in train_files:
+                try:
+                    # Extract file identifier
+                    train_filename = os.path.basename(train_file)
+                    identifier_match = re.search(r'merged_data_(.+?)_train_scaled\.csv', train_filename)
+                    
+                    if not identifier_match:
+                        print(f"      Warning: Could not extract identifier from {train_filename}")
+                        failed_trainings += 1
+                        continue
+                    
+                    identifier = identifier_match.group(1)
+                    test_filename = f"merged_data_{identifier}_test_scaled.csv"
+                    test_file = os.path.join(os.path.dirname(train_file), test_filename)
+                    
+                    if not os.path.exists(test_file):
+                        print(f"      Warning: Test file not found: {test_filename}")
+                        failed_trainings += 1
+                        continue
+                    
+                    print(f"\n      Processing: {identifier}")
+                    print(f"        Train file: {train_filename}")
+                    print(f"        Test file: {test_filename}")
+                    
+                    # Load datasets
+                    print(f"        Loading datasets...")
+                    train_df = pd.read_csv(train_file)
+                    test_df = pd.read_csv(test_file)
+                    
+                    if train_df.empty or test_df.empty:
+                        print(f"        Warning: Empty dataset found. Skipping {identifier}")
+                        failed_trainings += 1
+                        continue
+                    
+                    print(f"        Train shape: {train_df.shape}")
+                    print(f"        Test shape: {test_df.shape}")
+                    
+                    # Check target feature
+                    if target_feature not in train_df.columns or target_feature not in test_df.columns:
+                        print(f"        Warning: Target feature '{target_feature}' not found. Skipping {identifier}")
+                        failed_trainings += 1
+                        continue
+                    
+                    # Filter features: keep selected weather features + non-weather features
+                    print(f"        Filtering features...")
+                    
+                    # Identify available selected weather features
+                    available_selected_weather = [col for col in SELECTED_WEATHER_FEATURES if col in train_df.columns]
+                    print(f"        Available selected weather features ({len(available_selected_weather)}): {available_selected_weather}")
+                    
+                    if not available_selected_weather:
+                        print(f"        Warning: No selected weather features found in dataset. Skipping {identifier}")
+                        failed_trainings += 1
+                        continue
+                    
+                    # Identify non-weather features (excluding target and index columns)
+                    all_weather_cols = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
+                    non_weather_cols = [col for col in train_df.columns 
+                                    if col not in all_weather_cols 
+                                    and col != target_feature
+                                    and not col.startswith('Unnamed')
+                                    and col != 'index']
+                    
+                    print(f"        Non-weather features ({len(non_weather_cols)}): {non_weather_cols}")
+                    
+                    # Create feature set: selected weather features + non-weather features
+                    feature_columns = available_selected_weather + non_weather_cols
+                    print(f"        Final feature set ({len(feature_columns)}): {len(available_selected_weather)} weather + {len(non_weather_cols)} non-weather")
+                    
+                    # Prepare training data
+                    X_train = train_df[feature_columns]
+                    y_train = train_df[target_feature]
+                    X_test = test_df[feature_columns]
+                    y_test = test_df[target_feature]
+                    
+                    # Handle missing values
+                    if X_train.isnull().sum().sum() > 0 or X_test.isnull().sum().sum() > 0:
+                        print(f"        Warning: Missing values detected. Filling with median/mode...")
+                        
+                        # Fill numerical features with median
+                        numerical_features = X_train.select_dtypes(include=[np.number]).columns
+                        for col in numerical_features:
+                            median_val = X_train[col].median()
+                            X_train[col].fillna(median_val, inplace=True)
+                            X_test[col].fillna(median_val, inplace=True)
+                        
+                        # Fill categorical features with mode
+                        categorical_features = X_train.select_dtypes(include=['object']).columns
+                        for col in categorical_features:
+                            mode_val = X_train[col].mode().iloc[0] if not X_train[col].mode().empty else 'Unknown'
+                            X_train[col].fillna(mode_val, inplace=True)
+                            X_test[col].fillna(mode_val, inplace=True)
+                    
+                    # Prepare sample weights if configured
+                    sample_weights = None
+                    if WEIGHT_DELAY_COLUMN != 'NONE' and WEIGHT_DELAY_COLUMN in train_df.columns:
+                        print(f"        Applying sample weights based on '{WEIGHT_DELAY_COLUMN}'...")
+                        sample_weights = train_df[WEIGHT_DELAY_COLUMN].abs() + 1  # Add 1 to avoid zero weights
+                        
+                        if is_classification:
+                            sample_weights = np.clip(sample_weights, 1, MAX_SAMPLE_WEIGHT_CLASSIFICATION)
+                        else:
+                            sample_weights = np.clip(sample_weights, 1, MAX_SAMPLE_WEIGHT_REGRESSION)
+                    
+                    # Configure cross-validation and scoring
+                    if is_classification:
+                        cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
+                        scoring_metric = SCORE_METRIC
+                        base_model = xgb.XGBClassifier(
+                            random_state=42,
+                            n_jobs=1,
+                            eval_metric='logloss'
+                        )
+                    else:
+                        cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
+                        scoring_metric = 'neg_mean_squared_error'
+                        base_model = xgb.XGBRegressor(
+                            random_state=42,
+                            n_jobs=1,
+                            eval_metric='rmse'
+                        )
+                    
+                    # Perform hyperparameter optimization
+                    print(f"        Starting RandomizedSearchCV with {RANDOM_SEARCH_ITERATIONS} iterations...")
+                    
+                    randomized_search = RandomizedSearchCV(
+                        estimator=base_model,
+                        param_distributions=XGBOOST_PARAM_DISTRIBUTIONS,
+                        n_iter=RANDOM_SEARCH_ITERATIONS,
+                        scoring=scoring_metric,
+                        cv=cv_splitter,
+                        random_state=42,
+                        n_jobs=1,
+                        verbose=1
+                    )
+                    
+                    # Fit with sample weights if available
+                    if sample_weights is not None:
+                        randomized_search.fit(X_train, y_train, sample_weight=sample_weights)
+                    else:
+                        randomized_search.fit(X_train, y_train)
+                    
+                    best_model = randomized_search.best_estimator_
+                    best_params = randomized_search.best_params_
+                    best_cv_score = randomized_search.best_score_
+                    
+                    print(f"        Best CV Score: {best_cv_score:.4f}")
+                    print(f"        Best Parameters: {best_params}")
+                    
+                    # Make predictions on test set
+                    y_pred = best_model.predict(X_test)
+                    
+                    # Calculate test metrics
+                    if is_classification:
+                        y_pred_proba = best_model.predict_proba(X_test)[:, 1] if hasattr(best_model, 'predict_proba') else y_pred
+                        
+                        test_accuracy = accuracy_score(y_test, y_pred)
+                        test_f1 = f1_score(y_test, y_pred, average='weighted')
+                        test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                        test_recall = recall_score(y_test, y_pred, average='weighted')
+                        test_auc = roc_auc_score(y_test, y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                        
+                        print(f"        Test Accuracy: {test_accuracy:.4f}")
+                        print(f"        Test F1: {test_f1:.4f}")
+                        print(f"        Test Precision: {test_precision:.4f}")
+                        print(f"        Test Recall: {test_recall:.4f}")
+                        print(f"        Test AUC: {test_auc:.4f}")
+                        
+                        test_score = test_f1  # Use F1 as primary metric for classification
+                    else:
+                        test_mse = mean_squared_error(y_test, y_pred)
+                        test_rmse = np.sqrt(test_mse)
+                        test_mae = mean_absolute_error(y_test, y_pred)
+                        test_r2 = r2_score(y_test, y_pred)
+                        
+                        print(f"        Test RMSE: {test_rmse:.4f}")
+                        print(f"        Test MAE: {test_mae:.4f}")
+                        print(f"        Test R²: {test_r2:.4f}")
+                        
+                        test_score = -test_rmse  # Use negative RMSE for consistency with CV scoring
+                    
+                    # Save model and results
+                    model_filename = f"xgboost_selected_features_{identifier}.joblib"
+                    model_path = os.path.join(output_dir, model_filename)
+                    joblib.dump(best_model, model_path)
+                    print(f"        Model saved: {model_filename}")
+                    
+                    # Store detailed results
+                    file_result = {
+                        "file_identifier": identifier,
+                        "train_file": train_filename,
+                        "test_file": test_filename,
+                        "train_samples": len(X_train),
+                        "test_samples": len(X_test),
+                        "features_used": len(feature_columns),
+                        "selected_weather_features": available_selected_weather,
+                        "non_weather_features": non_weather_cols,
+                        "best_cv_score": float(best_cv_score),
+                        "best_parameters": best_params,
+                        "model_path": model_path
+                    }
+                    
+                    # Add problem-specific metrics
+                    if is_classification:
+                        file_result.update({
+                            "test_accuracy": float(test_accuracy),
+                            "test_f1": float(test_f1),
+                            "test_precision": float(test_precision),
+                            "test_recall": float(test_recall),
+                            "test_auc": float(test_auc)
+                        })
+                    else:
+                        file_result.update({
+                            "test_rmse": float(test_rmse),
+                            "test_mae": float(test_mae),
+                            "test_r2": float(test_r2)
+                        })
+                    
+                    training_results["file_results"].append(file_result)
+                    all_cv_scores.append(best_cv_score)
+                    all_test_scores.append(test_score)
+                    successful_trainings += 1
+                    
+                    # Memory check
+                    current_memory = process.memory_info().rss / 1024 / 1024
+                    print(f"        Current memory usage: {current_memory:.2f} MB")
+                    
+                except Exception as e:
+                    print(f"        Error processing {train_file}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    failed_trainings += 1
+                    continue
+            
+            # Calculate aggregate metrics
+            training_results["training_overview"]["total_files_processed"] = len(train_files)
+            training_results["training_overview"]["successful_trainings"] = successful_trainings
+            training_results["training_overview"]["failed_trainings"] = failed_trainings
+            
+            if successful_trainings > 0:
+                training_results["aggregate_metrics"] = {
+                    "average_cv_score": float(np.mean(all_cv_scores)),
+                    "std_cv_score": float(np.std(all_cv_scores)),
+                    "average_test_score": float(np.mean(all_test_scores)),
+                    "std_test_score": float(np.std(all_test_scores))
+                }
+                
+                # Calculate problem-specific aggregate metrics
+                if is_classification:
+                    all_test_accuracies = [r["test_accuracy"] for r in training_results["file_results"]]
+                    all_test_f1s = [r["test_f1"] for r in training_results["file_results"]]
+                    all_test_precisions = [r["test_precision"] for r in training_results["file_results"]]
+                    all_test_recalls = [r["test_recall"] for r in training_results["file_results"]]
+                    all_test_aucs = [r["test_auc"] for r in training_results["file_results"]]
+                    
+                    training_results["aggregate_metrics"].update({
+                        "average_test_accuracy": float(np.mean(all_test_accuracies)),
+                        "average_test_f1": float(np.mean(all_test_f1s)),
+                        "average_test_precision": float(np.mean(all_test_precisions)),
+                        "average_test_recall": float(np.mean(all_test_recalls)),
+                        "average_test_auc": float(np.mean(all_test_aucs))
+                    })
+                else:
+                    all_test_rmses = [r["test_rmse"] for r in training_results["file_results"]]
+                    all_test_maes = [r["test_mae"] for r in training_results["file_results"]]
+                    all_test_r2s = [r["test_r2"] for r in training_results["file_results"]]
+                    
+                    training_results["aggregate_metrics"].update({
+                        "average_test_rmse": float(np.mean(all_test_rmses)),
+                        "average_test_mae": float(np.mean(all_test_maes)),
+                        "average_test_r2": float(np.mean(all_test_r2s))
+                    })
+            
+            # Save results summary
+            results_file = os.path.join(output_dir, "xgboost_selected_features_training_results.json")
+            with open(results_file, 'w') as f:
+                json.dump(training_results, f, indent=2)
+            
+            # Generate feature importance report
+            generate_feature_importance_report(training_results, output_dir)
+            
+            if successful_trainings > 0:
+                print(f"    train_xgboost_selected_features: Trained {successful_trainings} XGBoost models successfully")
+                print(f"    train_xgboost_selected_features: Average CV Score: {np.mean(all_cv_scores):.4f}")
+                
+                if is_classification:
+                    print(f"    train_xgboost_selected_features: Average Test F1: {training_results['aggregate_metrics']['average_test_f1']:.4f}")
+                    print(f"    train_xgboost_selected_features: Average Test Accuracy: {training_results['aggregate_metrics']['average_test_accuracy']:.4f}")
+                else:
+                    print(f"    train_xgboost_selected_features: Average Test RMSE: {training_results['aggregate_metrics']['average_test_rmse']:.4f}")
+                    print(f"    train_xgboost_selected_features: Average Test R²: {training_results['aggregate_metrics']['average_test_r2']:.4f}")
+                
+                print(f"    train_xgboost_selected_features: Results saved to: {output_dir}")
+                
+                return {
+                    "success": True,
+                    "models_trained": successful_trainings,
+                    "problem_type": problem_type,
+                    "target_feature": target_feature,
+                    "selected_weather_features": SELECTED_WEATHER_FEATURES,
+                    "average_cv_score": float(np.mean(all_cv_scores)),
+                    "output_directory": output_dir,
+                    "results_file": results_file,
+                    **training_results["aggregate_metrics"]
+                }
+            else:
+                error_msg = "No XGBoost models with selected features were successfully trained"
+                print(f"    train_xgboost_selected_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+                
+        except Exception as e:
+            error_msg = f"train_xgboost_selected_features failed: {str(e)}"
+            print(f"    train_xgboost_selected_features: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
+            }
