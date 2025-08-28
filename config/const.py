@@ -52,7 +52,7 @@ PREPROCESSING_STATE_MACHINE = {
 
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
-    "drop_nan_columns": True,
+    "drop_nan_columns": False,
     "split_dataset": True,
     "scale_weather_features": True,
     "correlation_analysis": True,
