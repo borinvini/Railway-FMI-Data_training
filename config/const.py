@@ -60,7 +60,7 @@ TRAINING_STATE_MACHINE = {
     "scale_weather_features": True,
     "correlation_analysis": False,
     "non_weather_correlation_analysis": False,
-    "correlation_analysis_by_station": True,
+    "correlation_analysis_by_station": False,
     "train_decision_tree": False,
     "threshold_optimization_decision_tree": False,
     "generate_borderline_smote_data": False,
