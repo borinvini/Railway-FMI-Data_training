@@ -5277,14 +5277,11 @@ class TrainingPipeline:
 
     def correlation_analysis_by_station(self, csv_files=None):
         """
-        Analyze Point-Biserial correlations between trainDelayed (binary target) and all features.
+        Calculate feature-to-feature correlations using ONLY delayed trains (trainDelayed = True).
         
-        This method finds all merged scaled training data files and calculates correlations between:
-        - Target: trainDelayed (True/False) - binary variable
-        - Features: Weather features, temporal features, boolean features - continuous/binary variables
-        
-        Uses the full dataset (both delayed and non-delayed trains) to understand what features
-        are most associated with train delays using Point-Biserial correlation.
+        This method finds all merged scaled training data files and calculates correlations between
+        features using only the subset of data where trains were delayed. This helps understand
+        what feature patterns are present specifically in delayed train scenarios.
         
         Parameters:
         -----------
@@ -5294,13 +5291,13 @@ class TrainingPipeline:
         Returns:
         --------
         dict
-            Results of the trainDelayed correlation analysis including success status and analysis info
+            Results of the delayed trains correlation analysis including success status and analysis info
         """
         try:
-            print(f"    correlation_analysis_by_station: Starting Point-Biserial correlation analysis using trainDelayed as target...")
+            print(f"    correlation_analysis_by_station: Starting feature correlation analysis using ONLY delayed trains...")
             
             # Create output directory for correlation analysis results
-            correlation_output_dir = os.path.join(self.project_root, "data/output/correlation_analysis_by_station")
+            correlation_output_dir = os.path.join(self.project_root, "data/output/correlation_analysis_delayed_trains")
             os.makedirs(correlation_output_dir, exist_ok=True)
             
             # Find all merged scaled training data files
@@ -5314,7 +5311,7 @@ class TrainingPipeline:
                 print(f"    correlation_analysis_by_station: Using user-specified path pattern")
             
             if not merged_data_files:
-                error_msg = "No merged data files found for trainDelayed correlation analysis"
+                error_msg = "No merged data files found for delayed trains correlation analysis"
                 print(f"    correlation_analysis_by_station: {error_msg}")
                 return {
                     "success": False,
@@ -5345,208 +5342,159 @@ class TrainingPipeline:
                     
                     # Check if trainDelayed column exists
                     if 'trainDelayed' not in df.columns:
-                        print(f"    correlation_analysis_by_station: Warning - 'trainDelayed' column not found in {filename}. Skipping.")
+                        print(f"    correlation_analysis_by_station: Warning - trainDelayed column not found in {filename}. Skipping.")
                         continue
                     
-                    # Verify trainDelayed is binary
-                    unique_values = df['trainDelayed'].dropna().unique()
-                    if len(unique_values) != 2 or not set(unique_values).issubset({True, False, 0, 1}):
-                        print(f"    correlation_analysis_by_station: Warning - trainDelayed is not binary in {filename}. Values: {unique_values}")
-                        continue
+                    # Filter to only delayed trains (trainDelayed = True)
+                    delayed_df = df[df['trainDelayed'] == True].copy()
                     
-                    # Convert trainDelayed to numeric (0/1) for correlation calculation
-                    df['trainDelayed_numeric'] = df['trainDelayed'].astype(int)
+                    if delayed_df.empty:
+                        print(f"    correlation_analysis_by_station: Warning - No delayed trains found in {filename}. Skipping.")
+                        continue
                     
                     total_rows = len(df)
-                    delayed_count = df['trainDelayed_numeric'].sum()
+                    delayed_count = len(delayed_df)
                     delayed_percentage = (delayed_count / total_rows) * 100 if total_rows > 0 else 0
                     
-                    print(f"    correlation_analysis_by_station: Dataset: {total_rows:,} trains, {delayed_count:,} delayed ({delayed_percentage:.1f}%)")
+                    print(f"    correlation_analysis_by_station: Original dataset: {total_rows:,} trains")
+                    print(f"    correlation_analysis_by_station: Delayed trains subset: {delayed_count:,} trains ({delayed_percentage:.1f}%)")
                     
                     # Identify available features for correlation analysis
                     available_features = []
                     
                     # Weather features
-                    weather_features = [col for col in ALL_WEATHER_FEATURES if col in df.columns]
+                    weather_features = [col for col in ALL_WEATHER_FEATURES if col in delayed_df.columns]
                     available_features.extend(weather_features)
                     
-                    # Temporal sin-cos features (defined directly since TEMPORAL_SINCOS_FEATURES doesn't exist)
+                    # Temporal sin-cos features
                     temporal_sincos_features = ['month_sin', 'month_cos', 'hour_sin', 'hour_cos', 'day_week_sin', 'day_week_cos']
-                    temporal_features = [col for col in temporal_sincos_features if col in df.columns]
+                    temporal_features = [col for col in temporal_sincos_features if col in delayed_df.columns]
                     available_features.extend(temporal_features)
                     
                     # Boolean features
-                    boolean_features = [col for col in BOOLEAN_FEATURES if col in df.columns]
+                    boolean_features = [col for col in BOOLEAN_FEATURES if col in delayed_df.columns]
                     available_features.extend(boolean_features)
                     
-                    # Remove trainDelayed and its numeric version from features
-                    available_features = [f for f in available_features if f not in ['trainDelayed', 'trainDelayed_numeric']]
+                    # Remove trainDelayed column from features since we're only looking at delayed trains
+                    available_features = [f for f in available_features if f != 'trainDelayed']
                     
-                    print(f"    correlation_analysis_by_station: Analyzing {len(available_features)} features against trainDelayed")
-                    print(f"    correlation_analysis_by_station: Features: {available_features}")
+                    print(f"    correlation_analysis_by_station: Analyzing {len(available_features)} features in delayed trains")
                     
-                    if not available_features:
-                        print(f"    correlation_analysis_by_station: Warning - No suitable features found for correlation analysis in {filename}")
+                    if len(available_features) < 2:
+                        print(f"    correlation_analysis_by_station: Warning - Need at least 2 features for correlation analysis in {filename}. Found {len(available_features)}. Skipping.")
                         continue
                     
-                    # Calculate Point-Biserial correlations between trainDelayed and each feature
-                    correlations = {}
-                    correlation_types = {}
+                    # Calculate correlation matrix for available features using delayed trains only
+                    feature_data = delayed_df[available_features].copy()
                     
-                    target_data = df['trainDelayed_numeric'].dropna()
+                    # Handle any remaining non-numeric data
+                    for col in feature_data.columns:
+                        if feature_data[col].dtype == 'object':
+                            try:
+                                feature_data[col] = pd.to_numeric(feature_data[col], errors='coerce')
+                            except:
+                                print(f"    correlation_analysis_by_station: Warning - Could not convert {col} to numeric. Dropping.")
+                                feature_data = feature_data.drop(columns=[col])
                     
-                    for feature in available_features:
-                        try:
-                            # Get clean feature data
-                            feature_data = df[feature].dropna()
-                            
-                            # Find common indices (both feature and target non-null)
-                            common_indices = feature_data.index.intersection(target_data.index)
-                            
-                            if len(common_indices) < 10:  # Need minimum sample size
-                                print(f"    correlation_analysis_by_station: Skipping {feature} - insufficient data ({len(common_indices)} samples)")
-                                continue
-                            
-                            # Get aligned data
-                            feature_clean = feature_data.loc[common_indices]
-                            target_clean = target_data.loc[common_indices]
-                            
-                            # Determine correlation type based on feature characteristics
-                            if df[feature].dtype in ['float64', 'int64'] and feature_clean.nunique() > 2:
-                                # Continuous feature -> Point-Biserial correlation
-                                from scipy.stats import pointbiserialr
-                                corr_coef, p_value = pointbiserialr(target_clean, feature_clean)
-                                correlation_types[feature] = "Point-Biserial"
-                                
-                            elif feature_clean.nunique() == 2:
-                                # Binary feature -> Phi coefficient (special case of Pearson for 2x2)
-                                # Convert feature to 0/1 if needed
-                                if not set(feature_clean.unique()).issubset({0, 1}):
-                                    feature_binary = (feature_clean == feature_clean.max()).astype(int)
-                                else:
-                                    feature_binary = feature_clean.astype(int)
-                                
-                                # Calculate Phi coefficient using Pearson formula
-                                corr_coef = np.corrcoef(target_clean, feature_binary)[0, 1]
-                                correlation_types[feature] = "Phi coefficient"
-                                p_value = None  # Could calculate if needed
-                                
-                            else:
-                                print(f"    correlation_analysis_by_station: Skipping {feature} - not suitable for correlation (unique values: {feature_clean.nunique()})")
-                                continue
-                            
-                            # Store valid correlations
-                            if not np.isnan(corr_coef) and abs(corr_coef) <= 1.0:
-                                correlations[feature] = corr_coef
-                                if p_value is not None:
-                                    print(f"    correlation_analysis_by_station: {feature}: r={corr_coef:+.4f} ({correlation_types[feature]}, p={p_value:.3f})")
-                                else:
-                                    print(f"    correlation_analysis_by_station: {feature}: r={corr_coef:+.4f} ({correlation_types[feature]})")
-                            else:
-                                print(f"    correlation_analysis_by_station: Invalid correlation for {feature}: {corr_coef}")
-                                
-                        except Exception as e:
-                            print(f"    correlation_analysis_by_station: Error calculating correlation for {feature}: {e}")
-                            continue
+                    # Remove columns with all NaN values
+                    feature_data = feature_data.dropna(axis=1, how='all')
                     
-                    print(f"    correlation_analysis_by_station: Successfully calculated {len(correlations)} correlations")
+                    # Remove columns with zero variance (constants)
+                    numeric_cols = feature_data.select_dtypes(include=[np.number]).columns
+                    for col in numeric_cols:
+                        if feature_data[col].nunique() <= 1:
+                            print(f"    correlation_analysis_by_station: Removing {col} - no variance in delayed trains")
+                            feature_data = feature_data.drop(columns=[col])
                     
-                    # Create visualization for this file
-                    if correlations:
-                        self._create_trainDelayed_correlation_plot(
-                            correlations, 
-                            correlation_types,
-                            {
-                                'filename': filename,
-                                'total_rows': total_rows,
-                                'delayed_count': delayed_count,
-                                'delayed_percentage': delayed_percentage
-                            },
-                            correlation_output_dir
-                        )
+                    if feature_data.shape[1] < 2:
+                        print(f"    correlation_analysis_by_station: Warning - Less than 2 valid features after cleaning in {filename}. Skipping.")
+                        continue
+                    
+                    # Calculate Pearson correlation matrix
+                    correlation_matrix = feature_data.corr()
+                    
+                    print(f"    correlation_analysis_by_station: Successfully calculated {correlation_matrix.shape[0]}x{correlation_matrix.shape[1]} correlation matrix")
                     
                     # Store results for this file
-                    result = {
+                    file_result = {
                         'filename': filename,
-                        'total_rows': total_rows,
-                        'delayed_count': delayed_count,
+                        'total_original_rows': total_rows,
+                        'delayed_rows': delayed_count,
                         'delayed_percentage': delayed_percentage,
-                        'features_analyzed': len(available_features),
-                        'correlations': correlations,
-                        'correlation_types': correlation_types,
-                        'significant_correlations': len([r for r in correlations.values() if abs(r) > 0.1])
+                        'features_analyzed': list(correlation_matrix.columns),
+                        'correlation_matrix': correlation_matrix,
+                        'feature_count': len(correlation_matrix.columns)
                     }
                     
-                    correlation_results.append(result)
+                    correlation_results.append(file_result)
+                    
+                    # Create and save correlation plot for this file
+                    self._create_delayed_trains_correlation_plot(
+                        correlation_matrix,
+                        file_result,
+                        correlation_output_dir
+                    )
+                    
                     total_files_processed += 1
                     
-                    print(f"    correlation_analysis_by_station: Completed {filename} - {len(correlations)} correlations calculated")
-                    
                 except Exception as e:
-                    print(f"    correlation_analysis_by_station: Error processing {filename}: {e}")
+                    print(f"    correlation_analysis_by_station: Error processing {filename}: {str(e)}")
                     import traceback
                     traceback.print_exc()
                     continue
             
-            # Check if we processed any files successfully
-            if not correlation_results:
-                error_msg = "No files were successfully processed for trainDelayed correlation analysis"
-                print(f"    correlation_analysis_by_station: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            # Create combined analysis across all files
+            # Create combined analysis if multiple files were processed
             if len(correlation_results) > 1:
-                self._create_combined_trainDelayed_analysis(correlation_results, correlation_output_dir)
+                self._create_combined_delayed_trains_analysis(correlation_results, correlation_output_dir)
             
-            # Save detailed summary
-            summary_filename = "trainDelayed_correlation_summary.txt"
-            summary_path = os.path.join(correlation_output_dir, summary_filename)
-            
-            with open(summary_path, 'w') as f:
-                f.write("trainDelayed Point-Biserial Correlation Analysis Summary\n")
-                f.write("=" * 60 + "\n\n")
+            # Generate summary report
+            summary_path = os.path.join(correlation_output_dir, "delayed_trains_correlation_summary.txt")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write("DELAYED TRAINS CORRELATION ANALYSIS SUMMARY\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Files Processed: {total_files_processed}\n")
+                f.write(f"Analysis Type: Feature-to-Feature Correlations (Delayed Trains Only)\n\n")
                 
-                f.write(f"Analysis timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Target variable: trainDelayed (Binary: True/False)\n")
-                f.write(f"Correlation method: Point-Biserial for continuous features, Phi coefficient for binary features\n")
-                f.write(f"Files processed: {total_files_processed}\n\n")
+                total_delayed_trains = sum(r['delayed_rows'] for r in correlation_results)
+                total_original_trains = sum(r['total_original_rows'] for r in correlation_results)
+                overall_delay_rate = (total_delayed_trains / total_original_trains * 100) if total_original_trains > 0 else 0
                 
-                # Overall statistics
-                total_trains = sum(result['total_rows'] for result in correlation_results)
-                total_delayed = sum(result['delayed_count'] for result in correlation_results)
-                overall_delay_rate = (total_delayed / total_trains * 100) if total_trains > 0 else 0
+                f.write(f"OVERALL STATISTICS:\n")
+                f.write(f"  Total original trains: {total_original_trains:,}\n")
+                f.write(f"  Total delayed trains analyzed: {total_delayed_trains:,}\n")
+                f.write(f"  Overall delay rate: {overall_delay_rate:.1f}%\n\n")
                 
-                f.write(f"Overall Dataset Statistics:\n")
-                f.write(f"  Total trains: {total_trains:,}\n")
-                f.write(f"  Delayed trains: {total_delayed:,}\n")
-                f.write(f"  Overall delay rate: {overall_delay_rate:.2f}%\n\n")
-                
-                # File-by-file breakdown
-                f.write("File-by-File Analysis:\n")
-                f.write("-" * 25 + "\n")
-                for result in correlation_results:
-                    f.write(f"\nFile: {result['filename']}\n")
-                    f.write(f"  Total trains: {result['total_rows']:,}\n")
-                    f.write(f"  Delayed trains: {result['delayed_count']:,} ({result['delayed_percentage']:.1f}%)\n")
-                    f.write(f"  Features analyzed: {result['features_analyzed']}\n")
-                    f.write(f"  Correlations calculated: {len(result['correlations'])}\n")
-                    f.write(f"  Significant correlations (|r| > 0.1): {result['significant_correlations']}\n")
+                for i, result in enumerate(correlation_results, 1):
+                    f.write(f"FILE {i}: {result['filename']}\n")
+                    f.write(f"  Original trains: {result['total_original_rows']:,}\n")
+                    f.write(f"  Delayed trains: {result['delayed_rows']:,} ({result['delayed_percentage']:.1f}%)\n")
+                    f.write(f"  Features analyzed: {result['feature_count']}\n")
                     
-                    # Top correlations for this file
-                    if result['correlations']:
-                        sorted_correlations = sorted(
-                            result['correlations'].items(),
-                            key=lambda x: abs(x[1]),
-                            reverse=True
-                        )
-                        f.write(f"  Top correlations with trainDelayed:\n")
-                        for feature, corr in sorted_correlations[:10]:
-                            corr_type = result['correlation_types'].get(feature, 'Unknown')
-                            f.write(f"    {feature}: {corr:+.4f} ({corr_type})\n")
+                    # Show strongest correlations in this file
+                    corr_matrix = result['correlation_matrix']
+                    
+                    # Get upper triangle of correlation matrix (avoid duplicates)
+                    mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+                    upper_triangle = corr_matrix.where(mask)
+                    
+                    # Find strongest correlations
+                    correlations_list = []
+                    for i in range(len(upper_triangle.index)):
+                        for j in range(len(upper_triangle.columns)):
+                            if not pd.isna(upper_triangle.iloc[i, j]):
+                                correlations_list.append((
+                                    upper_triangle.index[i], 
+                                    upper_triangle.columns[j], 
+                                    upper_triangle.iloc[i, j]
+                                ))
+                    
+                    # Sort by absolute correlation strength
+                    correlations_list.sort(key=lambda x: abs(x[2]), reverse=True)
+                    
+                    f.write(f"  Top correlations in delayed trains:\n")
+                    for feat1, feat2, corr in correlations_list[:5]:
+                        f.write(f"    {feat1} <-> {feat2}: {corr:+.4f}\n")
                     f.write("\n")
             
             print(f"    correlation_analysis_by_station: Analysis completed for {total_files_processed} files")
@@ -5559,10 +5507,10 @@ class TrainingPipeline:
                 "output_path": correlation_output_dir,
                 "summary_path": summary_path,
                 "correlation_results": correlation_results,
-                "total_trains_analyzed": sum(r['total_rows'] for r in correlation_results),
-                "total_delayed_trains": sum(r['delayed_count'] for r in correlation_results),
-                "analysis_type": "trainDelayed Point-Biserial Correlation Analysis",
-                "message": f"Successfully analyzed Point-Biserial correlations between trainDelayed and features for {total_files_processed} files"
+                "total_trains_analyzed": sum(r['total_original_rows'] for r in correlation_results),
+                "total_delayed_trains": sum(r['delayed_rows'] for r in correlation_results),
+                "analysis_type": "Feature-to-Feature Correlations (Delayed Trains Only)",
+                "message": f"Successfully analyzed feature correlations in delayed trains for {total_files_processed} files"
             }
             
             print(f"    correlation_analysis_by_station: Completed successfully - {total_files_processed} files analyzed")
@@ -5570,7 +5518,7 @@ class TrainingPipeline:
             return result
             
         except Exception as e:
-            error_msg = f"trainDelayed correlation_analysis_by_station failed: {str(e)}"
+            error_msg = f"delayed trains correlation_analysis_by_station failed: {str(e)}"
             print(f"    correlation_analysis_by_station: {error_msg}")
             import traceback
             traceback.print_exc()
@@ -5580,93 +5528,82 @@ class TrainingPipeline:
                 "processed_files": 0
             }
 
-    def _create_trainDelayed_correlation_plot(self, correlations, correlation_types, stats, output_dir):
+    def _create_delayed_trains_correlation_plot(self, correlation_matrix, file_result, output_dir):
         """
-        Create correlation visualization for trainDelayed analysis.
+        Create correlation heatmap visualization for delayed trains analysis.
         
         Parameters:
         -----------
-        correlations : dict
-            Dictionary of feature correlations with trainDelayed
-        correlation_types : dict
-            Dictionary of correlation types used
-        stats : dict
-            Statistics about the dataset
+        correlation_matrix : pandas.DataFrame
+            Correlation matrix of features in delayed trains
+        file_result : dict
+            Results dictionary for this specific file
         output_dir : str
             Directory to save the plot
         """
         try:
             import matplotlib.pyplot as plt
+            import seaborn as sns
             
-            if not correlations:
-                return
+            filename = file_result['filename']
+            delayed_count = file_result['delayed_rows']
+            delayed_percentage = file_result['delayed_percentage']
             
-            # Sort correlations by absolute value
-            sorted_items = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)
+            print(f"    correlation_analysis_by_station: Creating correlation heatmap for {filename}...")
             
-            features = [item[0] for item in sorted_items]
-            corr_values = [item[1] for item in sorted_items]
+            # Create figure with appropriate size based on number of features
+            n_features = len(correlation_matrix.columns)
+            fig_size = max(8, min(20, n_features * 0.8))
             
-            # Create the plot
-            fig, ax = plt.subplots(figsize=(14, max(8, len(features) * 0.5)))
+            plt.figure(figsize=(fig_size, fig_size))
             
-            # Color code bars based on correlation strength and direction
-            colors = ['red' if x < 0 else 'blue' for x in corr_values]
-            alphas = [min(1.0, abs(x) * 2 + 0.3) for x in corr_values]  # Variable transparency based on strength
+            # Create heatmap
+            mask = np.zeros_like(correlation_matrix, dtype=bool)
+            mask[np.triu_indices_from(mask)] = True  # Mask upper triangle to avoid duplication
             
-            bars = ax.barh(range(len(features)), corr_values, color=colors, alpha=alphas)
+            heatmap = sns.heatmap(
+                correlation_matrix,
+                mask=mask,
+                annot=True if n_features <= 15 else False,  # Only annotate if not too crowded
+                cmap='RdBu_r',
+                center=0,
+                square=True,
+                fmt='.3f',
+                cbar_kws={'label': 'Correlation Coefficient'},
+                linewidths=0.5
+            )
             
             # Customize plot
-            ax.set_yticks(range(len(features)))
-            ax.set_yticklabels(features, fontsize=10)
-            ax.set_xlabel('Point-Biserial Correlation Coefficient', fontsize=12)
-            ax.set_title(f'Features vs trainDelayed Correlation Analysis\n{stats["filename"]}\n'
-                        f'Dataset: {stats["total_rows"]:,} trains, {stats["delayed_count"]:,} delayed ({stats["delayed_percentage"]:.1f}%)',
-                        fontsize=14, pad=20)
+            plt.title(f'Feature Correlations in Delayed Trains\n'
+                    f'File: {filename}\n'
+                    f'Delayed Trains: {delayed_count:,} ({delayed_percentage:.1f}%)',
+                    fontsize=14, pad=20)
             
-            # Add grid
-            ax.grid(True, axis='x', alpha=0.3)
+            plt.xlabel('Features', fontsize=12)
+            plt.ylabel('Features', fontsize=12)
             
-            # Add vertical line at x=0
-            ax.axvline(x=0, color='black', linewidth=0.8)
-            
-            # Add correlation values as text on bars
-            for i, (bar, value) in enumerate(zip(bars, corr_values)):
-                ax.text(value + (0.02 if value >= 0 else -0.02), i, f'{value:.3f}', 
-                    va='center', ha='left' if value >= 0 else 'right', fontsize=9,
-                    weight='bold' if abs(value) > 0.2 else 'normal')
-            
-            # Add interpretation guide
-            ax.text(0.02, 0.98, 
-                    'Interpretation:\n' +
-                    '• Positive: Higher feature values → More delays\n' + 
-                    '• Negative: Higher feature values → Fewer delays\n' +
-                    '• |r| > 0.3: Strong correlation\n' +
-                    '• |r| > 0.1: Moderate correlation',
-                    transform=ax.transAxes, fontsize=9, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
-            
-            # Add legend
-            red_patch = plt.Rectangle((0,0),1,1, facecolor='red', alpha=0.7, label='Negative Correlation')
-            blue_patch = plt.Rectangle((0,0),1,1, facecolor='blue', alpha=0.7, label='Positive Correlation') 
-            ax.legend(handles=[red_patch, blue_patch], loc='lower right')
+            # Rotate labels for better readability
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
             
             plt.tight_layout()
             
             # Save plot
-            plot_filename = f"trainDelayed_correlation_{stats['filename'].replace('.csv', '.png')}"
+            plot_filename = f"delayed_trains_correlation_{filename.replace('.csv', '')}.png"
             plot_path = os.path.join(output_dir, plot_filename)
             plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             plt.close()
             
-            print(f"    correlation_analysis_by_station: Saved correlation plot to {plot_filename}")
+            print(f"    correlation_analysis_by_station: Saved correlation heatmap to {plot_filename}")
             
         except Exception as e:
             print(f"    correlation_analysis_by_station: Error creating correlation plot: {e}")
+            import traceback
+            traceback.print_exc()
 
-    def _create_combined_trainDelayed_analysis(self, correlation_results, output_dir):
+    def _create_combined_delayed_trains_analysis(self, correlation_results, output_dir):
         """
-        Create combined analysis across all processed files for trainDelayed correlations.
+        Create combined analysis visualization across all files for delayed trains.
         
         Parameters:
         -----------
@@ -5677,126 +5614,103 @@ class TrainingPipeline:
         """
         try:
             import matplotlib.pyplot as plt
+            import seaborn as sns
             
-            print("    correlation_analysis_by_station: Creating combined trainDelayed analysis...")
+            print("    correlation_analysis_by_station: Creating combined delayed trains analysis...")
             
-            # Collect all unique features
-            all_features = set()
+            # Find common features across all files
+            common_features = None
             for result in correlation_results:
-                all_features.update(result['correlations'].keys())
-            all_features = sorted(list(all_features))
+                features = set(result['features_analyzed'])
+                if common_features is None:
+                    common_features = features
+                else:
+                    common_features = common_features.intersection(features)
             
-            # Calculate average correlations across files
-            avg_correlations = {}
+            if not common_features or len(common_features) < 2:
+                print("    correlation_analysis_by_station: Not enough common features for combined analysis")
+                return
             
-            for feature in all_features:
-                feature_values = []
-                for result in correlation_results:
-                    if feature in result['correlations']:
-                        corr_value = result['correlations'][feature]
-                        if not pd.isna(corr_value):
-                            feature_values.append(corr_value)
-                
-                if feature_values:
-                    avg_correlations[feature] = {
-                        'mean': np.mean(feature_values),
-                        'std': np.std(feature_values),
-                        'min': np.min(feature_values),
-                        'max': np.max(feature_values),
-                        'count': len(feature_values)
-                    }
+            common_features = sorted(list(common_features))
+            print(f"    correlation_analysis_by_station: Found {len(common_features)} common features across all files")
             
-            # Sort by absolute mean correlation
-            sorted_features = sorted(avg_correlations.keys(), 
-                                key=lambda x: abs(avg_correlations[x]['mean']), 
-                                reverse=True)
+            # Calculate average correlation matrix
+            n_features = len(common_features)
+            avg_correlation_matrix = np.zeros((n_features, n_features))
+            correlation_counts = np.zeros((n_features, n_features))
             
-            # Create comprehensive combined plot
-            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 16))
-            
-            # Plot 1: Average correlations with error bars
-            if sorted_features:
-                top_features = sorted_features[:20]  # Top 20 features
-                means = [avg_correlations[f]['mean'] for f in top_features]
-                stds = [avg_correlations[f]['std'] for f in top_features]
-                
-                colors = ['red' if x < 0 else 'blue' for x in means]
-                
-                ax1.barh(range(len(top_features)), means, xerr=stds, 
-                        color=colors, alpha=0.7, capsize=3)
-                ax1.set_yticks(range(len(top_features)))
-                ax1.set_yticklabels(top_features, fontsize=9)
-                ax1.set_xlabel('Average Correlation with trainDelayed')
-                ax1.set_title('Top 20 Features: Average Correlations Across All Files')
-                ax1.grid(True, axis='x', alpha=0.3)
-                ax1.axvline(x=0, color='black', linewidth=0.8)
-            
-            # Plot 2: Delay rates by file
-            filenames = [result['filename'].replace('.csv', '') for result in correlation_results]
-            delay_rates = [result['delayed_percentage'] for result in correlation_results]
-            
-            ax2.bar(range(len(filenames)), delay_rates, alpha=0.7, color='orange')
-            ax2.set_xticks(range(len(filenames)))
-            ax2.set_xticklabels(filenames, rotation=45, ha='right', fontsize=9)
-            ax2.set_ylabel('Delay Rate (%)')
-            ax2.set_title('Train Delay Rates by File')
-            ax2.grid(True, axis='y', alpha=0.3)
-            
-            # Plot 3: Correlation strength distribution
-            all_corr_values = []
             for result in correlation_results:
-                all_corr_values.extend(result['correlations'].values())
+                corr_matrix = result['correlation_matrix']
+                for i, feat1 in enumerate(common_features):
+                    for j, feat2 in enumerate(common_features):
+                        if feat1 in corr_matrix.index and feat2 in corr_matrix.columns:
+                            corr_value = corr_matrix.loc[feat1, feat2]
+                            if not pd.isna(corr_value):
+                                avg_correlation_matrix[i, j] += corr_value
+                                correlation_counts[i, j] += 1
             
-            ax3.hist(all_corr_values, bins=30, alpha=0.7, color='green', edgecolor='black')
-            ax3.set_xlabel('Correlation Coefficient')
-            ax3.set_ylabel('Frequency')
-            ax3.set_title('Distribution of All Correlation Values')
-            ax3.axvline(x=0, color='red', linestyle='--', alpha=0.7)
-            ax3.grid(True, alpha=0.3)
+            # Calculate averages
+            with np.errstate(divide='ignore', invalid='ignore'):
+                avg_correlation_matrix = np.where(correlation_counts > 0, 
+                                                avg_correlation_matrix / correlation_counts, 
+                                                np.nan)
             
-            # Plot 4: Summary statistics
-            ax4.axis('off')
+            # Convert to DataFrame
+            avg_corr_df = pd.DataFrame(avg_correlation_matrix, 
+                                    index=common_features, 
+                                    columns=common_features)
             
-            # Calculate summary statistics
-            total_trains = sum(result['total_rows'] for result in correlation_results)
-            total_delayed = sum(result['delayed_count'] for result in correlation_results)
-            avg_delay_rate = np.mean([result['delayed_percentage'] for result in correlation_results])
+            # Create visualization
+            fig_size = max(10, min(20, n_features * 0.8))
+            plt.figure(figsize=(fig_size, fig_size))
             
-            strong_corr_count = len([v for v in all_corr_values if abs(v) > 0.3])
-            moderate_corr_count = len([v for v in all_corr_values if 0.1 < abs(v) <= 0.3])
+            # Create heatmap
+            mask = np.zeros_like(avg_corr_df, dtype=bool)
+            mask[np.triu_indices_from(mask)] = True
             
-            summary_text = f"""
-            TRAINDELAYED CORRELATION ANALYSIS SUMMARY
+            heatmap = sns.heatmap(
+                avg_corr_df,
+                mask=mask,
+                annot=True if n_features <= 15 else False,
+                cmap='RdBu_r',
+                center=0,
+                square=True,
+                fmt='.3f',
+                cbar_kws={'label': 'Average Correlation Coefficient'},
+                linewidths=0.5
+            )
             
-            Files Processed: {len(correlation_results)}
-            Total Trains: {total_trains:,}
-            Total Delayed: {total_delayed:,}
-            Average Delay Rate: {avg_delay_rate:.2f}%
+            # Customize plot
+            total_delayed = sum(r['delayed_rows'] for r in correlation_results)
+            total_files = len(correlation_results)
             
-            Correlation Analysis:
-            • Total correlations calculated: {len(all_corr_values)}
-            • Strong correlations (|r| > 0.3): {strong_corr_count}
-            • Moderate correlations (0.1 < |r| ≤ 0.3): {moderate_corr_count}
+            plt.title(f'Average Feature Correlations in Delayed Trains\n'
+                    f'Combined Analysis Across {total_files} Files\n'
+                    f'Total Delayed Trains: {total_delayed:,}',
+                    fontsize=16, pad=20)
             
-            Top 5 Strongest Correlations (Average):
-            """
+            plt.xlabel('Features', fontsize=12)
+            plt.ylabel('Features', fontsize=12)
             
-            for i, feature in enumerate(sorted_features[:5]):
-                if feature in avg_correlations:
-                    mean_corr = avg_correlations[feature]['mean']
-                    summary_text += f"\n  {i+1}. {feature}: {mean_corr:+.4f}"
-            
-            ax4.text(0.1, 0.9, summary_text, transform=ax4.transAxes, fontsize=11,
-                    verticalalignment='top', fontfamily='monospace')
+            # Rotate labels for better readability
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
             
             plt.tight_layout()
             
-            # Save combined plot
-            combined_plot_path = os.path.join(output_dir, "combined_trainDelayed_correlation_analysis.png")
-            plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+            # Save plot
+            plot_path = os.path.join(output_dir, "combined_delayed_trains_correlation_analysis.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
             plt.close()
             
-            print(f"    correlation_analysis_by_station: Saved combined analysis plot")
+            print(f"    correlation_analysis_by_station: Saved combined analysis to combined_delayed_trains_correlation_analysis.png")
+            
+            # Save average correlation matrix as CSV
+            csv_path = os.path.join(output_dir, "average_correlation_matrix_delayed_trains.csv")
+            avg_corr_df.to_csv(csv_path)
+            print(f"    correlation_analysis_by_station: Saved average correlation matrix to average_correlation_matrix_delayed_trains.csv")
             
         except Exception as e:
             print(f"    correlation_analysis_by_station: Error creating combined analysis: {e}")
+            import traceback
+            traceback.print_exc()
