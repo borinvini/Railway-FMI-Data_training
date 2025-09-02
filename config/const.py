@@ -66,7 +66,7 @@ TRAINING_STATE_MACHINE = {
     "generate_borderline_smote_data": False,
     "train_decision_tree_with_borderline_smote_data": False,
     "threshold_optimization_decision_tree_borderline_smote": False,
-    "train_xgboost_with_randomized_search_cv": False,
+    "train_xgboost_with_randomized_search_cv": True,
     "threshold_optimization_xgboost": False,
     "train_xgboost_selected_features": False
 }
@@ -94,7 +94,7 @@ BORDERLINE_SMOTE_CONFIG = {
 WEATHER_MISSING_THRESHOLD = 30.0
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'trainDelayed'  
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes_eachStation_offset'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
