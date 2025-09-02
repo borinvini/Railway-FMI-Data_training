@@ -33,7 +33,7 @@ XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER = "data/output/xgboost_selected_features
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
-    "filter_by_target_station": True,
+    "filter_by_target_station": False,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
@@ -45,9 +45,9 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_hour_to_sincos": True,
     "convert_month_to_sincos": True,
     "convert_dayofweek_to_sincos": True,
-    "drop_original_temporal_columns": True,
+    "drop_original_temporal_columns": False,
     "select_target": True,
-    "filter_strong_weather_causes": False,
+    "filter_strong_weather_causes": True,
     "remove_duplicates": True,
     "save_training_ready_csv": True
 }
@@ -55,18 +55,18 @@ PREPROCESSING_STATE_MACHINE = {
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
     "drop_nan_columns": False,
-    "split_dataset": True,
-    "scale_weather_features": True,
-    "correlation_analysis": True,
-    "non_weather_correlation_analysis": True,
-    "train_decision_tree": True,
-    "threshold_optimization_decision_tree": True,
-    "generate_borderline_smote_data": True,
-    "train_decision_tree_with_borderline_smote_data": True,
-    "threshold_optimization_decision_tree_borderline_smote": True,
-    "train_xgboost_with_randomized_search_cv": True,
-    "threshold_optimization_xgboost": True,
-    "train_xgboost_selected_features": True
+    "split_dataset": False,
+    "scale_weather_features": False,
+    "correlation_analysis": False,
+    "non_weather_correlation_analysis": False,
+    "train_decision_tree": False,
+    "threshold_optimization_decision_tree": False,
+    "generate_borderline_smote_data": False,
+    "train_decision_tree_with_borderline_smote_data": False,
+    "threshold_optimization_decision_tree_borderline_smote": False,
+    "train_xgboost_with_randomized_search_cv": False,
+    "threshold_optimization_xgboost": False,
+    "train_xgboost_selected_features": False
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
@@ -175,7 +175,6 @@ delay = True
 # Short trains: 2-3 min
 TRAIN_DELAY_MINUTES = 5
 
-# Important weather conditions to check for missing value handling
 ALL_WEATHER_FEATURES = [
     'Air temperature', 
     'Wind speed', 
@@ -191,17 +190,19 @@ ALL_WEATHER_FEATURES = [
     'Cloud amount'
 ]
 
-# Important weather conditions to check for missing value handling
-IMPORTANT_WEATHER_CONDITIONS = [
+IMPORTANT_WEATHER_FEATURES = [
+    'Air temperature', 
+    'Wind speed', 
+    'Gust speed', 
     'Relative humidity', 
-    'Dew-point temperature', 
-    'Precipitation amount', 
-    'Precipitation intensity', 
-    'Snow depth', 
+    'Precipitation amount',
+    'Precipitation intensity',
+    'Snow depth',
+    'Pressure (msl)',
     'Horizontal visibility',
-    'Wind speed',
-    'Gust speed'
+    'Cloud amount'
 ]
+
 
 # List of weather features thathas 2 cols and need to merge in 1 col
 WEATHER_COLS_TO_MERGE = [

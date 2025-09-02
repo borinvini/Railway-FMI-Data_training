@@ -7,7 +7,7 @@ import re
 import numpy as np
 import pandas as pd
 
-from config.const import ALL_WEATHER_FEATURES, BOOLEAN_FEATURES, DATA_FILE_PREFIX_FOR_TRAINING, DEFAULT_TARGET_FEATURE, POSSIBLE_INDICATORS, PREPROCESSED_OUTPUT_FOLDER, PREPROCESSING_STATE_MACHINE, STRONG_INDICATORS, TARGET_STATION_CODE, TRAIN_DELAY_MINUTES, TRAIN_DELAYED_TARGET_COLUMN, TRAINING_READY_OUTPUT_FOLDER, VALID_TARGET_FEATURES, VALID_TRAIN_PREDICTION_FEATURES, WEATHER_COLS_TO_MERGE
+from config.const import ALL_WEATHER_FEATURES, BOOLEAN_FEATURES, CATEGORICAL_FEATURES, DATA_FILE_PREFIX_FOR_TRAINING, DEFAULT_TARGET_FEATURE, IMPORTANT_WEATHER_FEATURES, POSSIBLE_INDICATORS, PREPROCESSED_OUTPUT_FOLDER, PREPROCESSING_STATE_MACHINE, STRONG_INDICATORS, TARGET_STATION_CODE, TRAIN_DELAY_MINUTES, TRAIN_DELAYED_TARGET_COLUMN, TRAINING_READY_OUTPUT_FOLDER, VALID_TARGET_FEATURES, VALID_TRAIN_PREDICTION_FEATURES, WEATHER_COLS_TO_MERGE, WEATHER_MISSING_THRESHOLD
 from src.file_utils import generate_output_path
 
 
@@ -1850,10 +1850,10 @@ class PreprocessingPipeline:
             logger.info("=== Data Completeness Analysis ===")
             
             # Check completeness for important weather conditions
-            available_important_cols = [col for col in self.important_conditions if col in df.columns]
-            if available_important_cols:
+            important_weather_features = [col for col in IMPORTANT_WEATHER_FEATURES if col in df.columns]
+            if important_weather_features:
                 # Count rows where ALL important weather conditions are filled
-                important_weather_complete = df[available_important_cols].notna().all(axis=1).sum()
+                important_weather_complete = df[important_weather_features].notna().all(axis=1).sum()
                 important_weather_complete_pct = (important_weather_complete / len(df)) * 100
                 
                 print(f"Rows with ALL important weather conditions filled: {important_weather_complete} / {len(df)} ({important_weather_complete_pct:.2f}%)")
@@ -1870,10 +1870,10 @@ class PreprocessingPipeline:
             logger.info(f"Completely filled rows (no missing data): {completely_filled_rows} / {len(df)} ({completely_filled_pct:.2f}%)")
             
             # Additional statistics: show missing data per column for important weather conditions
-            if available_important_cols:
+            if important_weather_features:
                 print(f"\nMissing data breakdown for important weather conditions:")
                 logger.info("Missing data breakdown for important weather conditions:")
-                for col in available_important_cols:
+                for col in important_weather_features:
                     missing_count = df[col].isna().sum()
                     missing_pct = (missing_count / len(df)) * 100
                     print(f"  - {col}: {missing_count} missing ({missing_pct:.2f}%)")
@@ -1896,7 +1896,6 @@ class PreprocessingPipeline:
             original_col_count = len(df.columns)
             
             # Fill missing values in non numeric features
-            from config.const import CATEGORICAL_FEATURES, BOOLEAN_FEATURES
             for col in CATEGORICAL_FEATURES or BOOLEAN_FEATURES:
                 if col in df.columns:
                     nulls = df[col].isna().sum()
@@ -1911,7 +1910,6 @@ class PreprocessingPipeline:
                         logger.info(f"Filled {nulls} missing values in '{col}' with 0")
 
             # Check required columns
-            from config.const import VALID_TARGET_FEATURES
             required_cols = [col for col in VALID_TARGET_FEATURES if col in df.columns]
             
             if required_cols:
@@ -1935,11 +1933,8 @@ class PreprocessingPipeline:
             print(f"\n--- WEATHER COLUMN FILTERING ---")
             logger.info("=== Weather Column Filtering ===")
             
-            # Drop weather columns that exceed the missing value threshold
-            from config.const import WEATHER_MISSING_THRESHOLD
-            
             # Identify all weather-related columns (not just important ones)
-            all_weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in self.important_conditions)]
+            all_weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in IMPORTANT_WEATHER_FEATURES)]
             
             if all_weather_cols:
                 print(f"Checking missing value threshold for {len(all_weather_cols)} weather-related columns...")
@@ -1981,22 +1976,22 @@ class PreprocessingPipeline:
             logger.info("=== End Weather Column Filtering ===")
             
             # Update the available important columns list after dropping columns
-            available_important_cols = [col for col in self.important_conditions if col in df.columns]
+            important_weather_features = [col for col in ALL_WEATHER_FEATURES if col in df.columns]
             
-            if not available_important_cols:
+            if not important_weather_features:
                 print("Warning: None of the specified important weather conditions found in the dataframe after filtering")
                 logger.warning("None of the specified important weather conditions found in the dataframe after filtering")
                 return df
             
-            print(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
-            logger.info(f"Found {len(available_important_cols)} important weather condition columns after filtering: {available_important_cols}")
+            print(f"Found {len(important_weather_features)} important weather condition columns after filtering: {important_weather_features}")
+            logger.info(f"Found {len(important_weather_features)} important weather condition columns after filtering: {important_weather_features}")
             
             # Store count before dropping weather condition rows
             before_weather_drop = len(df)
             
             # Drop rows where ALL of the remaining important weather conditions are missing
             # (Keep rows with at least one of the specified conditions)
-            df = df.dropna(subset=available_important_cols, how='all')
+            df = df.dropna(subset=important_weather_features, how='all')
             
             # Count how many rows were dropped due to weather conditions
             dropped_weather = before_weather_drop - len(df)
@@ -2011,10 +2006,10 @@ class PreprocessingPipeline:
             # ===== ENHANCED MISSING VALUE HANDLING - WEATHER FEATURES WITH MONTH-SPECIFIC MEDIAN =====
             
             # Identify all weather-related columns (after filtering)
-            weather_cols = [col for col in df.columns if any(weather_condition in col for weather_condition in ALL_WEATHER_FEATURES)]
+            important_weather_features = [col for col in df.columns if any(weather_condition in col for weather_condition in ALL_WEATHER_FEATURES)]
         
             
-            if weather_cols:
+            if important_weather_features:
                 print(f"\n--- WEATHER FEATURES IMPUTATION WITH MONTH-SPECIFIC MEDIANS ---")
                 logger.info("=== Weather Features Imputation with Month-Specific Medians ===")
                 
@@ -2024,7 +2019,7 @@ class PreprocessingPipeline:
                     logger.warning("'month' column not found. Cannot perform month-specific imputation.")
                     
                     # Fallback to global median for weather features
-                    for col in weather_cols:
+                    for col in important_weather_features:
                         nulls = df[col].isna().sum()
                         if nulls > 0:
                             percentage = (nulls / len(df)) * 100
@@ -2033,13 +2028,13 @@ class PreprocessingPipeline:
                             print(f"- Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
                             logger.info(f"Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
                 else:
-                    print(f"Found {len(weather_cols)} weather-related columns for month-specific median imputation:")
-                    for col in weather_cols:
+                    print(f"Found {len(important_weather_features)} weather-related columns for month-specific median imputation:")
+                    for col in important_weather_features:
                         print(f"  - {col}")
-                    logger.info(f"Found {len(weather_cols)} weather-related columns: {weather_cols}")
+                    logger.info(f"Found {len(important_weather_features)} weather-related columns: {important_weather_features}")
                     
                     # Perform month-specific median imputation for each weather column
-                    for col in weather_cols:
+                    for col in important_weather_features:
                         nulls_before = df[col].isna().sum()
                         if nulls_before > 0:
                             percentage = (nulls_before / len(df)) * 100
@@ -2070,7 +2065,7 @@ class PreprocessingPipeline:
             # Handle any remaining non-weather columns with missing values using global median
             remaining_cols_with_na = [col for col in df.columns 
                                     if df[col].isna().sum() > 0 
-                                    and not any(weather_condition in col for weather_condition in self.important_conditions)]
+                                    and not any(weather_condition in col for weather_condition in IMPORTANT_WEATHER_FEATURES)]
 
             if remaining_cols_with_na:
                 print(f"\n--- NON-WEATHER FEATURES IMPUTATION WITH GLOBAL MEDIAN ---")

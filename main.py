@@ -66,7 +66,7 @@ def main():
         print(f"  3. Example: matched_data_2023_12.csv")
         print(f"  4. Then run: python main.py")
         return
-    
+     
     # STEP 6: Check if preprocessing pipeline execution is enabled
     if not EXECUTE_PREPROCESSING_DATA_PIPELINE:
         print("\n" + "="*60)
