@@ -87,6 +87,7 @@ from config.const import (
     TRAIN_DELAY_MINUTES,
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAINING_READY_OUTPUT_FOLDER,
+    USE_SIN_COS_APPROACH,
     VALID_TARGET_FEATURES,
     VALID_TRAIN_PREDICTION_FEATURES,
     WEATHER_COLS_TO_MERGE,
@@ -184,6 +185,37 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ merge_data_files (disabled)")
+
+        if state_machine.get("select_time_features", False):
+            try:
+                print(f"    → select_time_features")
+                time_selection_result = self.select_time_features(
+                    data=result["data"] if result["data"] is not None else None
+                )
+                
+                if time_selection_result and time_selection_result.get("success", False):
+                    result["data"] = time_selection_result.get("data")
+                    result["steps_executed"].append("select_time_features")
+                    result["time_feature_selection"] = time_selection_result.get("selection_summary")
+                    
+                    selection_summary = time_selection_result.get("selection_summary", {})
+                    approach = selection_summary.get("approach_description", "unknown")
+                    kept_count = selection_summary.get("columns_kept", 0)
+                    dropped_count = selection_summary.get("columns_dropped", 0)
+                    
+                    print(f"      ✓ Time feature selection completed ({approach}: kept {kept_count}, dropped {dropped_count} columns)")
+                else:
+                    error_msg = time_selection_result.get("error", "select_time_features failed")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"select_time_features failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ select_time_features (disabled)")
 
         if state_machine.get("drop_nan_columns", False):
             try:
@@ -1618,6 +1650,219 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg,
                 "processed_files": 0
+            }
+
+    def select_time_features(self, data=None, original_file_path=None):
+        """
+        Select time features based on configuration - keep original or sin/cos features.
+        
+        This method checks if the dataset has all required time feature columns and allows
+        the user to choose between:
+        - USE_SIN_COS_APPROACH = True: Keep only sin/cos versions (drop original categorical versions)  
+        - USE_SIN_COS_APPROACH = False: Keep only month, hour, day_of_week (drop sin/cos versions)
+        
+        The selection is controlled by the USE_SIN_COS_APPROACH constant in const.py.
+        
+        Parameters:
+        -----------
+        data : pandas.DataFrame, optional
+            The dataframe to process. If None, attempts to load from merged_training_ready files.
+        original_file_path : str, optional 
+            Path to the original file for preserving naming patterns.
+            
+        Returns:
+        --------
+        dict
+            Results of the time feature selection including success status and selection info
+        """
+        try:
+            approach = "sin/cos features" if USE_SIN_COS_APPROACH else "original features"
+            print(f"    select_time_features: Starting time feature selection...")
+            print(f"    select_time_features: Configuration: USE_SIN_COS_APPROACH = {USE_SIN_COS_APPROACH} ({approach})")
+            
+            # Load data if not provided
+            if data is None:
+                merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                # Filter out train/test files
+                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                
+                if not merged_data_files:
+                    error_msg = "No merged data files found for time feature selection"
+                    print(f"    select_time_features: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
+                
+                # Use the most recent merged file
+                input_file_path = max(merged_data_files, key=os.path.getmtime)
+                print(f"    select_time_features: Loading data from {os.path.basename(input_file_path)}")
+                
+                df = pd.read_csv(input_file_path)
+                original_file_path = input_file_path
+            else:
+                df = data.copy()
+                print(f"    select_time_features: Processing provided dataframe with {len(df)} rows")
+            
+            if df.empty:
+                error_msg = "Cannot process empty dataframe"
+                print(f"    select_time_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"    select_time_features: Dataset shape: {df.shape}")
+            
+            # Define required time feature columns directly in code
+            required_columns = [
+                'month', 'month_sin', 'month_cos',
+                'hour', 'hour_sin', 'hour_cos', 
+                'day_of_week', 'day_week_sin', 'day_week_cos'
+            ]
+            
+            original_time_features = ['month', 'hour', 'day_of_week']
+            sincos_time_features = ['month_sin', 'month_cos', 'hour_sin', 'hour_cos', 'day_week_sin', 'day_week_cos']
+            
+            # Check if all required time feature columns are present
+            missing_columns = []
+            existing_columns = []
+            
+            for col in required_columns:
+                if col in df.columns:
+                    existing_columns.append(col)
+                else:
+                    missing_columns.append(col)
+            
+            print(f"    select_time_features: Found {len(existing_columns)}/{len(required_columns)} required time feature columns")
+            print(f"    select_time_features: Existing columns: {existing_columns}")
+            
+            if missing_columns:
+                print(f"    select_time_features: Missing columns: {missing_columns}")
+                print(f"    select_time_features: WARNING - Some time feature columns are missing")
+            
+            # Determine which columns to keep/drop based on configuration
+            columns_to_drop = []
+            columns_to_keep = []
+            
+            if USE_SIN_COS_APPROACH:
+                # Keep sin/cos versions, drop original categorical features
+                for col in sincos_time_features:
+                    if col in df.columns:
+                        columns_to_keep.append(col)
+                for col in original_time_features:
+                    if col in df.columns:
+                        columns_to_drop.append(col)
+                print(f"    select_time_features: Keeping cyclical sin/cos features")
+                
+            else:
+                # Keep original categorical features, drop sin/cos versions
+                for col in original_time_features:
+                    if col in df.columns:
+                        columns_to_keep.append(col)
+                for col in sincos_time_features:
+                    if col in df.columns:
+                        columns_to_drop.append(col)
+                print(f"    select_time_features: Keeping original categorical time features")
+            
+            # Apply column selection
+            original_shape = df.shape
+            
+            if columns_to_drop:
+                print(f"    select_time_features: Dropping {len(columns_to_drop)} columns: {columns_to_drop}")
+                df_selected = df.drop(columns=columns_to_drop, errors='ignore')
+                actually_dropped = [col for col in columns_to_drop if col in df.columns]
+                print(f"    select_time_features: Successfully dropped: {actually_dropped}")
+            else:
+                df_selected = df.copy()
+                print(f"    select_time_features: No columns to drop")
+            
+            final_shape = df_selected.shape
+            
+            print(f"    select_time_features: Shape change: {original_shape} → {final_shape}")
+            print(f"    select_time_features: Kept time feature columns: {columns_to_keep}")
+            
+            # Always save back to the merged_training_ready directory
+            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+            os.makedirs(merged_training_ready_dir, exist_ok=True)
+            
+            # Determine the output file path
+            if original_file_path and os.path.exists(original_file_path):
+                # Use the original file path if it was provided and exists
+                output_path = original_file_path
+                print(f"    select_time_features: Updating original file: {os.path.basename(output_path)}")
+            else:
+                # Find the most recent merged_data_*.csv file in merged_training_ready directory
+                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                # Filter out train/test files to get only the main merged files
+                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                
+                if merged_data_files:
+                    # Use the most recent merged file
+                    output_path = max(merged_data_files, key=os.path.getmtime)
+                    print(f"    select_time_features: Updating most recent merged file: {os.path.basename(output_path)}")
+                else:
+                    # Fallback: create a new merged_data.csv file
+                    output_path = os.path.join(merged_training_ready_dir, "merged_data.csv")
+                    print(f"    select_time_features: Creating new file: {os.path.basename(output_path)}")
+            
+            # Ensure we're saving to the correct merged_training_ready directory
+            if not output_path.startswith(merged_training_ready_dir):
+                print(f"    select_time_features: Warning - Output path is not in merged_training_ready directory")
+                print(f"    select_time_features: Expected directory: {merged_training_ready_dir}")
+                print(f"    select_time_features: Actual path: {output_path}")
+            
+            # Save the processed dataset back to the merged_training_ready directory
+            try:
+                df_selected.to_csv(output_path, index=False)
+                print(f"    select_time_features: Successfully saved updated dataset to:")
+                print(f"    select_time_features: → {output_path}")
+                print(f"    select_time_features: → File size: {len(df_selected):,} rows, {len(df_selected.columns)} columns")
+            except Exception as save_error:
+                error_msg = f"Failed to save dataset to {output_path}: {str(save_error)}"
+                print(f"    select_time_features: {error_msg}")
+                raise Exception(error_msg)
+            
+            # Create summary of the selection
+            selection_summary = {
+                "use_sin_cos_approach": USE_SIN_COS_APPROACH,
+                "approach_description": approach,
+                "original_columns": len(existing_columns),
+                "columns_kept": len(columns_to_keep),
+                "columns_dropped": len(columns_to_drop),
+                "kept_columns": columns_to_keep,
+                "dropped_columns": columns_to_drop,
+                "missing_required_columns": missing_columns
+            }
+            
+            # Prepare success result
+            result = {
+                "success": True,
+                "data": df_selected,
+                "output_path": output_path,
+                "original_shape": original_shape,
+                "final_shape": final_shape,
+                "selection_summary": selection_summary,
+                "message": f"Time feature selection completed: {approach}, kept {len(columns_to_keep)} columns, dropped {len(columns_to_drop)} columns"
+            }
+            
+            print(f"    select_time_features: Completed successfully - {result['message']}")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"select_time_features failed: {str(e)}"
+            print(f"    select_time_features: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
             }
 
     def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):

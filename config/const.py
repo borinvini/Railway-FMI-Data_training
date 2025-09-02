@@ -54,9 +54,10 @@ PREPROCESSING_STATE_MACHINE = {
 
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
-    "drop_nan_columns": False,
-    "split_dataset": False,
-    "scale_weather_features": False,
+    "select_time_features": True,
+    "drop_nan_columns": True,
+    "split_dataset": True,
+    "scale_weather_features": True,
     "correlation_analysis": False,
     "non_weather_correlation_analysis": False,
     "train_decision_tree": False,
@@ -64,9 +65,9 @@ TRAINING_STATE_MACHINE = {
     "generate_borderline_smote_data": False,
     "train_decision_tree_with_borderline_smote_data": False,
     "threshold_optimization_decision_tree_borderline_smote": False,
-    "train_xgboost_with_randomized_search_cv": False,
-    "threshold_optimization_xgboost": False,
-    "train_xgboost_selected_features": False
+    "train_xgboost_with_randomized_search_cv": True,
+    "threshold_optimization_xgboost": True,
+    "train_xgboost_selected_features": True
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
@@ -114,6 +115,10 @@ REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'diff
 
 # Station short code to filter data for - only exact matches will be kept
 TARGET_STATION_CODE = 'OL'  # Example: 'OL', 'HKI', 'ROI', etc.
+
+# Time feature selection configuration
+# True = keep sin/cos features (drop original), False = keep original features (drop sin/cos)
+USE_SIN_COS_APPROACH = True
 
 
 # All columns available in the matched dataset before preprocessing (alphabetical order):
@@ -218,11 +223,7 @@ SELECTED_WEATHER_FEATURES = [
     'Air temperature', 
     'Wind speed', 
     'Gust speed', 
-    'Relative humidity', 
-    'Precipitation amount',
-    'Precipitation intensity',
     'Snow depth',
-    'Horizontal visibility',
 ]
 
 
