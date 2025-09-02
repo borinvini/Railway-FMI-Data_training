@@ -60,14 +60,15 @@ TRAINING_STATE_MACHINE = {
     "scale_weather_features": True,
     "correlation_analysis": False,
     "non_weather_correlation_analysis": False,
+    "correlation_analysis_by_station": True,
     "train_decision_tree": False,
     "threshold_optimization_decision_tree": False,
     "generate_borderline_smote_data": False,
     "train_decision_tree_with_borderline_smote_data": False,
     "threshold_optimization_decision_tree_borderline_smote": False,
-    "train_xgboost_with_randomized_search_cv": True,
-    "threshold_optimization_xgboost": True,
-    "train_xgboost_selected_features": True
+    "train_xgboost_with_randomized_search_cv": False,
+    "threshold_optimization_xgboost": False,
+    "train_xgboost_selected_features": False
 }
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
@@ -120,6 +121,7 @@ TARGET_STATION_CODE = 'OL'  # Example: 'OL', 'HKI', 'ROI', etc.
 # True = keep sin/cos features (drop original), False = keep original features (drop sin/cos)
 USE_SIN_COS_APPROACH = True
 
+TEMPORAL_SINCOS_FEATURES = ['month_sin', 'month_cos', 'hour_sin', 'hour_cos', 'day_week_sin', 'day_week_cos']
 
 # All columns available in the matched dataset before preprocessing (alphabetical order):
 #
