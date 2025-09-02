@@ -94,7 +94,7 @@ BORDERLINE_SMOTE_CONFIG = {
 WEATHER_MISSING_THRESHOLD = 30.0
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes_eachStation_offset'  
+DEFAULT_TARGET_FEATURE = 'trainDelayed'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 

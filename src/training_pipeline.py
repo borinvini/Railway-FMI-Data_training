@@ -5277,9 +5277,13 @@ class TrainingPipeline:
 
     def correlation_analysis_by_station(self, csv_files=None):
         """
-        Analyze correlations between features with enhanced functionality:
+        Performs comprehensive correlation analysis on merged scaled training data.
+        Enhanced with scatter plot for Snow depth vs trainDelayed analysis.
+        
+        Two types of analysis are performed:
         1. Original analysis: Feature-to-feature correlations for delayed trains only
         2. New analysis: Correlation between trainDelayed (binary) and all features
+        3. NEW: Scatter plot visualization of Snow depth vs trainDelayed
         
         This method finds all merged scaled training data files and performs comprehensive
         correlation analysis to understand feature relationships and their impact on delays.
@@ -5301,10 +5305,12 @@ class TrainingPipeline:
             correlation_output_dir = os.path.join(self.project_root, "data/output/correlation_analysis_comprehensive")
             delayed_only_dir = os.path.join(correlation_output_dir, "delayed_trains_only")
             target_correlation_dir = os.path.join(correlation_output_dir, "target_correlations")
+            scatter_plots_dir = os.path.join(correlation_output_dir, "scatter_plots")
             
             os.makedirs(correlation_output_dir, exist_ok=True)
             os.makedirs(delayed_only_dir, exist_ok=True)
             os.makedirs(target_correlation_dir, exist_ok=True)
+            os.makedirs(scatter_plots_dir, exist_ok=True)
             
             # Find all merged scaled training data files
             merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
@@ -5332,6 +5338,7 @@ class TrainingPipeline:
             # Initialize storage for results
             delayed_correlation_results = []
             target_correlation_results = []
+            scatter_plot_results = []
             total_files_processed = 0
             
             # Process each merged data file
@@ -5344,31 +5351,50 @@ class TrainingPipeline:
                     df = pd.read_csv(file_path)
                     
                     if df.empty:
-                        print(f"    correlation_analysis_by_station: Warning - File {filename} is empty. Skipping.")
+                        print(f"    correlation_analysis_by_station: Warning - File {filename} is empty, skipping...")
                         continue
                     
+                    total_rows = len(df)
+                    print(f"      Total rows in dataset: {total_rows:,}")
+                    
+                    # Get numeric columns for correlation analysis
+                    numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+                    
+                    # Remove target and non-relevant columns from numeric analysis
+                    columns_to_exclude = [DEFAULT_TARGET_FEATURE, 'trainDelayed', 'cancelled']
+                    numeric_columns = [col for col in numeric_columns if col not in columns_to_exclude]
+                    
+                    if not numeric_columns:
+                        print(f"      No numeric columns found for correlation analysis in {filename}, skipping...")
+                        continue
+                    
+                    print(f"      Numeric columns for analysis: {len(numeric_columns)}")
+                    
                     # ==================================================================
-                    # PART 1: Original Analysis - Delayed Trains Only
+                    # PART 1: Original Analysis - Feature-to-Feature Correlations (Delayed Only)
                     # ==================================================================
                     
+                    # Filter to delayed trains only
                     if DEFAULT_TARGET_FEATURE in df.columns:
-                        # Get basic statistics
-                        total_rows = len(df)
-                        delayed_df = df[df[DEFAULT_TARGET_FEATURE] == True].copy()
+                        # Handle different target types
+                        if DEFAULT_TARGET_FEATURE in ['trainDelayed', 'cancelled']:
+                            delayed_df = df[df[DEFAULT_TARGET_FEATURE] == True].copy()
+                        else:
+                            # For numeric targets, consider delayed if > 0
+                            delayed_df = df[df[DEFAULT_TARGET_FEATURE] > 0].copy()
+                    else:
+                        print(f"      Warning: Target feature '{DEFAULT_TARGET_FEATURE}' not found in {filename}")
+                        delayed_df = pd.DataFrame()
+                    
+                    if not delayed_df.empty:
                         delayed_count = len(delayed_df)
-                        delayed_percentage = (delayed_count / total_rows * 100) if total_rows > 0 else 0
+                        delayed_percentage = (delayed_count / total_rows) * 100
                         
-                        print(f"    correlation_analysis_by_station: Total rows: {total_rows:,}, Delayed: {delayed_count:,} ({delayed_percentage:.1f}%)")
+                        print(f"      Delayed trains: {delayed_count:,} ({delayed_percentage:.1f}%)")
                         
-                        # Select only numeric features for correlation
-                        numeric_columns = delayed_df.select_dtypes(include=[np.number]).columns.tolist()
-                        
-                        # Remove target column if present
-                        if DEFAULT_TARGET_FEATURE in numeric_columns:
-                            numeric_columns.remove(DEFAULT_TARGET_FEATURE)
-                        
-                        if len(numeric_columns) < 2:
-                            print(f"    correlation_analysis_by_station: Not enough numeric features for correlation in {filename}. Skipping delayed-only analysis.")
+                        # Check if we have enough delayed samples for meaningful correlation
+                        if delayed_count < 10:
+                            print(f"      Too few delayed trains ({delayed_count}) for correlation analysis. Skipping delayed-only analysis.")
                         else:
                             feature_data = delayed_df[numeric_columns]
                             
@@ -5404,75 +5430,89 @@ class TrainingPipeline:
                     if DEFAULT_TARGET_FEATURE in df.columns:
                         print(f"    correlation_analysis_by_station: Analyzing correlations with {DEFAULT_TARGET_FEATURE}...")
                         
-                        # Convert target to binary (0/1) for correlation calculations
-                        target_binary = df[DEFAULT_TARGET_FEATURE].astype(int)
-                        
-                        # Initialize correlation results
+                        # Calculate correlations between target and all numeric features
                         target_correlations = {}
                         
-                        # Get all features except target
-                        all_features = [col for col in df.columns if col != DEFAULT_TARGET_FEATURE]
-                        
-                        for feature in all_features:
+                        for feature in numeric_columns:
                             try:
-                                if df[feature].dtype in [np.float64, np.float32, np.int64, np.int32]:
-                                    # Continuous feature - use Point-Biserial correlation
-                                    correlation = self._calculate_point_biserial_correlation(
-                                        target_binary, 
-                                        df[feature]
-                                    )
-                                    target_correlations[feature] = {
-                                        'correlation': correlation,
-                                        'type': 'Point-Biserial',
-                                        'feature_type': 'continuous'
-                                    }
-                                elif df[feature].dtype == bool or df[feature].nunique() == 2:
-                                    # Binary feature - use Phi coefficient
-                                    correlation = self._calculate_phi_coefficient(
-                                        target_binary,
-                                        df[feature].astype(int) if df[feature].dtype == bool else df[feature]
-                                    )
-                                    target_correlations[feature] = {
-                                        'correlation': correlation,
-                                        'type': 'Phi Coefficient',
-                                        'feature_type': 'binary'
-                                    }
-                                else:
-                                    # Skip non-numeric/non-binary features
-                                    continue
+                                if feature in df.columns and not df[feature].isna().all():
+                                    if DEFAULT_TARGET_FEATURE in ['trainDelayed', 'cancelled']:
+                                        # Point-biserial correlation for binary target
+                                        correlation = self._calculate_point_biserial_correlation(
+                                            df[DEFAULT_TARGET_FEATURE].astype(int), 
+                                            df[feature]
+                                        )
+                                        corr_type = "point_biserial"
+                                    else:
+                                        # Pearson correlation for continuous target
+                                        correlation = df[DEFAULT_TARGET_FEATURE].corr(df[feature])
+                                        corr_type = "pearson"
                                     
+                                    target_correlations[feature] = {
+                                        'correlation': correlation,
+                                        'type': corr_type
+                                    }
                             except Exception as e:
-                                print(f"      Warning: Could not calculate correlation for {feature}: {str(e)}")
-                                continue
+                                print(f"        Warning: Could not calculate correlation for {feature}: {e}")
+                                target_correlations[feature] = {
+                                    'correlation': np.nan,
+                                    'type': 'error'
+                                }
                         
                         # Store target correlation results
+                        target_proportion = None
+                        if DEFAULT_TARGET_FEATURE in ['trainDelayed', 'cancelled']:
+                            target_proportion = df[DEFAULT_TARGET_FEATURE].mean()
+                        
                         target_file_result = {
                             'filename': filename,
-                            'total_rows': total_rows,
-                            'delayed_rows': delayed_count,
-                            'delayed_percentage': delayed_percentage,
+                            'total_samples': total_rows,
+                            'target_proportion': target_proportion,
+                            'available_features': list(numeric_columns),
                             'target_correlations': target_correlations,
-                            'features_analyzed': len(target_correlations)
+                            'features_analyzed': len([f for f, info in target_correlations.items() 
+                                                    if not pd.isna(info['correlation'])])
                         }
                         
                         target_correlation_results.append(target_file_result)
                         
-                        # Create visualization for target correlations
+                        # Create and save target correlation plot
                         self._create_target_correlation_plot(
                             target_correlations,
                             target_file_result,
                             target_correlation_dir
                         )
                     
+                    # ==================================================================
+                    # PART 3: NEW - Snow Depth vs trainDelayed Scatter Plot
+                    # ==================================================================
+                    
+                    # Create scatter plot for Snow depth vs trainDelayed
+                    scatter_result = self._create_snow_depth_scatter_plot(
+                        df, filename, scatter_plots_dir
+                    )
+                    if scatter_result:
+                        scatter_plot_results.append(scatter_result)
+                    
                     total_files_processed += 1
+                    print(f"      ✓ Completed analysis for {filename}")
                     
                 except Exception as e:
-                    print(f"    correlation_analysis_by_station: Error processing {filename}: {str(e)}")
+                    print(f"      Error processing {filename}: {e}")
                     import traceback
                     traceback.print_exc()
                     continue
             
-            # Create combined analyses
+            if total_files_processed == 0:
+                error_msg = "No files were successfully processed"
+                print(f"    correlation_analysis_by_station: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Create combined analyses for delayed correlations
             if delayed_correlation_results:
                 self._create_combined_delayed_analysis(delayed_correlation_results, delayed_only_dir)
             
@@ -5498,9 +5538,10 @@ class TrainingPipeline:
                 "summary_path": summary_path,
                 "delayed_correlation_results": delayed_correlation_results,
                 "target_correlation_results": target_correlation_results,
+                "scatter_plot_results": scatter_plot_results,
                 "total_trains_analyzed": sum(r['total_original_rows'] for r in delayed_correlation_results) if delayed_correlation_results else 0,
                 "total_delayed_trains": sum(r['delayed_rows'] for r in delayed_correlation_results) if delayed_correlation_results else 0,
-                "analysis_types": ["Feature-to-Feature (Delayed Only)", "Target-to-Feature (All Data)"],
+                "analysis_types": ["Feature-to-Feature (Delayed Only)", "Target-to-Feature (All Data)", "Snow Depth Scatter Plot"],
                 "message": f"Successfully completed comprehensive correlation analysis for {total_files_processed} files"
             }
             
@@ -5518,7 +5559,7 @@ class TrainingPipeline:
                 "error": error_msg,
                 "processed_files": 0
             }
-
+    
     def _calculate_point_biserial_correlation(self, binary_var, continuous_var):
         """
         Calculate Point-Biserial correlation coefficient between binary and continuous variables.
@@ -6108,3 +6149,211 @@ class TrainingPipeline:
             print(f"    correlation_analysis_by_station: Error creating combined analysis: {e}")
             import traceback
             traceback.print_exc()
+
+    def create_snow_depth_scatter_plot(self, df, filename, output_dir):
+        """
+        Create scatter plot showing Snow depth values against trainDelayed (True/False).
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            The dataframe containing the data
+        filename : str
+            Name of the source file for labeling
+        output_dir : str
+            Directory to save the plot
+            
+        Returns:
+        --------
+        dict
+            Results of the scatter plot creation
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            import numpy as np
+            
+            # Check if required columns exist
+            snow_depth_col = 'Snow depth'
+            target_col = 'trainDelayed'
+            
+            # Check for alternative column names if exact match not found
+            available_cols = df.columns.tolist()
+            
+            # Find Snow depth column (case-insensitive and flexible matching)
+            snow_col = None
+            for col in available_cols:
+                if 'snow' in col.lower() and 'depth' in col.lower():
+                    snow_col = col
+                    break
+            
+            # Find target column - check for trainDelayed or use DEFAULT_TARGET_FEATURE
+            delay_col = None
+            if 'trainDelayed' in available_cols:
+                delay_col = 'trainDelayed'
+            elif DEFAULT_TARGET_FEATURE in available_cols:
+                delay_col = DEFAULT_TARGET_FEATURE
+            
+            if snow_col is None:
+                print(f"      Snow depth column not found in {filename}. Available columns with 'snow': {[c for c in available_cols if 'snow' in c.lower()]}")
+                return None
+                
+            if delay_col is None:
+                print(f"      Train delay column not found in {filename}. Looking for 'trainDelayed' or '{DEFAULT_TARGET_FEATURE}'")
+                return None
+            
+            print(f"      Creating snow depth scatter plot using '{snow_col}' vs '{delay_col}'...")
+            
+            # Prepare data for plotting
+            plot_data = df[[snow_col, delay_col]].copy()
+            
+            # Remove NaN values
+            plot_data = plot_data.dropna()
+            
+            if plot_data.empty:
+                print(f"      No valid data points for scatter plot in {filename}")
+                return None
+            
+            # Convert target to boolean if it's numeric
+            if delay_col != 'trainDelayed' and delay_col in ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']:
+                plot_data['binary_delay'] = (plot_data[delay_col] > 0).astype(bool)
+                delay_for_plot = 'binary_delay'
+            else:
+                delay_for_plot = delay_col
+            
+            # Create figure with subplots
+            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+            fig.suptitle(f'Snow Depth Analysis - {filename}', fontsize=16, fontweight='bold')
+            
+            # Subplot 1: Basic scatter plot with jitter
+            ax1 = axes[0, 0]
+            
+            # Add jitter to y-axis for better visualization of boolean data
+            delayed_data = plot_data[plot_data[delay_for_plot] == True][snow_col]
+            not_delayed_data = plot_data[plot_data[delay_for_plot] == False][snow_col]
+            
+            # Create jittered y-values
+            np.random.seed(42)  # For reproducibility
+            delayed_y = np.random.normal(1, 0.05, len(delayed_data))
+            not_delayed_y = np.random.normal(0, 0.05, len(not_delayed_data))
+            
+            # Plot scattered points
+            ax1.scatter(delayed_data, delayed_y, alpha=0.6, c='red', s=20, label='Delayed')
+            ax1.scatter(not_delayed_data, not_delayed_y, alpha=0.6, c='blue', s=20, label='Not Delayed')
+            
+            ax1.set_xlabel('Snow Depth')
+            ax1.set_ylabel('Train Delayed (with jitter)')
+            ax1.set_title('Snow Depth vs Train Delays (Scatter)')
+            ax1.set_yticks([0, 1])
+            ax1.set_yticklabels(['No', 'Yes'])
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Subplot 2: Box plot
+            ax2 = axes[0, 1]
+            
+            delay_labels = ['Not Delayed', 'Delayed']
+            box_data = [not_delayed_data, delayed_data]
+            
+            box_plot = ax2.boxplot(box_data, labels=delay_labels, patch_artist=True)
+            box_plot['boxes'][0].set_facecolor('lightblue')
+            box_plot['boxes'][1].set_facecolor('lightcoral')
+            
+            ax2.set_ylabel('Snow Depth')
+            ax2.set_title('Snow Depth Distribution by Delay Status')
+            ax2.grid(True, alpha=0.3)
+            
+            # Subplot 3: Histogram comparison
+            ax3 = axes[1, 0]
+            
+            bins = np.linspace(plot_data[snow_col].min(), plot_data[snow_col].max(), 30)
+            
+            ax3.hist(not_delayed_data, bins=bins, alpha=0.7, color='blue', 
+                    label=f'Not Delayed (n={len(not_delayed_data)})', density=True)
+            ax3.hist(delayed_data, bins=bins, alpha=0.7, color='red', 
+                    label=f'Delayed (n={len(delayed_data)})', density=True)
+            
+            ax3.set_xlabel('Snow Depth')
+            ax3.set_ylabel('Density')
+            ax3.set_title('Snow Depth Distribution Comparison')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            
+            # Subplot 4: Statistics summary
+            ax4 = axes[1, 1]
+            ax4.axis('off')
+            
+            # Calculate statistics
+            total_samples = len(plot_data)
+            delayed_count = len(delayed_data)
+            not_delayed_count = len(not_delayed_data)
+            delay_rate = delayed_count / total_samples * 100
+            
+            # Snow depth statistics
+            delayed_snow_mean = delayed_data.mean() if len(delayed_data) > 0 else 0
+            delayed_snow_std = delayed_data.std() if len(delayed_data) > 0 else 0
+            not_delayed_snow_mean = not_delayed_data.mean() if len(not_delayed_data) > 0 else 0
+            not_delayed_snow_std = not_delayed_data.std() if len(not_delayed_data) > 0 else 0
+            
+            # Correlation calculation
+            if len(plot_data) > 1:
+                correlation = plot_data[snow_col].corr(plot_data[delay_for_plot].astype(int))
+            else:
+                correlation = np.nan
+            
+            stats_text = f"""
+    Dataset Statistics:
+    • Total samples: {total_samples:,}
+    • Delayed trains: {delayed_count:,} ({delay_rate:.1f}%)
+    • Not delayed: {not_delayed_count:,} ({100-delay_rate:.1f}%)
+
+    Snow Depth Statistics:
+    • Delayed trains:
+    - Mean: {delayed_snow_mean:.3f}
+    - Std: {delayed_snow_std:.3f}
+    
+    • Not delayed trains:
+    - Mean: {not_delayed_snow_mean:.3f}
+    - Std: {not_delayed_snow_std:.3f}
+
+    Point-Biserial Correlation:
+    • r = {correlation:.4f}
+
+    Data Source:
+    • Snow column: {snow_col}
+    • Delay column: {delay_col}
+            """.strip()
+            
+            ax4.text(0.05, 0.95, stats_text, transform=ax4.transAxes, 
+                    fontsize=10, verticalalignment='top', fontfamily='monospace',
+                    bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgray", alpha=0.8))
+            
+            plt.tight_layout()
+            
+            # Save plot
+            base_filename = os.path.splitext(filename)[0]
+            plot_path = os.path.join(output_dir, f"{base_filename}_snow_depth_scatter.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            print(f"      ✓ Saved snow depth scatter plot: {base_filename}_snow_depth_scatter.png")
+            
+            # Return results (using consistent naming with rest of codebase)
+            return {
+                'filename': filename,
+                'snow_column': snow_col,
+                'delay_column': delay_col,
+                'total_rows': total_samples,  # Use consistent key name
+                'delayed_count': delayed_count,
+                'delay_rate': delay_rate,
+                'correlation': correlation,
+                'delayed_snow_mean': delayed_snow_mean,
+                'not_delayed_snow_mean': not_delayed_snow_mean,
+                'plot_path': plot_path
+            }
+            
+        except Exception as e:
+            print(f"      Error creating snow depth scatter plot for {filename}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
