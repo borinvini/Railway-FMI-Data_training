@@ -378,6 +378,51 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ correlation_analysis_by_station (Delayed Trains) (disabled)")
 
+        if state_machine.get("snow_depth_delay_analysis", False):
+            try:
+                print(f"    → snow_depth_delay_analysis (Snow Depth vs Train Delays)")
+                snow_depth_analysis_result = self.snow_depth_delay_analysis(csv_files)
+                
+                if snow_depth_analysis_result and snow_depth_analysis_result.get("success", False):
+                    result["steps_executed"].append("snow_depth_delay_analysis")
+                    result["file_info"]["snow_depth_analysis_processed_files"] = snow_depth_analysis_result.get("processed_files", 0)
+                    print(f"      ✓ Successfully completed snow depth delay analysis")
+                    print(f"      ✓ Files analyzed: {snow_depth_analysis_result.get('processed_files', 0)}")
+                    print(f"      ✓ Total records analyzed: {snow_depth_analysis_result.get('total_records_analyzed', 0):,}")
+                    print(f"      ✓ Analysis types: {', '.join(snow_depth_analysis_result.get('analysis_types', []))}")
+                    print(f"      ✓ Results saved to: {snow_depth_analysis_result.get('output_path', 'N/A')}")
+                    
+                    # Display key findings if available
+                    if snow_depth_analysis_result.get('combined_analysis'):
+                        combined = snow_depth_analysis_result['combined_analysis']
+                        if 'overall_correlations' in combined:
+                            pearson_r = combined['overall_correlations']['pearson_correlation']
+                            print(f"      ✓ Overall Pearson correlation: {pearson_r:.4f}")
+                            
+                            if combined.get('delay_summary'):
+                                delay_diff = combined['delay_summary']['delay_difference']
+                                if abs(delay_diff) > 0.1:  # Only show if meaningful difference
+                                    if delay_diff > 0:
+                                        print(f"      ✓ Snow increases delays by {delay_diff:.2f} minutes on average")
+                                    else:
+                                        print(f"      ✓ Snow decreases delays by {abs(delay_diff):.2f} minutes on average")
+                                else:
+                                    print(f"      ✓ No significant delay difference between snowy and clear conditions")
+                    
+                    result["success"] = True
+                else:
+                    error_msg = snow_depth_analysis_result.get("error", "snow_depth_delay_analysis returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"snow_depth_delay_analysis failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ snow_depth_delay_analysis (Snow Depth vs Train Delays) (disabled)")
+    
         if state_machine.get("train_decision_tree", False):
             try:
                 print(f"    → train_decision_tree")
@@ -6150,3 +6195,671 @@ class TrainingPipeline:
             import traceback
             traceback.print_exc()
 
+    def snow_depth_delay_analysis(self, csv_files=None):
+        """
+        Advanced analysis of Snow Depth vs Train Delays (Continuous Values)
+        
+        This pipeline stage analyzes the relationship between snow depth and continuous delay values
+        (differenceInMinutes_eachStation_offset) using comprehensive scatter plot visualizations
+        and statistical analysis to understand how snow conditions affect train punctuality.
+        
+        Key Analyses Performed:
+        1. Scatter plot: Snow depth vs differenceInMinutes_eachStation_offset
+        2. Statistical correlation analysis (Pearson and Spearman)
+        3. Delay distribution analysis by snow depth ranges
+        4. Seasonal/temporal analysis of snow-delay relationships
+        5. Weather condition severity impact assessment
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (currently not used - method discovers files automatically)
+            
+        Returns:
+        --------
+        dict
+            Results of the snow depth delay analysis including scatter plots and statistics
+        """
+        try:
+            print(f"    snow_depth_delay_analysis: Starting comprehensive snow depth vs delay analysis...")
+            
+            # Create output directories
+            analysis_output_dir = os.path.join(self.project_root, "data/output/snow_depth_delay_analysis")
+            scatter_plots_dir = os.path.join(analysis_output_dir, "scatter_plots")
+            statistical_analysis_dir = os.path.join(analysis_output_dir, "statistical_analysis")
+            seasonal_analysis_dir = os.path.join(analysis_output_dir, "seasonal_analysis")
+            
+            os.makedirs(analysis_output_dir, exist_ok=True)
+            os.makedirs(scatter_plots_dir, exist_ok=True)
+            os.makedirs(statistical_analysis_dir, exist_ok=True)
+            os.makedirs(seasonal_analysis_dir, exist_ok=True)
+            
+            # Find all merged training data files
+            merged_data_pattern = os.path.join(self.project_root, "data/output/3-merged_training_ready/merged_data_*_train.csv")
+            merged_data_files = glob.glob(merged_data_pattern)
+            
+            # Fallback to scaled data if available
+            if not merged_data_files:
+                scaled_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
+                merged_data_files = glob.glob(scaled_pattern)
+                print(f"    snow_depth_delay_analysis: Using scaled data files")
+            
+            if not merged_data_files:
+                error_msg = "No merged data files found for snow depth delay analysis"
+                print(f"    snow_depth_delay_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    snow_depth_delay_analysis: Found {len(merged_data_files)} data files to process")
+            
+            analysis_results = []
+            total_files_processed = 0
+            combined_data = []
+            
+            # Process each file
+            for file_path in merged_data_files:
+                filename = os.path.basename(file_path)
+                print(f"      Processing {filename}...")
+                
+                try:
+                    # Load data
+                    df = pd.read_csv(file_path)
+                    
+                    # Check required columns
+                    required_columns = ['Snow depth', 'differenceInMinutes_eachStation_offset']
+                    missing_columns = [col for col in required_columns if col not in df.columns]
+                    
+                    if missing_columns:
+                        print(f"        Warning: Missing columns {missing_columns} in {filename}, skipping...")
+                        continue
+                    
+                    # Clean data - remove NaN values
+                    clean_df = df[['Snow depth', 'differenceInMinutes_eachStation_offset']].dropna()
+                    
+                    if len(clean_df) == 0:
+                        print(f"        Warning: No valid data after cleaning in {filename}, skipping...")
+                        continue
+                    
+                    # Perform file-specific analysis
+                    file_analysis = self._analyze_snow_depth_delays_single_file(
+                        clean_df, filename, scatter_plots_dir, statistical_analysis_dir
+                    )
+                    
+                    if file_analysis:
+                        analysis_results.append(file_analysis)
+                        # Add file identifier to data for combined analysis
+                        clean_df['source_file'] = filename
+                        combined_data.append(clean_df)
+                    
+                    total_files_processed += 1
+                    print(f"      ✓ Completed analysis for {filename}")
+                    
+                except Exception as e:
+                    print(f"      Error processing {filename}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            if total_files_processed == 0:
+                error_msg = "No files were successfully processed"
+                print(f"    snow_depth_delay_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Combined analysis across all files
+            if combined_data:
+                combined_df = pd.concat(combined_data, ignore_index=True)
+                combined_analysis = self._create_combined_snow_depth_analysis(
+                    combined_df, analysis_output_dir, seasonal_analysis_dir
+                )
+            
+            # Create comprehensive summary
+            summary_path = os.path.join(analysis_output_dir, "snow_depth_delay_analysis_summary.txt")
+            self._save_snow_depth_analysis_summary(analysis_results, combined_analysis if combined_data else None, summary_path)
+            
+            print(f"    snow_depth_delay_analysis: Analysis completed for {total_files_processed} files")
+            print(f"    snow_depth_delay_analysis: Results saved to {analysis_output_dir}")
+            
+            # Return comprehensive results
+            result = {
+                "success": True,
+                "processed_files": total_files_processed,
+                "output_path": analysis_output_dir,
+                "summary_path": summary_path,
+                "file_analyses": analysis_results,
+                "combined_analysis": combined_analysis if combined_data else None,
+                "total_records_analyzed": sum(r['valid_records'] for r in analysis_results) if analysis_results else 0,
+                "analysis_types": ["Scatter Plots", "Statistical Correlations", "Delay Distribution Analysis", "Seasonal Analysis"],
+                "message": f"Successfully completed snow depth vs delay analysis for {total_files_processed} files"
+            }
+            
+            print(f"    snow_depth_delay_analysis: Completed successfully - {total_files_processed} files analyzed")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"snow_depth_delay_analysis failed: {str(e)}"
+            print(f"    snow_depth_delay_analysis: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+
+    def _analyze_snow_depth_delays_single_file(self, df, filename, scatter_dir, stats_dir):
+        """
+        Analyze snow depth vs delays for a single file.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            Clean DataFrame with Snow depth and differenceInMinutes_eachStation_offset columns
+        filename : str
+            Name of the source file
+        scatter_dir : str
+            Directory to save scatter plots
+        stats_dir : str
+            Directory to save statistical analysis
+            
+        Returns:
+        --------
+        dict
+            Analysis results for this file
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            from scipy.stats import pearsonr, spearmanr
+            
+            snow_depth = df['Snow depth']
+            delay_minutes = df['differenceInMinutes_eachStation_offset']
+            
+            # Basic statistics
+            basic_stats = {
+                'valid_records': len(df),
+                'snow_depth_stats': {
+                    'mean': float(snow_depth.mean()),
+                    'std': float(snow_depth.std()),
+                    'min': float(snow_depth.min()),
+                    'max': float(snow_depth.max()),
+                    'median': float(snow_depth.median())
+                },
+                'delay_stats': {
+                    'mean': float(delay_minutes.mean()),
+                    'std': float(delay_minutes.std()),
+                    'min': float(delay_minutes.min()),
+                    'max': float(delay_minutes.max()),
+                    'median': float(delay_minutes.median())
+                }
+            }
+            
+            # Correlation analysis
+            try:
+                pearson_corr, pearson_p = pearsonr(snow_depth, delay_minutes)
+                spearman_corr, spearman_p = spearmanr(snow_depth, delay_minutes)
+            except:
+                pearson_corr = pearson_p = spearman_corr = spearman_p = np.nan
+            
+            correlation_stats = {
+                'pearson_correlation': float(pearson_corr) if not np.isnan(pearson_corr) else None,
+                'pearson_p_value': float(pearson_p) if not np.isnan(pearson_p) else None,
+                'spearman_correlation': float(spearman_corr) if not np.isnan(spearman_corr) else None,
+                'spearman_p_value': float(spearman_p) if not np.isnan(spearman_p) else None,
+            }
+            
+            # Create comprehensive scatter plot
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+            
+            # Main scatter plot
+            ax1.scatter(snow_depth, delay_minutes, alpha=0.6, s=20, c='steelblue', edgecolors='none')
+            ax1.set_xlabel('Snow Depth (cm)')
+            ax1.set_ylabel('Train Delay (minutes)')
+            ax1.set_title(f'Snow Depth vs Train Delays\n{filename}')
+            ax1.grid(True, alpha=0.3)
+            
+            # Add trend line
+            try:
+                z = np.polyfit(snow_depth, delay_minutes, 1)
+                p = np.poly1d(z)
+                ax1.plot(snow_depth, p(snow_depth), "r--", alpha=0.8, linewidth=2)
+            except:
+                pass
+            
+            # Add correlation info to plot
+            corr_text = f'Pearson r: {pearson_corr:.3f} (p={pearson_p:.3f})\n'
+            corr_text += f'Spearman ρ: {spearman_corr:.3f} (p={spearman_p:.3f})'
+            ax1.text(0.05, 0.95, corr_text, transform=ax1.transAxes, 
+                    verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            # Hexbin plot for density
+            hb = ax2.hexbin(snow_depth, delay_minutes, gridsize=20, cmap='Blues', alpha=0.7)
+            ax2.set_xlabel('Snow Depth (cm)')
+            ax2.set_ylabel('Train Delay (minutes)')
+            ax2.set_title('Density Plot: Snow Depth vs Delays')
+            plt.colorbar(hb, ax=ax2, label='Count')
+            
+            # Snow depth distribution
+            ax3.hist(snow_depth, bins=30, alpha=0.7, color='lightblue', edgecolor='black')
+            ax3.set_xlabel('Snow Depth (cm)')
+            ax3.set_ylabel('Frequency')
+            ax3.set_title('Distribution of Snow Depth Values')
+            ax3.axvline(snow_depth.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {snow_depth.mean():.1f}')
+            ax3.legend()
+            
+            # Delay distribution
+            ax4.hist(delay_minutes, bins=30, alpha=0.7, color='salmon', edgecolor='black')
+            ax4.set_xlabel('Train Delay (minutes)')
+            ax4.set_ylabel('Frequency')
+            ax4.set_title('Distribution of Train Delays')
+            ax4.axvline(delay_minutes.mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {delay_minutes.mean():.1f}')
+            ax4.legend()
+            
+            plt.tight_layout()
+            
+            # Save plot
+            safe_filename = filename.replace('.csv', '').replace(' ', '_')
+            plot_filename = f"snow_depth_delay_analysis_{safe_filename}.png"
+            plot_path = os.path.join(scatter_dir, plot_filename)
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Create delay ranges analysis
+            delay_ranges_analysis = self._analyze_delay_by_snow_ranges(df)
+            
+            # Save detailed statistics
+            stats_filename = f"snow_depth_stats_{safe_filename}.txt"
+            stats_path = os.path.join(stats_dir, stats_filename)
+            self._save_single_file_stats(basic_stats, correlation_stats, delay_ranges_analysis, stats_path, filename)
+            
+            print(f"        ✓ Created scatter plot: {plot_filename}")
+            print(f"        ✓ Saved statistics: {stats_filename}")
+            
+            return {
+                'filename': filename,
+                'plot_path': plot_path,
+                'stats_path': stats_path,
+                'basic_stats': basic_stats,
+                'correlations': correlation_stats,
+                'delay_ranges_analysis': delay_ranges_analysis,
+                'valid_records': len(df)
+            }
+            
+        except Exception as e:
+            print(f"        Error in single file analysis for {filename}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _analyze_delay_by_snow_ranges(self, df):
+        """
+        Analyze delay patterns across different snow depth ranges.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame with Snow depth and delay data
+            
+        Returns:
+        --------
+        dict
+            Analysis of delays by snow depth ranges
+        """
+        try:
+            snow_depth = df['Snow depth']
+            delay_minutes = df['differenceInMinutes_eachStation_offset']
+            
+            # Define snow depth ranges
+            ranges = [
+                ('No Snow', 0, 0),
+                ('Light Snow', 0.1, 5),
+                ('Moderate Snow', 5.1, 15),
+                ('Heavy Snow', 15.1, 30),
+                ('Extreme Snow', 30.1, float('inf'))
+            ]
+            
+            range_analysis = {}
+            
+            for range_name, min_val, max_val in ranges:
+                if max_val == float('inf'):
+                    mask = snow_depth > min_val
+                else:
+                    mask = (snow_depth >= min_val) & (snow_depth <= max_val)
+                
+                range_data = delay_minutes[mask]
+                
+                if len(range_data) > 0:
+                    range_analysis[range_name] = {
+                        'count': len(range_data),
+                        'mean_delay': float(range_data.mean()),
+                        'median_delay': float(range_data.median()),
+                        'std_delay': float(range_data.std()),
+                        'max_delay': float(range_data.max()),
+                        'min_delay': float(range_data.min()),
+                        'percentage_of_total': float(len(range_data) / len(df) * 100)
+                    }
+                else:
+                    range_analysis[range_name] = {
+                        'count': 0,
+                        'mean_delay': 0,
+                        'median_delay': 0,
+                        'std_delay': 0,
+                        'max_delay': 0,
+                        'min_delay': 0,
+                        'percentage_of_total': 0
+                    }
+            
+            return range_analysis
+            
+        except Exception as e:
+            print(f"        Error in range analysis: {e}")
+            return {}
+
+    def _create_combined_snow_depth_analysis(self, combined_df, output_dir, seasonal_dir):
+        """
+        Create combined analysis across all files.
+        
+        Parameters:
+        -----------
+        combined_df : pandas.DataFrame
+            Combined data from all files
+        output_dir : str
+            Main output directory
+        seasonal_dir : str
+            Directory for seasonal analysis
+            
+        Returns:
+        --------
+        dict
+            Combined analysis results
+        """
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            from scipy.stats import pearsonr, spearmanr
+            
+            snow_depth = combined_df['Snow depth']
+            delay_minutes = combined_df['differenceInMinutes_eachStation_offset']
+            
+            # Overall correlation
+            pearson_corr, pearson_p = pearsonr(snow_depth, delay_minutes)
+            spearman_corr, spearman_p = spearmanr(snow_depth, delay_minutes)
+            
+            # Create comprehensive combined plot
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 14))
+            
+            # Main scatter with sample
+            if len(combined_df) > 10000:
+                sample_df = combined_df.sample(n=10000, random_state=42)
+                sample_snow = sample_df['Snow depth']
+                sample_delay = sample_df['differenceInMinutes_eachStation_offset']
+            else:
+                sample_snow = snow_depth
+                sample_delay = delay_minutes
+            
+            ax1.scatter(sample_snow, sample_delay, alpha=0.5, s=15, c='darkblue', edgecolors='none')
+            ax1.set_xlabel('Snow Depth (cm)')
+            ax1.set_ylabel('Train Delay (minutes)')
+            ax1.set_title(f'Combined Analysis: Snow Depth vs Train Delays\n(Total Records: {len(combined_df):,})')
+            ax1.grid(True, alpha=0.3)
+            
+            # Trend line
+            try:
+                z = np.polyfit(snow_depth, delay_minutes, 1)
+                p = np.poly1d(z)
+                x_trend = np.linspace(snow_depth.min(), snow_depth.max(), 100)
+                ax1.plot(x_trend, p(x_trend), "r-", linewidth=2, alpha=0.8)
+            except:
+                pass
+            
+            # Correlation info
+            corr_text = f'Pearson r: {pearson_corr:.4f} (p={pearson_p:.4f})\n'
+            corr_text += f'Spearman ρ: {spearman_corr:.4f} (p={spearman_p:.4f})\n'
+            corr_text += f'Total Records: {len(combined_df):,}'
+            ax1.text(0.05, 0.95, corr_text, transform=ax1.transAxes, 
+                    verticalalignment='top', bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8))
+            
+            # Box plot by snow depth ranges
+            combined_df['snow_range'] = pd.cut(combined_df['Snow depth'], 
+                                            bins=[-0.1, 0, 5, 15, 30, 100], 
+                                            labels=['No Snow', 'Light\n(0-5cm)', 'Moderate\n(5-15cm)', 'Heavy\n(15-30cm)', 'Extreme\n(30cm+)'])
+            
+            box_data = [group['differenceInMinutes_eachStation_offset'].values 
+                    for name, group in combined_df.groupby('snow_range') if len(group) > 0]
+            box_labels = [name for name, group in combined_df.groupby('snow_range') if len(group) > 0]
+            
+            ax2.boxplot(box_data, labels=box_labels)
+            ax2.set_ylabel('Train Delay (minutes)')
+            ax2.set_title('Delay Distribution by Snow Depth Ranges')
+            ax2.tick_params(axis='x', rotation=45)
+            
+            # Delay frequency by snow presence
+            no_snow_delays = delay_minutes[snow_depth == 0]
+            with_snow_delays = delay_minutes[snow_depth > 0]
+            
+            ax3.hist([no_snow_delays, with_snow_delays], bins=50, alpha=0.7, 
+                    label=[f'No Snow (n={len(no_snow_delays):,})', f'With Snow (n={len(with_snow_delays):,})'],
+                    color=['lightblue', 'orange'])
+            ax3.set_xlabel('Train Delay (minutes)')
+            ax3.set_ylabel('Frequency')
+            ax3.set_title('Delay Distribution: No Snow vs With Snow')
+            ax3.legend()
+            
+            # Snow depth distribution
+            ax4.hist(snow_depth, bins=50, alpha=0.7, color='lightgreen', edgecolor='black')
+            ax4.set_xlabel('Snow Depth (cm)')
+            ax4.set_ylabel('Frequency')
+            ax4.set_title('Overall Snow Depth Distribution')
+            ax4.axvline(snow_depth.mean(), color='red', linestyle='--', linewidth=2, 
+                    label=f'Mean: {snow_depth.mean():.1f} cm')
+            ax4.legend()
+            
+            plt.tight_layout()
+            
+            # Save combined plot
+            combined_plot_path = os.path.join(output_dir, "combined_snow_depth_delay_analysis.png")
+            plt.savefig(combined_plot_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Statistical summary
+            combined_analysis = {
+                'total_records': len(combined_df),
+                'overall_correlations': {
+                    'pearson_correlation': float(pearson_corr),
+                    'pearson_p_value': float(pearson_p),
+                    'spearman_correlation': float(spearman_corr),
+                    'spearman_p_value': float(spearman_p),
+                },
+                'snow_depth_summary': {
+                    'mean': float(snow_depth.mean()),
+                    'std': float(snow_depth.std()),
+                    'median': float(snow_depth.median()),
+                    'min': float(snow_depth.min()),
+                    'max': float(snow_depth.max()),
+                    'records_with_snow': int((snow_depth > 0).sum()),
+                    'percentage_with_snow': float((snow_depth > 0).mean() * 100)
+                },
+                'delay_summary': {
+                    'overall_mean_delay': float(delay_minutes.mean()),
+                    'no_snow_mean_delay': float(no_snow_delays.mean()) if len(no_snow_delays) > 0 else 0,
+                    'with_snow_mean_delay': float(with_snow_delays.mean()) if len(with_snow_delays) > 0 else 0,
+                    'delay_difference': float(with_snow_delays.mean() - no_snow_delays.mean()) if len(no_snow_delays) > 0 and len(with_snow_delays) > 0 else 0
+                },
+                'plot_path': combined_plot_path
+            }
+            
+            print(f"        ✓ Created combined analysis plot")
+            
+            return combined_analysis
+            
+        except Exception as e:
+            print(f"        Error in combined analysis: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _save_single_file_stats(self, basic_stats, correlation_stats, ranges_analysis, stats_path, filename):
+        """Save detailed statistics for a single file."""
+        try:
+            with open(stats_path, 'w') as f:
+                f.write(f"Snow Depth vs Train Delay Analysis - {filename}\n")
+                f.write("=" * 60 + "\n\n")
+                
+                # Basic statistics
+                f.write("BASIC STATISTICS\n")
+                f.write("-" * 20 + "\n")
+                f.write(f"Valid Records: {basic_stats['valid_records']:,}\n\n")
+                
+                f.write("Snow Depth Statistics:\n")
+                snow_stats = basic_stats['snow_depth_stats']
+                f.write(f"  Mean: {snow_stats['mean']:.2f} cm\n")
+                f.write(f"  Std Dev: {snow_stats['std']:.2f} cm\n")
+                f.write(f"  Median: {snow_stats['median']:.2f} cm\n")
+                f.write(f"  Range: {snow_stats['min']:.2f} - {snow_stats['max']:.2f} cm\n\n")
+                
+                f.write("Train Delay Statistics:\n")
+                delay_stats = basic_stats['delay_stats']
+                f.write(f"  Mean: {delay_stats['mean']:.2f} minutes\n")
+                f.write(f"  Std Dev: {delay_stats['std']:.2f} minutes\n")
+                f.write(f"  Median: {delay_stats['median']:.2f} minutes\n")
+                f.write(f"  Range: {delay_stats['min']:.2f} - {delay_stats['max']:.2f} minutes\n\n")
+                
+                # Correlation statistics
+                f.write("CORRELATION ANALYSIS\n")
+                f.write("-" * 20 + "\n")
+                if correlation_stats['pearson_correlation'] is not None:
+                    f.write(f"Pearson Correlation: r = {correlation_stats['pearson_correlation']:.4f} (p = {correlation_stats['pearson_p_value']:.4f})\n")
+                if correlation_stats['spearman_correlation'] is not None:
+                    f.write(f"Spearman Correlation: ρ = {correlation_stats['spearman_correlation']:.4f} (p = {correlation_stats['spearman_p_value']:.4f})\n")
+                f.write("\n")
+                
+                # Interpretation
+                if correlation_stats['pearson_correlation'] is not None:
+                    corr_val = abs(correlation_stats['pearson_correlation'])
+                    if corr_val < 0.1:
+                        interpretation = "Very weak correlation"
+                    elif corr_val < 0.3:
+                        interpretation = "Weak correlation"
+                    elif corr_val < 0.5:
+                        interpretation = "Moderate correlation"
+                    elif corr_val < 0.7:
+                        interpretation = "Strong correlation"
+                    else:
+                        interpretation = "Very strong correlation"
+                        
+                    direction = "positive" if correlation_stats['pearson_correlation'] > 0 else "negative"
+                    f.write(f"Interpretation: {interpretation} ({direction})\n\n")
+                
+                # Range analysis
+                f.write("DELAY ANALYSIS BY SNOW DEPTH RANGES\n")
+                f.write("-" * 40 + "\n")
+                for range_name, stats in ranges_analysis.items():
+                    f.write(f"{range_name}:\n")
+                    f.write(f"  Count: {stats['count']:,} ({stats['percentage_of_total']:.1f}%)\n")
+                    if stats['count'] > 0:
+                        f.write(f"  Mean Delay: {stats['mean_delay']:.2f} minutes\n")
+                        f.write(f"  Median Delay: {stats['median_delay']:.2f} minutes\n")
+                        f.write(f"  Std Dev: {stats['std_delay']:.2f} minutes\n")
+                        f.write(f"  Range: {stats['min_delay']:.2f} - {stats['max_delay']:.2f} minutes\n")
+                    f.write("\n")
+                    
+        except Exception as e:
+            print(f"        Error saving stats: {e}")
+
+    def _save_snow_depth_analysis_summary(self, file_analyses, combined_analysis, summary_path):
+        """Save comprehensive summary of the snow depth delay analysis."""
+        try:
+            with open(summary_path, 'w') as f:
+                f.write("COMPREHENSIVE SNOW DEPTH vs TRAIN DELAY ANALYSIS SUMMARY\n")
+                f.write("=" * 70 + "\n\n")
+                f.write(f"Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                
+                # Overview
+                f.write("ANALYSIS OVERVIEW\n")
+                f.write("-" * 20 + "\n")
+                f.write(f"Files processed: {len(file_analyses)}\n")
+                f.write(f"Total records analyzed: {sum(a['valid_records'] for a in file_analyses):,}\n\n")
+                
+                # File-by-file summary
+                f.write("FILE-BY-FILE RESULTS\n")
+                f.write("-" * 25 + "\n")
+                for analysis in file_analyses:
+                    f.write(f"File: {analysis['filename']}\n")
+                    f.write(f"  Records: {analysis['valid_records']:,}\n")
+                    if analysis['correlations']['pearson_correlation'] is not None:
+                        f.write(f"  Pearson r: {analysis['correlations']['pearson_correlation']:.4f}\n")
+                        f.write(f"  Spearman ρ: {analysis['correlations']['spearman_correlation']:.4f}\n")
+                    f.write("\n")
+                
+                # Combined results
+                if combined_analysis:
+                    f.write("COMBINED ANALYSIS RESULTS\n")
+                    f.write("-" * 30 + "\n")
+                    f.write(f"Total Combined Records: {combined_analysis['total_records']:,}\n")
+                    f.write(f"Records with Snow: {combined_analysis['snow_depth_summary']['records_with_snow']:,} ")
+                    f.write(f"({combined_analysis['snow_depth_summary']['percentage_with_snow']:.1f}%)\n\n")
+                    
+                    f.write("Overall Correlations:\n")
+                    f.write(f"  Pearson r: {combined_analysis['overall_correlations']['pearson_correlation']:.4f} ")
+                    f.write(f"(p = {combined_analysis['overall_correlations']['pearson_p_value']:.6f})\n")
+                    f.write(f"  Spearman ρ: {combined_analysis['overall_correlations']['spearman_correlation']:.4f} ")
+                    f.write(f"(p = {combined_analysis['overall_correlations']['spearman_p_value']:.6f})\n\n")
+                    
+                    f.write("Key Findings:\n")
+                    delay_diff = combined_analysis['delay_summary']['delay_difference']
+                    if delay_diff > 0:
+                        f.write(f"  • Trains experience {delay_diff:.2f} minutes MORE delay on average when snow is present\n")
+                    elif delay_diff < 0:
+                        f.write(f"  • Trains experience {abs(delay_diff):.2f} minutes LESS delay on average when snow is present\n")
+                    else:
+                        f.write(f"  • No significant difference in delays between snowy and non-snowy conditions\n")
+                    
+                    f.write(f"  • Mean delay without snow: {combined_analysis['delay_summary']['no_snow_mean_delay']:.2f} minutes\n")
+                    f.write(f"  • Mean delay with snow: {combined_analysis['delay_summary']['with_snow_mean_delay']:.2f} minutes\n")
+                    f.write(f"  • Average snow depth: {combined_analysis['snow_depth_summary']['mean']:.2f} cm\n")
+                    f.write(f"  • Maximum snow depth: {combined_analysis['snow_depth_summary']['max']:.2f} cm\n\n")
+                
+                # Conclusions
+                f.write("ANALYSIS CONCLUSIONS\n")
+                f.write("-" * 22 + "\n")
+                if combined_analysis:
+                    corr_val = abs(combined_analysis['overall_correlations']['pearson_correlation'])
+                    p_val = combined_analysis['overall_correlations']['pearson_p_value']
+                    
+                    if p_val < 0.001:
+                        significance = "highly significant"
+                    elif p_val < 0.01:
+                        significance = "very significant"
+                    elif p_val < 0.05:
+                        significance = "significant"
+                    else:
+                        significance = "not statistically significant"
+                    
+                    f.write(f"The correlation between snow depth and train delays is {significance} (p = {p_val:.6f}).\n")
+                    
+                    if corr_val < 0.1:
+                        f.write("The relationship is very weak, suggesting snow depth has minimal impact on delays.\n")
+                    elif corr_val < 0.3:
+                        f.write("The relationship is weak, suggesting snow depth has some but limited impact on delays.\n")
+                    elif corr_val < 0.5:
+                        f.write("The relationship is moderate, suggesting snow depth has a noticeable impact on delays.\n")
+                    else:
+                        f.write("The relationship is strong, suggesting snow depth has a significant impact on delays.\n")
+                    
+                    direction = combined_analysis['overall_correlations']['pearson_correlation']
+                    if direction > 0:
+                        f.write("Higher snow depth is associated with longer train delays.\n")
+                    else:
+                        f.write("Higher snow depth is associated with shorter train delays (unexpected result).\n")
+                
+                f.write(f"\nDetailed plots and statistics are available in the output directories.\n")
+                    
+        except Exception as e:
+            print(f"        Error saving summary: {e}")

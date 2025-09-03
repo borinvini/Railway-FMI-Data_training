@@ -61,12 +61,13 @@ TRAINING_STATE_MACHINE = {
     "correlation_analysis": False,
     "non_weather_correlation_analysis": False,
     "correlation_analysis_by_station": False,
+    "snow_depth_delay_analysis": True,
     "train_decision_tree": False,
     "threshold_optimization_decision_tree": False,
     "generate_borderline_smote_data": False,
     "train_decision_tree_with_borderline_smote_data": False,
     "threshold_optimization_decision_tree_borderline_smote": False,
-    "train_xgboost_with_randomized_search_cv": True,
+    "train_xgboost_with_randomized_search_cv": False,
     "threshold_optimization_xgboost": False,
     "train_xgboost_selected_features": False
 }
