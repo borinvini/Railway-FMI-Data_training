@@ -6632,8 +6632,8 @@ class TrainingPipeline:
                                             labels=['No Snow', 'Light\n(0-5cm)', 'Moderate\n(5-15cm)', 'Heavy\n(15-30cm)', 'Extreme\n(30cm+)'])
             
             box_data = [group['differenceInMinutes_eachStation_offset'].values 
-                    for name, group in combined_df.groupby('snow_range') if len(group) > 0]
-            box_labels = [name for name, group in combined_df.groupby('snow_range') if len(group) > 0]
+            for name, group in combined_df.groupby('snow_range', observed=True) if len(group) > 0]
+            box_labels = [name for name, group in combined_df.groupby('snow_range', observed=True) if len(group) > 0]
             
             ax2.boxplot(box_data, labels=box_labels)
             ax2.set_ylabel('Train Delay (minutes)')
@@ -6708,7 +6708,7 @@ class TrainingPipeline:
     def _save_single_file_stats(self, basic_stats, correlation_stats, ranges_analysis, stats_path, filename):
         """Save detailed statistics for a single file."""
         try:
-            with open(stats_path, 'w') as f:
+            with open(stats_path, 'w', encoding='utf-8') as f:
                 f.write(f"Snow Depth vs Train Delay Analysis - {filename}\n")
                 f.write("=" * 60 + "\n\n")
                 
@@ -6776,7 +6776,7 @@ class TrainingPipeline:
     def _save_snow_depth_analysis_summary(self, file_analyses, combined_analysis, summary_path):
         """Save comprehensive summary of the snow depth delay analysis."""
         try:
-            with open(summary_path, 'w') as f:
+            with open(summary_path, 'w', encoding='utf-8') as f:
                 f.write("COMPREHENSIVE SNOW DEPTH vs TRAIN DELAY ANALYSIS SUMMARY\n")
                 f.write("=" * 70 + "\n\n")
                 f.write(f"Analysis completed on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
