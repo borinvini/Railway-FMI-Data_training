@@ -6278,6 +6278,7 @@ class TrainingPipeline:
                     
                     # Clean data - remove NaN values
                     clean_df = df[['Snow depth', 'differenceInMinutes_eachStation_offset']].dropna()
+                    clean_df = clean_df[clean_df['differenceInMinutes_eachStation_offset'] >= 5]
                     
                     if len(clean_df) == 0:
                         print(f"        Warning: No valid data after cleaning in {filename}, skipping...")
@@ -6292,6 +6293,7 @@ class TrainingPipeline:
                         analysis_results.append(file_analysis)
                         # Add file identifier to data for combined analysis
                         clean_df['source_file'] = filename
+                        filtered_df = clean_df[clean_df['differenceInMinutes_eachStation_offset'] >= 5]
                         combined_data.append(clean_df)
                     
                     total_files_processed += 1
@@ -6584,6 +6586,8 @@ class TrainingPipeline:
             import matplotlib.pyplot as plt
             import seaborn as sns
             from scipy.stats import pearsonr, spearmanr
+
+            combined_df = combined_df[combined_df['differenceInMinutes_eachStation_offset'] >= 5]
             
             snow_depth = combined_df['Snow depth']
             delay_minutes = combined_df['differenceInMinutes_eachStation_offset']
@@ -6608,6 +6612,7 @@ class TrainingPipeline:
             ax1.set_xlabel('Snow Depth (cm)')
             ax1.set_ylabel('Train Delay (minutes)')
             ax1.set_title(f'Combined Analysis: Snow Depth vs Train Delays\n(Total Records: {len(combined_df):,})')
+            ax1.set_ylim(0, 100)
             ax1.grid(True, alpha=0.3)
             
             # Trend line
@@ -6825,6 +6830,58 @@ class TrainingPipeline:
                     f.write(f"  • Mean delay with snow: {combined_analysis['delay_summary']['with_snow_mean_delay']:.2f} minutes\n")
                     f.write(f"  • Average snow depth: {combined_analysis['snow_depth_summary']['mean']:.2f} cm\n")
                     f.write(f"  • Maximum snow depth: {combined_analysis['snow_depth_summary']['max']:.2f} cm\n\n")
+                    
+                    # **NEW SECTION: Heavy Snow Delay Impact Analysis**
+                    f.write("HEAVY SNOW DELAY IMPACT ANALYSIS (Snow > 15 cm)\n")
+                    f.write("-" * 50 + "\n")
+                    
+                    # Calculate percentage of delayed trains when snow > 15 cm
+                    # We need to recreate the combined dataset or get it from the analysis
+                    try:
+                        # If we need to recreate the data from file analyses, we can do it here
+                        # For now, let's assume we have access to the combined data through a different approach
+                        
+                        # Try to get the data from the combined analysis or calculate from file analyses
+                        heavy_snow_stats = self._calculate_heavy_snow_delay_percentage(file_analyses)
+                        
+                        if heavy_snow_stats['total_trains'] > 0:
+                            f.write(f"Analysis Criteria:\n")
+                            f.write(f"  • Snow Depth Threshold: > 15.0 cm\n")
+                            f.write(f"  • Delay Threshold: ≥ 5 minutes\n\n")
+                            
+                            f.write(f"Results:\n")
+                            f.write(f"  • Total trains in heavy snow conditions: {heavy_snow_stats['total_trains']:,}\n")
+                            f.write(f"  • Delayed trains (≥5 min): {heavy_snow_stats['delayed_trains']:,}\n")
+                            f.write(f"  • Percentage of trains delayed: {heavy_snow_stats['delay_percentage']:.1f}%\n")
+                            f.write(f"  • Percentage of trains on-time: {heavy_snow_stats['on_time_percentage']:.1f}%\n")
+                            f.write(f"  • Average delay in heavy snow: {heavy_snow_stats['avg_delay']:.2f} minutes\n")
+                            f.write(f"  • Maximum delay recorded: {heavy_snow_stats['max_delay']:.2f} minutes\n\n")
+                            
+                            # Impact assessment
+                            if heavy_snow_stats['delay_percentage'] >= 80:
+                                impact_level = "SEVERE"
+                                impact_desc = "Heavy snow significantly disrupts train operations"
+                            elif heavy_snow_stats['delay_percentage'] >= 60:
+                                impact_level = "HIGH" 
+                                impact_desc = "Heavy snow causes substantial delays"
+                            elif heavy_snow_stats['delay_percentage'] >= 40:
+                                impact_level = "MODERATE"
+                                impact_desc = "Heavy snow has noticeable impact on punctuality"
+                            elif heavy_snow_stats['delay_percentage'] >= 20:
+                                impact_level = "LOW"
+                                impact_desc = "Heavy snow has minimal impact on delays"
+                            else:
+                                impact_level = "MINIMAL"
+                                impact_desc = "Heavy snow shows little correlation with delays"
+                                
+                            f.write(f"Impact Assessment: {impact_level}\n")
+                            f.write(f"  {impact_desc}\n\n")
+                            
+                        else:
+                            f.write(f"No records found with snow depth > 15 cm in the analyzed data.\n\n")
+                            
+                    except Exception as e:
+                        f.write(f"Unable to calculate heavy snow delay statistics: {str(e)}\n\n")
                 
                 # Conclusions
                 f.write("ANALYSIS CONCLUSIONS\n")
@@ -6860,6 +6917,117 @@ class TrainingPipeline:
                         f.write("Higher snow depth is associated with shorter train delays (unexpected result).\n")
                 
                 f.write(f"\nDetailed plots and statistics are available in the output directories.\n")
-                    
+                        
         except Exception as e:
             print(f"        Error saving summary: {e}")
+
+    def _calculate_heavy_snow_delay_percentage(self, file_analyses):
+        """
+        Calculate delay percentage statistics for heavy snow conditions (>15 cm) from file analyses.
+        
+        Parameters:
+        -----------
+        file_analyses : list
+            List of file analysis results
+            
+        Returns:
+        --------
+        dict
+            Statistics for heavy snow delay analysis
+        """
+        try:
+            import pandas as pd
+            import glob
+            import os
+            
+            # We need to reload the data to calculate the heavy snow statistics
+            # Find all merged training data files (same logic as in main analysis)
+            merged_data_pattern = os.path.join(self.project_root, "data/output/3-merged_training_ready/merged_data_*_train.csv")
+            merged_data_files = glob.glob(merged_data_pattern)
+            
+            # Fallback to scaled data if available
+            if not merged_data_files:
+                from config.const import MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                scaled_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
+                merged_data_files = glob.glob(scaled_pattern)
+            
+            if not merged_data_files:
+                return {
+                    'total_trains': 0,
+                    'delayed_trains': 0,
+                    'delay_percentage': 0.0,
+                    'on_time_percentage': 0.0,
+                    'avg_delay': 0.0,
+                    'max_delay': 0.0
+                }
+            
+            # Combine data from all files for heavy snow analysis
+            heavy_snow_data = []
+            
+            for file_path in merged_data_files:
+                try:
+                    df = pd.read_csv(file_path)
+                    
+                    # Clean and prepare data (same logic as in main analysis)
+                    required_columns = ['Snow depth', 'differenceInMinutes_eachStation_offset']
+                    if not all(col in df.columns for col in required_columns):
+                        continue
+                        
+                    # Remove rows with missing values in required columns
+                    clean_df = df[required_columns].dropna()
+                    
+                    if len(clean_df) == 0:
+                        continue
+                    
+                    # Filter for heavy snow conditions (> 15 cm)
+                    heavy_snow_mask = clean_df['Snow depth'] > 15
+                    heavy_snow_subset = clean_df[heavy_snow_mask]
+                    
+                    if len(heavy_snow_subset) > 0:
+                        heavy_snow_data.append(heavy_snow_subset)
+                        
+                except Exception as e:
+                    print(f"        Warning: Could not process {file_path} for heavy snow analysis: {e}")
+                    continue
+            
+            if not heavy_snow_data:
+                return {
+                    'total_trains': 0,
+                    'delayed_trains': 0,
+                    'delay_percentage': 0.0,
+                    'on_time_percentage': 0.0,
+                    'avg_delay': 0.0,
+                    'max_delay': 0.0
+                }
+            
+            # Combine all heavy snow data
+            combined_heavy_snow = pd.concat(heavy_snow_data, ignore_index=True)
+            
+            # Calculate delay statistics
+            delays = combined_heavy_snow['differenceInMinutes_eachStation_offset']
+            total_trains = len(delays)
+            delayed_trains = (delays >= 5).sum()  # Trains delayed ≥5 minutes
+            delay_percentage = float(delayed_trains / total_trains * 100) if total_trains > 0 else 0.0
+            on_time_percentage = 100.0 - delay_percentage
+            avg_delay = float(delays.mean()) if total_trains > 0 else 0.0
+            max_delay = float(delays.max()) if total_trains > 0 else 0.0
+            
+            return {
+                'total_trains': int(total_trains),
+                'delayed_trains': int(delayed_trains),
+                'delay_percentage': delay_percentage,
+                'on_time_percentage': on_time_percentage,
+                'avg_delay': avg_delay,
+                'max_delay': max_delay
+            }
+            
+        except Exception as e:
+            print(f"        Error calculating heavy snow delay percentage: {e}")
+            return {
+                'total_trains': 0,
+                'delayed_trains': 0,
+                'delay_percentage': 0.0,
+                'on_time_percentage': 0.0,
+                'avg_delay': 0.0,
+                'max_delay': 0.0
+            }
