@@ -2,8 +2,8 @@ from scipy.stats import randint
 import numpy as np
 
 # Pipeline execution control flag
-EXECUTE_PREPROCESSING_DATA_PIPELINE = False
-EXECUTE_TRAINING_PIPELINE = True
+EXECUTE_PREPROCESSING_DATA_PIPELINE = True
+EXECUTE_TRAINING_PIPELINE = False
 
 # Constants for file processing
 FOLDER_NAME = "data"
@@ -46,7 +46,7 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_month_to_sincos": True,
     "convert_dayofweek_to_sincos": True,
     "drop_original_temporal_columns": False,
-    "select_target": True,
+    "select_target": False,
     "filter_strong_weather_causes": True,
     "remove_duplicates": True,
     "save_training_ready_csv": True
@@ -61,8 +61,8 @@ TRAINING_STATE_MACHINE = {
     "correlation_analysis": False,
     "non_weather_correlation_analysis": False,
     "correlation_analysis_by_station": False,
-    "snow_depth_delay_analysis": True,
-    "numeric_correlation_analysis": True,
+    "snow_depth_delay_analysis": False,
+    "numeric_correlation_analysis": False,
     "train_decision_tree": False,
     "threshold_optimization_decision_tree": False,
     "generate_borderline_smote_data": False,

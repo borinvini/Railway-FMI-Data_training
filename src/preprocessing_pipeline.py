@@ -1053,37 +1053,62 @@ class PreprocessingPipeline:
             
             # Process each value directly in the loop
             for index, cause_value in df['causes'].items():
-                # FIXED: Safe empty value check that handles arrays/series
+                # FIXED: Enhanced empty value check that handles all edge cases
                 try:
-                    # Handle numpy arrays and pandas Series
-                    if hasattr(cause_value, '__len__') and hasattr(cause_value, '__iter__'):
-                        # For array-like objects, check if it's a single-element array first
-                        if hasattr(cause_value, 'shape') and cause_value.shape == ():
-                            # Single-element numpy scalar
-                            cause_value = cause_value.item()
-                        elif hasattr(cause_value, '__len__') and len(cause_value) == 1:
-                            # Single-element array/series
-                            cause_value = cause_value[0] if not pd.isna(cause_value[0]) else None
-                    
-                    # Now perform safe empty checks
                     is_empty = False
                     
-                    # Check for pandas NA/NaN
-                    if pd.isna(cause_value):
-                        is_empty = True
-                    # Check for None
-                    elif cause_value is None:
-                        is_empty = True
-                    # Check for empty string (safe comparison)
-                    elif isinstance(cause_value, str):
-                        is_empty = (cause_value == "" or cause_value == "[]" or cause_value.strip() == "")
-                    # Check for empty list
-                    elif isinstance(cause_value, list):
-                        is_empty = (len(cause_value) == 0)
-                    # Check for other empty-like values
-                    elif str(cause_value) in ["", "[]", "nan", "None"]:
-                        is_empty = True
-                        
+                    # Handle pandas NA/NaN (safe for all types)
+                    try:
+                        if pd.isna(cause_value):
+                            is_empty = True
+                    except (TypeError, ValueError):
+                        # pd.isna() might fail on some complex objects, continue checking
+                        pass
+                    
+                    if not is_empty:
+                        # Handle None
+                        if cause_value is None:
+                            is_empty = True
+                        # Handle strings
+                        elif isinstance(cause_value, str):
+                            is_empty = cause_value.strip() in ["", "[]", "nan", "None", "null"]
+                        # Handle lists (this is the key fix for your error)
+                        elif isinstance(cause_value, list):
+                            is_empty = len(cause_value) == 0
+                        # Handle dictionaries
+                        elif isinstance(cause_value, dict):
+                            is_empty = len(cause_value) == 0
+                        # Handle numpy arrays and pandas Series
+                        elif hasattr(cause_value, '__len__') and hasattr(cause_value, '__iter__'):
+                            try:
+                                # For array-like objects, check length safely
+                                if hasattr(cause_value, 'shape'):
+                                    # numpy array
+                                    if cause_value.shape == ():
+                                        # Single-element numpy scalar
+                                        scalar_value = cause_value.item()
+                                        is_empty = pd.isna(scalar_value) or scalar_value is None or str(scalar_value).strip() in ["", "[]", "nan", "None", "null"]
+                                    elif cause_value.size == 0:
+                                        # Empty array
+                                        is_empty = True
+                                    else:
+                                        # Multi-element array - not empty
+                                        is_empty = False
+                                else:
+                                    # Regular iterable (but not string, dict, or list which we handled above)
+                                    try:
+                                        is_empty = len(cause_value) == 0
+                                    except:
+                                        # If len() fails, assume non-empty
+                                        is_empty = False
+                            except:
+                                # If anything fails with array-like objects, assume non-empty
+                                is_empty = False
+                        # Handle other cases by string conversion
+                        else:
+                            str_value = str(cause_value).lower().strip()
+                            is_empty = str_value in ["", "[]", "nan", "none", "null"]
+                            
                 except Exception as e:
                     print(f"Warning: Error checking if value is empty at index {index}: {e}")
                     print(f"Cause value type: {type(cause_value)}, value: {cause_value}")
@@ -1109,71 +1134,81 @@ class PreprocessingPipeline:
                     
                     # Extract detailed category codes
                     detailed_codes = []
-                    
                     if isinstance(parsed_causes, list):
-                        for cause_dict in parsed_causes:
-                            if isinstance(cause_dict, dict) and 'detailedCategoryCode' in cause_dict:
-                                detailed_codes.append(cause_dict['detailedCategoryCode'])
+                        for cause_item in parsed_causes:
+                            if isinstance(cause_item, dict) and 'detailedCategoryCode' in cause_item:
+                                detailed_codes.append(cause_item['detailedCategoryCode'])
                     elif isinstance(parsed_causes, dict) and 'detailedCategoryCode' in parsed_causes:
                         detailed_codes.append(parsed_causes['detailedCategoryCode'])
                     
-                    # Store the extracted codes or None if empty
+                    # Store the extracted detailed codes (or None if no codes found)
                     if detailed_codes:
                         processed_values.append(detailed_codes)
+                        
+                        # Calculate weather-related score based on detailed codes (inline)
+                        # Define weather-related category mappings
+                        STRONG_WEATHER_CODES = {'I1', 'I2'}  # Strong weather indicators
+                        POSSIBLE_WEATHER_CODES = {'A1', 'K1', 'O1', 'P1', 'S1', 'S2', 'T2', 'T3', 'V3'}  # Possible weather indicators
+                        
+                        weather_score = 0
+                        for code in detailed_codes:
+                            if code in STRONG_WEATHER_CODES:
+                                weather_score = max(weather_score, 3)
+                            elif code in POSSIBLE_WEATHER_CODES:
+                                weather_score = max(weather_score, 2)
+                            elif code:  # Any other non-empty code
+                                weather_score = max(weather_score, 1)
+                        
+                        weather_scores.append(weather_score)
+                        
+                        # Update statistics
+                        if weather_score == 3:
+                            stats['weather_strong'] += 1
+                        elif weather_score == 2:
+                            stats['weather_possible'] += 1
+                        elif weather_score == 1:
+                            stats['weather_weak'] += 1
+                        else:
+                            stats['weather_none'] += 1
+                        
                         stats['successful_extractions'] += 1
                     else:
                         processed_values.append(None)
-                        stats['failed_extractions'] += 1
-                    
-                    # Calculate weather indicator score using constants from const.py
-                    weather_score = 0
-                    for code in detailed_codes:
-                        if code in STRONG_INDICATORS:
-                            weather_score = max(weather_score, 3)  # Strong indicator
-                        elif code in POSSIBLE_INDICATORS:
-                            weather_score = max(weather_score, 2)  # Possible indicator
-                        elif code:  # Any other non-empty code
-                            weather_score = max(weather_score, 1)  # Weak indicator
-                    
-                    weather_scores.append(weather_score)
-                    
-                    # Update stats
-                    if weather_score == 3:
-                        stats['weather_strong'] += 1
-                    elif weather_score == 2:
-                        stats['weather_possible'] += 1
-                    elif weather_score == 1:
-                        stats['weather_weak'] += 1
-                    else:
+                        weather_scores.append(0)
                         stats['weather_none'] += 1
+                        stats['failed_extractions'] += 1
                         
                 except Exception as e:
-                    print(f"Warning: Failed to parse causes in row {index}: {e}")
-                    print(f"Problematic value: {cause_value}")
-                    print(f"Value type: {type(cause_value)}")
-                    stats['parsing_errors'] += 1
+                    print(f"Warning: Error processing causes at index {index}: {e}")
+                    print(f"Cause value: {cause_value}")
                     processed_values.append(None)
                     weather_scores.append(0)
+                    stats['parsing_errors'] += 1
+                    stats['weather_none'] += 1
             
             # Update the dataframe with processed values
             df['causes'] = processed_values
             df['causes_related_to_weather'] = weather_scores
             
-            # Generate summary statistics
+            # Print processing statistics
+            total_processed = len(df)
             print(f"Causes processing completed:")
-            print(f"  Successful extractions: {stats['successful_extractions']:,}")
-            print(f"  Weather indicators found: {stats['weather_strong'] + stats['weather_possible'] + stats['weather_weak']:,}")
-            
-            if stats['parsing_errors'] > 0:
-                print(f"  Parsing errors: {stats['parsing_errors']:,}")
+            print(f"  - Total rows processed: {total_processed:,}")
+            print(f"  - Empty values: {stats['empty_values']:,} ({stats['empty_values']/total_processed*100:.1f}%)")
+            print(f"  - Successful extractions: {stats['successful_extractions']:,} ({stats['successful_extractions']/total_processed*100:.1f}%)")
+            print(f"  - Failed extractions: {stats['failed_extractions']:,} ({stats['failed_extractions']/total_processed*100:.1f}%)")
+            print(f"  - Parsing errors: {stats['parsing_errors']:,} ({stats['parsing_errors']/total_processed*100:.1f}%)")
+            print(f"Weather-related distribution:")
+            print(f"  - Strong weather (3): {stats['weather_strong']:,} ({stats['weather_strong']/total_processed*100:.1f}%)")
+            print(f"  - Possible weather (2): {stats['weather_possible']:,} ({stats['weather_possible']/total_processed*100:.1f}%)")
+            print(f"  - Weak weather (1): {stats['weather_weak']:,} ({stats['weather_weak']/total_processed*100:.1f}%)")
+            print(f"  - No weather indicator (0): {stats['weather_none']:,} ({stats['weather_none']/total_processed*100:.1f}%)")
             
             return df
             
         except Exception as e:
-            print(f"Error processing causes column: {e}")
-            import traceback
-            traceback.print_exc()  # This will help debug the exact location
-            return dataframe  # Return original dataframe on error
+            print(f"Critical error in process_causes_column: {e}")
+            return None
 
     def add_train_delayed_feature(self, dataframe=None):
         """
