@@ -1,18 +1,24 @@
 from src.file_utils import check_csv_files, extract_date_range, ensure_folder_structure
 from src.training_pipeline import TrainingPipeline
 from src.preprocessing_pipeline import PreprocessingPipeline  
+
 from config.const import (
-    DEFAULT_TARGET_FEATURE,
-    EXECUTE_PREPROCESSING_DATA_PIPELINE, 
-    EXECUTE_TRAINING_PIPELINE,
-    FILTER_TRAINS_BY_STATIONS, 
-    IMPORTANCE_THRESHOLD, 
-    REQUIRED_STATIONS,
+    EXECUTE_PREPROCESSING_DATA_PIPELINE,
+    EXECUTE_TRAINING_PIPELINE, 
     INPUT_FOLDER,
-    PREPROCESSING_STATE_MACHINE,  
-    TRAINING_STATE_MACHINE
 )
 
+from config.const_preprocessing import (
+    DEFAULT_TARGET_FEATURE,
+    REQUIRED_STATIONS,
+    FILTER_TRAINS_BY_STATIONS,
+    PREPROCESSING_STATE_MACHINE,
+)
+
+from config.const_training import (
+    IMPORTANCE_THRESHOLD, 
+    TRAINING_STATE_MACHINE
+)
 
 def main():
     """
