@@ -17,7 +17,7 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_dayofweek_to_sincos": True,
     "drop_original_temporal_columns": False,
     "select_target": False,
-    "filter_strong_weather_causes": True,
+    "filter_strong_weather_causes": False,
     "remove_duplicates": True,
     "save_training_ready_csv": True
 }
@@ -31,10 +31,17 @@ FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/6-process_actual_time_column"
 FOLDER_FILTER_COLUMNS = "data/output/7-filter_columns"
 FOLDER_CONVERT_BOOLEAN_TO_NUMERIC = "data/output/8-convert_boolean_to_numeric"
 FOLDER_HANDLE_MISSING_VALUES = "data/output/9-handle_missing_values"
+FOLDER_CONVERT_HOUR_TO_SINCOS = "data/output/10-convert_hour_to_sincos"
+FOLDER_CONVERT_MONTH_TO_SINCOS = "data/output/11-convert_month_to_sincos"
+FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS = "data/output/12-convert_dayofweek_to_sincos"
+FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS = "data/output/13-drop_original_temporal_columns"
+FOLDER_SELECT_TARGET = "data/output/14-select_target"
+FOLDER_FILTER_STRONG_WEATHER_CAUSES = "data/output/15-filter_strong_weather_causes"
+FOLDER_REMOVE_DUPLICATES = "data/output/16-remove_duplicates"
 
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
-PREPROCESSED_OUTPUT_FOLDER = "data/output/1-preprocessed"
-TRAINING_READY_OUTPUT_FOLDER = "data/output/2-preprocessed_training_ready"
+PREPROCESSED_OUTPUT_FOLDER = "data/output/100-preprocessed"
+TRAINING_READY_OUTPUT_FOLDER = "data/output/101-preprocessed_training_ready"
 
 # Weather column missing value threshold (drop columns with more missing values than this %)
 WEATHER_MISSING_THRESHOLD = 30.0
