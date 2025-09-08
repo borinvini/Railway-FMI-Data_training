@@ -7,9 +7,12 @@ import re
 import numpy as np
 import pandas as pd
 
-from src.file_utils import generate_output_path
+from src.file_utils import generate_output_path, save_dataframe_to_csv
 
 from config.const_preprocessing import (
+    FOLDER_EXTRACT_NESTED_DATA,
+    FOLDER_FILTER_BY_TARGET_STATION,
+    FOLDER_PROCESS_CAUSES_COLUMN,
     PREPROCESSED_OUTPUT_FOLDER,
     TRAINING_READY_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
@@ -165,7 +168,9 @@ class PreprocessingPipeline:
                 continue
             
             year, month = match.groups()
-            file_id = f"{year}_{month}"
+            self.current_file_id = f"{year}_{month}"
+            self.current_year = year
+            self.current_month = month
             
             print(f"\n[{i+1}/{len(csv_files)}] Processing file: {filename} (Year: {year}, Month: {month})")
             
@@ -173,7 +178,7 @@ class PreprocessingPipeline:
                 # Execute pipeline steps using the state machine
                 pipeline_result = self.execute_preprocessing_pipeline_steps(
                     input_file_path=input_file_path,
-                    file_id=file_id,
+                    file_id=self.current_file_id,
                     year=year,
                     state_machine=PREPROCESSING_STATE_MACHINE
                 )
@@ -181,7 +186,7 @@ class PreprocessingPipeline:
                 # Record pipeline execution details
                 execution_detail = {
                     "filename": filename,
-                    "file_id": file_id,
+                    "file_id": self.current_file_id,
                     "year": year,
                     "month": month,
                     "success": pipeline_result["success"],
@@ -198,7 +203,7 @@ class PreprocessingPipeline:
                         "original_file": filename,
                         "year": year,
                         "month": month,
-                        "file_id": file_id,
+                        "file_id": self.current_file_id,
                         "rows": pipeline_result["file_info"]["rows"],
                         "columns": pipeline_result["file_info"]["columns"],
                         "steps_executed": pipeline_result["steps_executed"]
@@ -923,6 +928,37 @@ class PreprocessingPipeline:
                 cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
                 print("Expanded weather_conditions into separate columns")
             
+            print(f"\n--- SAVING PROCESSED DATA ---")
+            
+            # Extract file_id from input_file_path for consistent naming
+            filename = os.path.basename(input_file_path)
+            
+            # Use regex to extract year and month from filename
+            match = re.search(r'(\d{4})_(\d{2})\.csv$', filename)
+            
+            if match:
+                year, month = match.groups()
+                file_id = f"{year}_{month}"
+            else:
+                # Fallback if date pattern not found
+                file_id = os.path.splitext(filename)[0]
+                print(f"Warning: Could not extract date from filename {filename}. Using full filename as file_id: {file_id}")
+            
+            try:
+                # Save the processed DataFrame using the save_dataframe_to_csv function
+                saved_file_path = save_dataframe_to_csv(
+                    folder_path=FOLDER_EXTRACT_NESTED_DATA,
+                    month_id=file_id,
+                    df=cross_df,
+                    file_prefix="extract_nested_data"
+                )
+                
+                print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
+        
+            except Exception as save_error:
+                print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+                print("Continuing with processing, but data was not saved to folder.")
+
             # Return the processed DataFrame
             return cross_df
             
@@ -1008,7 +1044,32 @@ class PreprocessingPipeline:
         elif 'trainNumber' in filtered_df.columns:
             unique_trains = filtered_df['trainNumber'].nunique()
             print(f"  • Unique trains at {TARGET_STATION_CODE}: {unique_trains}")
-            
+
+        print(f"\n--- SAVING FILTERED STATION DATA ---")
+        
+        # Use the month_id parameter if available, otherwise create a generic identifier
+        file_id = month_id
+        
+        # Only save if we have data (don't save empty results)
+        if not filtered_df.empty:
+            try:
+                # Save the filtered DataFrame using the save_dataframe_to_csv function
+                saved_file_path = save_dataframe_to_csv(
+                    folder_path=FOLDER_FILTER_BY_TARGET_STATION,
+                    month_id=file_id,
+                    df=filtered_df,
+                    file_prefix=f"filter_by_target_station_{TARGET_STATION_CODE}"
+                )
+                
+                print(f"✓ Successfully saved filtered station data to: {saved_file_path}")
+                
+            except Exception as save_error:
+                print(f"⚠️  Warning: Failed to save filtered station data: {save_error}")
+                print("Continuing with processing, but data was not saved to folder.")
+        else:
+            print(f"⚠️  Skipping save: No data to save for station '{TARGET_STATION_CODE}'")
+
+
         return filtered_df
 
     def process_causes_column(self, dataframe=None):

@@ -3,7 +3,7 @@
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
-    "filter_by_target_station": False,
+    "filter_by_target_station": True,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
