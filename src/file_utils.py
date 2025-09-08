@@ -35,6 +35,49 @@ from config.const_training import (
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
 )
 
+def save_dataframe_to_csv(folder_path: str, month_id: str, df: pd.DataFrame, 
+                          file_prefix: str = "data") -> str:
+    """
+    Generic function to save a DataFrame to a CSV file in a specified folder.
+    
+    Parameters
+    ----------
+    folder_path : str
+        The directory path where the CSV file will be saved.
+        Example: "data/output/1-extract_nested_data"
+    month_id : str
+        The month identifier for the file naming convention.
+        Example: "2024_01" or "202401"
+    df : pd.DataFrame
+        The pandas DataFrame to be saved to CSV.
+    file_prefix : str, optional
+        Prefix for the filename (default is "data").
+        The final filename will be: {file_prefix}_{month_id}.csv
+    
+    Returns
+    -------
+    str
+        The full path of the saved CSV file.
+    """
+    import os
+    import pandas as pd
+    from pathlib import Path
+    
+    # Create the folder path if it doesn't exist
+    folder = Path(folder_path)
+    folder.mkdir(parents=True, exist_ok=True)
+    
+    # Generate filename with month identifier
+    filename = f"{file_prefix}_{month_id}.csv"
+    file_path = folder / filename
+    
+    # Save the DataFrame to CSV
+    df.to_csv(file_path, index=False, encoding='utf-8')
+    
+    print(f"Successfully saved DataFrame to {file_path}")
+    print(f"Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+    
+    return str(file_path)
 
 def ensure_folder_structure():
     """

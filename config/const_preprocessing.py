@@ -22,6 +22,16 @@ PREPROCESSING_STATE_MACHINE = {
     "save_training_ready_csv": True
 }
 
+FOLDER_EXTRACT_NESTED_DATA = "data/output/1-extract_nested_data"
+FOLDER_FILTER_BY_TARGET_STATION = "data/output/2-filter_by_target_station"
+FOLDER_PROCESS_CAUSES_COLUMN = "data/output/3-process_causes_column"
+FOLDER_ADD_TRAIN_DELAYED_FEATURE = "data/output/4-add_train_delayed_feature"
+FOLDER_MERGE_WEATHER_COLUMNS = "data/output/5-merge_weather_columns"
+FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/6-process_actual_time_column"
+FOLDER_FILTER_COLUMNS = "data/output/7-filter_columns"
+FOLDER_CONVERT_BOOLEAN_TO_NUMERIC = "data/output/8-convert_boolean_to_numeric"
+FOLDER_HANDLE_MISSING_VALUES = "data/output/9-handle_missing_values"
+
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/1-preprocessed"
 TRAINING_READY_OUTPUT_FOLDER = "data/output/2-preprocessed_training_ready"
