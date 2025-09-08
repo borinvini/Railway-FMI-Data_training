@@ -2,9 +2,11 @@ from datetime import datetime
 import json
 import os
 import glob
+from pathlib import Path
 import re
 
 import joblib
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -59,9 +61,6 @@ def save_dataframe_to_csv(folder_path: str, month_id: str, df: pd.DataFrame,
     str
         The full path of the saved CSV file.
     """
-    import os
-    import pandas as pd
-    from pathlib import Path
     
     # Create the folder path if it doesn't exist
     folder = Path(folder_path)

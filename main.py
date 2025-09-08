@@ -130,7 +130,7 @@ def main():
         print("="*60)
         
         print(f"Initializing Training Pipeline...")
-        training_pipeline = TrainingPipeline()  # UNCHANGED: Still use TrainingPipeline for training operations
+        training_pipeline = TrainingPipeline()  
         
         print(f"Training state machine configuration: {TRAINING_STATE_MACHINE}")
         print(f"Starting training pipeline execution...")

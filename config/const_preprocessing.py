@@ -3,7 +3,7 @@
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
-    "filter_by_target_station": True,
+    "filter_by_target_station": False,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
@@ -17,7 +17,7 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_dayofweek_to_sincos": True,
     "drop_original_temporal_columns": False,
     "select_target": False,
-    "filter_strong_weather_causes": False,
+    "filter_strong_weather_causes": True,
     "remove_duplicates": True,
     "save_training_ready_csv": True
 }

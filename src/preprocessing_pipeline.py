@@ -935,8 +935,9 @@ class PreprocessingPipeline:
                 weather_df = cross_df["weather_conditions"].apply(pd.Series)
                 
                 # Drop unwanted keys if they exist
-                weather_df = weather_df.drop(columns=["closest_ems", "Present weather (auto)"], errors="ignore")
-                
+                drop_cols = ["closest_ems", "Present weather (auto)"] + [col for col in weather_df.columns if str(col).isdigit()]
+                weather_df = weather_df.drop(columns=drop_cols, errors="ignore")
+
                 # Join the expanded weather conditions back to the main DataFrame
                 cross_df = cross_df.drop("weather_conditions", axis=1).join(weather_df)
                 print("Expanded weather_conditions into separate columns")
