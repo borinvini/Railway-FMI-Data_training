@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import glob
 import os
+import shutil
 from typing import Counter
 import joblib
 import json
@@ -1493,9 +1494,13 @@ class TrainingPipeline:
         features from training data only, then transforms both train and test sets using 
         the training parameters. Saves scaled datasets to the scaled output folder.
         
+        If no weather features are found, it copies the train/test files as-is from the
+        source directory to the destination directory.
+        
         Modified to:
         1. Load data from MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
         2. Process only a single train/test file pair (no loop)
+        3. Copy files if no weather features found (instead of returning error)
         
         Parameters:
         -----------
@@ -1508,6 +1513,7 @@ class TrainingPipeline:
             Results of the scaling operation including success status and scaling info
         """
         try:
+            
             print(f"    scale_weather_features: Starting weather feature scaling operation...")
             
             # Create output directory
@@ -1521,7 +1527,6 @@ class TrainingPipeline:
             train_files = glob.glob(train_pattern)
             test_files = glob.glob(test_pattern)
             
-
             if len(train_files) == 0:
                 error_msg = "No training files found to scale"
                 print(f"    scale_weather_features: {error_msg}")
@@ -1561,44 +1566,22 @@ class TrainingPipeline:
                 }
             
             # Get the single train/test file pair
-            train_file = train_files[0]
-            train_filename = os.path.basename(train_file)
+            train_file_path = train_files[0]
+            test_file_path = test_files[0]
             
-            # Find corresponding test file
-            test_filename = train_filename.replace('_train.csv', '_test.csv')
-            expected_test_file = os.path.join(merged_selected_training_ready_dir, test_filename)
+            train_filename = os.path.basename(train_file_path)
+            test_filename = os.path.basename(test_file_path)
             
-            if not os.path.exists(expected_test_file):
-                error_msg = f"Corresponding test file not found: {test_filename}"
-                print(f"    scale_weather_features: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
+            print(f"    scale_weather_features: Processing file pair:")
+            print(f"      Train: {train_filename}")
+            print(f"      Test: {test_filename}")
             
-            test_file = expected_test_file
-            
-            print(f"    scale_weather_features: Processing single train/test file pair:")
-            print(f"      Train file: {train_filename}")
-            print(f"      Test file: {test_filename}")
-            
-            # Load the datasets
-            print(f"    scale_weather_features: Loading datasets...")
-            train_df = pd.read_csv(train_file)
-            test_df = pd.read_csv(test_file)
-            
-            if train_df.empty:
-                error_msg = f"Training dataset {train_filename} is empty"
-                print(f"    scale_weather_features: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            if test_df.empty:
-                error_msg = f"Test dataset {test_filename} is empty"
+            # Load datasets
+            try:
+                train_df = pd.read_csv(train_file_path)
+                test_df = pd.read_csv(test_file_path)
+            except Exception as e:
+                error_msg = f"Error loading datasets: {str(e)}"
                 print(f"    scale_weather_features: {error_msg}")
                 return {
                     "success": False,
@@ -1612,15 +1595,92 @@ class TrainingPipeline:
             # Identify weather features that exist in the dataset
             available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
             
+            # NEW LOGIC: Handle case when no weather features are found
             if not available_weather_features:
-                error_msg = f"No weather features found in {train_filename}"
-                print(f"    scale_weather_features: {error_msg}")
+                print(f"    scale_weather_features: No weather features found in {train_filename}")
+                print(f"    scale_weather_features: Copying files as-is from source to scaled directory...")
+                
+                # Generate output filenames (keep same naming convention)
+                scaled_train_filename = train_filename.replace('.csv', '.csv')  # Keep same name
+                scaled_test_filename = test_filename.replace('.csv', '.csv')    # Keep same name
+                
+                scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
+                scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
+                
+                try:
+                    # Copy train file
+                    shutil.copy2(train_file_path, scaled_train_path)
+                    print(f"    scale_weather_features: ✓ Copied train file to: {scaled_train_filename}")
+                    
+                    # Copy test file
+                    shutil.copy2(test_file_path, scaled_test_path)
+                    print(f"    scale_weather_features: ✓ Copied test file to: {scaled_test_filename}")
+                    
+                except Exception as e:
+                    error_msg = f"Error copying files: {str(e)}"
+                    print(f"    scale_weather_features: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "processed_files": 0
+                    }
+                
+                # Prepare result for no weather features case
+                no_scaling_result = {
+                    "original_train_file": train_filename,
+                    "original_test_file": test_filename,
+                    "scaled_train_file": scaled_train_filename,
+                    "scaled_test_file": scaled_test_filename,
+                    "train_rows": len(train_df),
+                    "test_rows": len(test_df),
+                    "weather_features_scaled": [],  # Empty list - no features scaled
+                    "scaling_method": "None - Files copied as-is"
+                }
+                
+                # Save summary for no scaling case
+                summary_filename = "scaling_summary.txt"
+                summary_path = os.path.join(scaled_training_ready_dir, summary_filename)
+                
+                with open(summary_path, 'w', encoding='utf-8') as f:
+                    f.write("Weather Feature Scaling Summary\n")
+                    f.write("=" * 40 + "\n\n")
+                    
+                    f.write(f"Scaling timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Scaler type: None (No weather features found)\n")
+                    f.write(f"Source directory: {MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER}\n")
+                    f.write(f"Output directory: {MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER}\n\n")
+                    
+                    f.write(f"Files processed:\n")
+                    f.write(f"  Train file: {train_filename} ({len(train_df):,} rows)\n")
+                    f.write(f"  Test file: {test_filename} ({len(test_df):,} rows)\n")
+                    f.write(f"  Output train file: {scaled_train_filename}\n")
+                    f.write(f"  Output test file: {scaled_test_filename}\n\n")
+                    
+                    f.write("Weather features status:\n")
+                    f.write("-" * 25 + "\n")
+                    f.write("No weather features were found in the dataset.\n")
+                    f.write("Files were copied as-is without any scaling applied.\n\n")
+                    
+                    f.write("Available weather features to check:\n")
+                    for feature in ALL_WEATHER_FEATURES:
+                        f.write(f"  {feature}: ✗ Not found\n")
+                
+                print(f"    scale_weather_features: Scaling summary saved to: {summary_filename}")
+                
+                # Return successful result for no scaling case
                 return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
+                    "success": True,
+                    "processed_files": 1,
+                    "train_rows": len(train_df),
+                    "test_rows": len(test_df),
+                    "weather_features_scaled": [],  # Empty list
+                    "scaling_summary": no_scaling_result,
+                    "output_directory": scaled_training_ready_dir,
+                    "message": f"No weather features found. Files copied as-is: {train_filename}, {test_filename}",
+                    "scaling_applied": False  # Flag to indicate no scaling was applied
                 }
             
+            # EXISTING LOGIC: Continue with normal scaling when weather features are found
             print(f"    scale_weather_features: Found {len(available_weather_features)} weather features to scale")
             print(f"      Weather features: {available_weather_features}")
             
@@ -1708,7 +1768,8 @@ class TrainingPipeline:
                 "weather_features_scaled": available_weather_features,
                 "scaling_summary": scaling_result,
                 "output_directory": scaled_training_ready_dir,
-                "message": f"Successfully scaled weather features for single train/test file pair: {train_filename}, {test_filename}"
+                "message": f"Successfully scaled weather features for single train/test file pair: {train_filename}, {test_filename}",
+                "scaling_applied": True  # Flag to indicate scaling was applied
             }
             
         except Exception as e:
@@ -2067,6 +2128,7 @@ class TrainingPipeline:
                     "problem_type": problem_type,
                     "target_feature": target_feature,
                     "n_features": len(feature_columns),
+                    "feature_names": feature_columns,
                     "n_train_samples": len(X_train),
                     "n_test_samples": len(X_test),
                     "used_sample_weights": sample_weights is not None,
