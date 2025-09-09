@@ -3,7 +3,7 @@
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
-    "filter_by_target_station": False,
+    "filter_by_target_station": True,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
@@ -16,8 +16,8 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_month_to_sincos": True,
     "convert_dayofweek_to_sincos": True,
     "drop_original_temporal_columns": False,
-    "select_target": False,
-    "filter_strong_weather_causes": True,
+    "select_target": False, 
+    "filter_strong_weather_causes": False,
     "remove_duplicates": True,
     "save_training_ready_csv": True
 }
@@ -27,6 +27,7 @@ FOLDER_FILTER_BY_TARGET_STATION = "data/output/2-filter_by_target_station"
 FOLDER_PROCESS_CAUSES_COLUMN = "data/output/3-process_causes_column"
 FOLDER_ADD_TRAIN_DELAYED_FEATURE = "data/output/4-add_train_delayed_feature"
 FOLDER_MERGE_WEATHER_COLUMNS = "data/output/5-merge_weather_columns"
+
 FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/6-process_actual_time_column"
 FOLDER_FILTER_COLUMNS = "data/output/7-filter_columns"
 FOLDER_CONVERT_BOOLEAN_TO_NUMERIC = "data/output/8-convert_boolean_to_numeric"
@@ -128,7 +129,7 @@ IMPORTANT_WEATHER_FEATURES = [
 ]
 
 
-# List of weather features thathas 2 cols and need to merge in 1 col
+# List of weather features that has 2 cols and need to merge in 1 col
 WEATHER_COLS_TO_MERGE = [
     "Snow depth", 
     "Precipitation amount", 

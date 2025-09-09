@@ -183,6 +183,39 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ merge_data_files (disabled)")
 
+        if state_machine.get("select_training_cols", False):
+            try:
+                print(f"    → select_training_cols")
+                cols_selection_result = self.select_training_cols(
+                    data=result["data"] if result["data"] is not None else None
+                )
+                
+                if cols_selection_result and cols_selection_result.get("success", False):
+                    # Note: This stage doesn't modify data, just displays column info
+                    result["steps_executed"].append("select_training_cols")
+                    result["column_analysis"] = {
+                        "total_columns": cols_selection_result.get("total_columns", 0),
+                        "file_analyzed": cols_selection_result.get("file_path", ""),
+                        "dataset_shape": cols_selection_result.get("dataset_shape", (0, 0)),
+                        "column_types": cols_selection_result.get("column_types", {})
+                    }
+                    print(f"      ✓ Successfully analyzed training columns")
+                    print(f"      ✓ Total columns found: {cols_selection_result.get('total_columns', 0)}")
+                    print(f"      ✓ File analyzed: {os.path.basename(cols_selection_result.get('file_path', ''))}")
+                    result["success"] = True
+                else:
+                    error_msg = cols_selection_result.get("error", "select_training_cols returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"select_training_cols failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ select_training_cols (disabled)")
+
         if state_machine.get("select_time_features", False):
             try:
                 print(f"    → select_time_features")
@@ -1754,6 +1787,166 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg,
                 "processed_files": 0
+            }
+
+    def select_training_cols(self, data=None, original_file_path=None):
+        """
+        Display all column names from the merged training data files on terminal.
+        
+        This method finds the most recent merged data file in the merged_training_ready 
+        directory and displays all column names to help with training column selection.
+        It follows the same file discovery pattern as other pipeline stages.
+        
+        Parameters:
+        -----------
+        data : pandas.DataFrame, optional
+            Pre-loaded dataframe (not used - method discovers files automatically)
+        original_file_path : str, optional
+            Path to specific file to analyze (optional override)
+            
+        Returns:
+        --------
+        dict
+            Results of the column display operation including success status and column info
+        """
+        try:
+            print(f"    select_training_cols: Starting column analysis...")
+            
+            # Determine file path to analyze
+            if original_file_path and os.path.exists(original_file_path):
+                file_path = original_file_path
+                print(f"    select_training_cols: Using specified file: {os.path.basename(file_path)}")
+            else:
+                # Auto-discover merged files using the updated MERGED_TRAINING_READY_OUTPUT_FOLDER
+                merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                
+                # Create directory if it doesn't exist
+                os.makedirs(merged_training_ready_dir, exist_ok=True)
+                
+                # Find merged data files using glob pattern
+                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                # Filter out train/test files to get only the main merged files
+                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                
+                if merged_data_files:
+                    # Use the most recent merged file
+                    file_path = max(merged_data_files, key=os.path.getmtime)
+                    print(f"    select_training_cols: Found merged file: {os.path.basename(file_path)}")
+                else:
+                    error_msg = f"No merged data files found in directory: {merged_training_ready_dir}"
+                    print(f"    select_training_cols: {error_msg}")
+                    print(f"    select_training_cols: Searched for pattern: merged_data_*.csv")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "searched_directory": merged_training_ready_dir,
+                        "search_pattern": "merged_data_*.csv"
+                    }
+            
+            # Load the CSV file to get column information
+            print(f"    select_training_cols: Loading file: {file_path}")
+            
+            try:
+                df = pd.read_csv(file_path)
+            except Exception as e:
+                error_msg = f"Failed to load CSV file: {str(e)}"
+                print(f"    select_training_cols: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "file_path": file_path
+                }
+            
+            # Get column information
+            total_columns = len(df.columns)
+            column_names = list(df.columns)
+            data_shape = df.shape
+            
+            # Display comprehensive column information on terminal
+            print(f"")
+            print(f"    ╔════════════════════════════════════════════════════════════════════════════════╗")
+            print(f"    ║                          TRAINING COLUMNS ANALYSIS                             ║")
+            print(f"    ╠════════════════════════════════════════════════════════════════════════════════╣")
+            print(f"    ║ File: {os.path.basename(file_path):<68} ║")
+            print(f"    ║ Dataset Shape: {str(data_shape):<61} ║")
+            print(f"    ║ Total Columns: {total_columns:<61} ║")
+            print(f"    ╚════════════════════════════════════════════════════════════════════════════════╝")
+            print(f"")
+            print(f"    📋 ALL AVAILABLE COLUMNS:")
+            print(f"    " + "="*80)
+            
+            # Display columns in a formatted way (4 columns per row for better readability)
+            columns_per_row = 4
+            for i in range(0, total_columns, columns_per_row):
+                row_columns = column_names[i:i + columns_per_row]
+                formatted_row = []
+                
+                for j, col in enumerate(row_columns):
+                    col_num = i + j + 1
+                    formatted_col = f"{col_num:2d}. {col}"
+                    formatted_row.append(f"{formatted_col:<18}")
+                
+                print(f"    {' '.join(formatted_row)}")
+            
+            print(f"    " + "="*80)
+            print(f"")
+            
+            # Additional analysis - categorize columns by type if possible
+            print(f"    🔍 COLUMN TYPE ANALYSIS:")
+            print(f"    " + "-"*40)
+            
+            # Try to categorize columns based on common patterns
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+            datetime_cols = df.select_dtypes(include=['datetime']).columns.tolist()
+            boolean_cols = [col for col in df.columns if df[col].dtype == 'bool']
+            
+            print(f"    📊 Numeric columns ({len(numeric_cols)}): {', '.join(numeric_cols[:10])}")
+            if len(numeric_cols) > 10:
+                print(f"       ... and {len(numeric_cols) - 10} more numeric columns")
+            
+            print(f"    📝 Categorical columns ({len(categorical_cols)}): {', '.join(categorical_cols[:10])}")
+            if len(categorical_cols) > 10:
+                print(f"       ... and {len(categorical_cols) - 10} more categorical columns")
+                
+            if datetime_cols:
+                print(f"    📅 Datetime columns ({len(datetime_cols)}): {', '.join(datetime_cols)}")
+            
+            if boolean_cols:
+                print(f"    ✓ Boolean columns ({len(boolean_cols)}): {', '.join(boolean_cols)}")
+            
+            print(f"")
+            print(f"    ✅ Column analysis completed successfully!")
+            print(f"")
+            
+            # Return success result with detailed information
+            return {
+                "success": True,
+                "file_path": file_path,
+                "dataset_shape": data_shape,
+                "total_columns": total_columns,
+                "column_names": column_names,
+                "column_types": {
+                    "numeric": len(numeric_cols),
+                    "categorical": len(categorical_cols), 
+                    "datetime": len(datetime_cols),
+                    "boolean": len(boolean_cols)
+                },
+                "numeric_columns": numeric_cols,
+                "categorical_columns": categorical_cols,
+                "datetime_columns": datetime_cols,
+                "boolean_columns": boolean_cols,
+                "message": f"Successfully analyzed {total_columns} columns from {os.path.basename(file_path)}"
+            }
+            
+        except Exception as e:
+            error_msg = f"select_training_cols failed: {str(e)}"
+            print(f"    select_training_cols: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg
             }
 
     def select_time_features(self, data=None, original_file_path=None):

@@ -3,10 +3,11 @@ import numpy as np
 
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
-    "select_time_features": True,
-    "drop_nan_columns": True,
-    "split_dataset": True,
-    "scale_weather_features": True,
+    "select_training_cols": True,
+    "select_time_features": False,
+    "drop_nan_columns": False,
+    "split_dataset": False,
+    "scale_weather_features": False,
     "correlation_analysis": False,
     "non_weather_correlation_analysis": False,
     "correlation_analysis_by_station": False,
@@ -22,8 +23,8 @@ TRAINING_STATE_MACHINE = {
     "train_xgboost_selected_features": False
 }
 
-MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/3-merged_training_ready"
-MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/4-merged_scaled_training_ready"
+MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merged_training_ready"
+MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/501-merged_scaled_training_ready"
 
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
