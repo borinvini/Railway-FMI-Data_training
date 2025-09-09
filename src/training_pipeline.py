@@ -652,15 +652,14 @@ class TrainingPipeline:
                     print(f"      ✓ Problem type: {xgboost_result.get('problem_type', 'N/A')}")
                     print(f"      ✓ Models trained: {xgboost_result.get('models_trained', 0)}")
                     print(f"      ✓ Target feature: {xgboost_result.get('target_feature', 'N/A')}")
-                    print(f"      ✓ Average CV Score: {xgboost_result.get('average_cv_score', 0):.4f}")
+                    print(f"      ✓ Average CV Score: {xgboost_result.get('cv_score', 0):.4f}")
                     
                     # Print problem-specific metrics
                     if xgboost_result.get('problem_type') == 'classification':
-                        print(f"      ✓ Average Test F1: {xgboost_result.get('average_test_f1', 0):.4f}")
-                        print(f"      ✓ Average Test Accuracy: {xgboost_result.get('average_test_accuracy', 0):.4f}")
+                        print(f"      ✓ Average Test F1: {xgboost_result.get('test_f1', 0):.4f}")
                     else:
-                        print(f"      ✓ Average Test RMSE: {xgboost_result.get('average_test_rmse', 0):.4f}")
-                        print(f"      ✓ Average Test R²: {xgboost_result.get('average_test_r2', 0):.4f}")
+                        print(f"      ✓ Average Test RMSE: {xgboost_result.get('test_rmse', 0):.4f}")
+                        print(f"      ✓ Average Test R²: {xgboost_result.get('test_r2', 0):.4f}")
                         
                     print(f"      ✓ Results saved to: {xgboost_result.get('output_directory', 'N/A')}")
                     result["success"] = True
@@ -1959,14 +1958,20 @@ class TrainingPipeline:
                 y_pred_proba = best_model.predict_proba(X_test)[:, 1] if hasattr(best_model, 'predict_proba') else y_pred
                 
                 test_accuracy = accuracy_score(y_test, y_pred)
-                test_f1 = f1_score(y_test, y_pred, average='weighted')
-                test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                test_recall = recall_score(y_test, y_pred, average='weighted')
+                test_f1_binary = f1_score(y_test, y_pred, average='binary') # Focuses only on the positive/minority class
+                test_f1_weighted = f1_score(y_test, y_pred, average='weighted') # Weighted average by class frequency
+                test_f1_macro = f1_score(y_test, y_pred, average='macro') # Weighted average by class frequency
+                test_precision = precision_score(y_test, y_pred, average='binary', zero_division=0)
+                test_recall = recall_score(y_test, y_pred, average='binary')
                 test_roc_auc = roc_auc_score(y_test, y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
                 
+                print(f"F1 Binary (CV uses this): {test_f1_binary:.4f}")
+                print(f"F1 Weighted (test uses this): {test_f1_weighted:.4f}")
+                print(f"F1 Macro (unweighted): {test_f1_macro:.4f}")
+
                 print(f"      Test Metrics:")
                 print(f"        Accuracy: {test_accuracy:.4f}")
-                print(f"        F1-Score: {test_f1:.4f}")
+                print(f"        F1-Score: {test_f1_binary:.4f}")
                 print(f"        Precision: {test_precision:.4f}")
                 print(f"        Recall: {test_recall:.4f}")
                 print(f"        ROC-AUC: {test_roc_auc:.4f}")
@@ -1974,7 +1979,9 @@ class TrainingPipeline:
                 training_results["performance_metrics"] = {
                     "cv_score": float(best_cv_score),
                     "test_accuracy": float(test_accuracy),
-                    "test_f1": float(test_f1),
+                    "test_f1_binary": float(test_f1_binary),
+                    "test_f1_weighted": float(test_f1_weighted),
+                    "test_f1_macro": float(test_f1_macro),
                     "test_precision": float(test_precision),
                     "test_recall": float(test_recall),
                     "test_roc_auc": float(test_roc_auc)
@@ -2012,6 +2019,7 @@ class TrainingPipeline:
                 "model_path": model_path,
                 "best_parameters": best_params,
                 "feature_count": len(feature_columns),
+                "feature_names": feature_columns,
                 "training_samples": len(X_train),
                 "test_samples": len(X_test)
             }
@@ -2048,7 +2056,7 @@ class TrainingPipeline:
             if is_classification:
                 return_dict.update({
                     "test_accuracy": float(test_accuracy),
-                    "test_f1": float(test_f1),
+                    "test_f1": float(test_f1_binary),
                     "test_precision": float(test_precision),
                     "test_recall": float(test_recall),
                     "test_roc_auc": float(test_roc_auc)
