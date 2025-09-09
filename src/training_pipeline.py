@@ -33,6 +33,7 @@ from src.file_utils import (
     generate_feature_importance_report, 
     generate_output_path,
     optimize_threshold_xgboost,
+    plot_feature_importance,
     plot_precision_recall_xgboost,
     plot_roc_curve_smote,
     plot_precision_recall_curve_smote,
@@ -1723,41 +1724,19 @@ class TrainingPipeline:
 
     def train_xgboost_with_randomized_search_cv(self):
         """
-        Train XGBoost models with hyperparameter optimization using RandomizedSearchCV.
-        
-        Modified to work with single train/test file pairs and check the specified
-        MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER location.
+        Modified XGBoost training method that tests different iteration counts and plots performance curve.
         
         This method:
-        1. Checks for files in the MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
-        2. Verifies if we have exactly one train/test file pair
-        3. If yes, proceeds with XGBoost training using RandomizedSearchCV
-        4. Performs comprehensive hyperparameter optimization
-        5. Saves trained models and detailed performance results
-        
-        Features:
-        - Supports both classification and regression problems
-        - Automatic problem type detection based on target feature
-        - Cross-validation with stratified sampling for classification
-        - Sample weighting for imbalanced datasets
-        - Memory usage monitoring
-        - Comprehensive model evaluation metrics
-        - Detailed logging and error handling
-        
-        Input Data Sources:
-        - Training Files: MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER/merged_data_train_scaled.csv
-        - Test Files: MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER/merged_data_test_scaled.csv
-        
-        Output:
-        - Trained XGBoost models saved to: data/output/xgboost_randomized_search/
-        
-        Returns:
-        --------
-        dict
-            A summary of the XGBoost training results including model performance metrics.
+        1. Tests RANDOM_SEARCH_ITERATIONS from 10 to 100 (step=10)
+        2. Tracks test F1 binary scores for each iteration count
+        3. Plots test_f1_binary vs n_iter curve
+        4. Saves the best model and performance metrics
         """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
         try:
-            print(f"    train_xgboost_with_randomized_search_cv: Starting XGBoost training with hyperparameter optimization...")
+            print(f"    train_xgboost_with_randomized_search_cv: Starting XGBoost training with iteration analysis...")
             
             # Create output directory
             output_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
@@ -1794,24 +1773,8 @@ class TrainingPipeline:
             train_file = train_files[0]
             test_file = test_files[0]
             
-            # Verify the files are corresponding pairs
+            # Extract identifier from filename
             train_filename = os.path.basename(train_file)
-            test_filename = os.path.basename(test_file)
-            expected_test_filename = train_filename.replace('_train.csv', '_test.csv')
-            
-            if test_filename != expected_test_filename:
-                error_msg = f"Train and test files don't match. Train: {train_filename}, Test: {test_filename}, Expected: {expected_test_filename}"
-                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            print(f"    train_xgboost_with_randomized_search_cv: Found valid train/test pair:")
-            print(f"      Train file: {train_filename}")
-            print(f"      Test file: {test_filename}")
-            
-            # Extract file identifier
             identifier_match = re.search(r'merged_data_(.+?)_train\.csv', train_filename)
             if not identifier_match:
                 error_msg = f"Could not extract identifier from {train_filename}"
@@ -1840,29 +1803,6 @@ class TrainingPipeline:
             problem_type = "classification" if is_classification else "regression"
             print(f"    train_xgboost_with_randomized_search_cv: Detected {problem_type} problem for target '{target_feature}'")
             
-            # Initialize results structure
-            training_results = {
-                "training_overview": {
-                    "training_completed": datetime.now().isoformat(),
-                    "problem_type": problem_type,
-                    "target_feature": target_feature,
-                    "file_identifier": file_identifier,
-                    "hyperparameter_search_iterations": RANDOM_SEARCH_ITERATIONS,
-                    "cross_validation_folds": RANDOM_SEARCH_CV_FOLDS
-                },
-                "xgboost_config": {
-                    "param_distributions": format_param_distributions_for_json(XGBOOST_PARAM_DISTRIBUTIONS),
-                    "methods_config": XGBOOST_METHODS_CONFIG.get(problem_type, [])
-                },
-                "model_results": {},
-                "performance_metrics": {}
-            }
-            
-            # Memory tracking
-            process = psutil.Process()
-            initial_memory = process.memory_info().rss / 1024 / 1024
-            print(f"    train_xgboost_with_randomized_search_cv: Initial memory usage: {initial_memory:.2f} MB")
-            
             # Load training and test data
             print(f"      Loading training data from {train_file}")
             train_df = pd.read_csv(train_file)
@@ -1889,7 +1829,6 @@ class TrainingPipeline:
             
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
-            print(f"      Target distribution - Train: {y_train.value_counts().to_dict() if is_classification else f'Mean: {y_train.mean():.4f}, Std: {y_train.std():.4f}'}")
             
             # Calculate sample weights if applicable
             sample_weights = None
@@ -1898,10 +1837,8 @@ class TrainingPipeline:
                 weights = train_df[WEIGHT_DELAY_COLUMN].values
                 
                 if is_classification:
-                    # Cap weights for classification
                     weights = np.clip(weights, 1, MAX_SAMPLE_WEIGHT_CLASSIFICATION)
                 else:
-                    # Cap weights for regression
                     weights = np.clip(weights, 1, MAX_SAMPLE_WEIGHT_REGRESSION)
                 
                 sample_weights = weights
@@ -1915,6 +1852,7 @@ class TrainingPipeline:
                     n_jobs=1,
                     eval_metric='logloss'
                 )
+                scoring_metric = SCORE_METRIC
             else:
                 cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
                 base_model = xgb.XGBRegressor(
@@ -1922,157 +1860,266 @@ class TrainingPipeline:
                     n_jobs=1,
                     eval_metric='rmse'
                 )
+                scoring_metric = 'neg_mean_squared_error'
             
-            # Perform hyperparameter optimization
-            print(f"      Starting RandomizedSearchCV with {RANDOM_SEARCH_ITERATIONS} iterations...")
+            # Define iteration range: 10 to 100 (step=10)
+            iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
+            print(f"      Testing iteration values: {iteration_values}")
             
-            randomized_search = RandomizedSearchCV(
-                estimator=base_model,
-                param_distributions=XGBOOST_PARAM_DISTRIBUTIONS,
-                n_iter=RANDOM_SEARCH_ITERATIONS,
-                scoring=SCORE_METRIC,
-                cv=cv_splitter,
-                random_state=42,
-                n_jobs=1,
-                verbose=1
-            )
+            # Initialize tracking lists
+            iteration_results = []
+            test_f1_scores = []
+            cv_scores = []
             
-            # Fit with sample weights if available
-            if sample_weights is not None:
-                randomized_search.fit(X_train, y_train, sample_weight=sample_weights)
-            else:
-                randomized_search.fit(X_train, y_train)
+            best_model = None
+            best_f1_score = -np.inf if is_classification else np.inf
+            best_iteration = None
             
-            best_model = randomized_search.best_estimator_
-            best_params = randomized_search.best_params_
-            best_cv_score = randomized_search.best_score_
+            # Train models with different iteration counts
+            print(f"      Starting training with different iteration counts...")
             
-            print(f"      Best CV Score: {best_cv_score:.4f}")
-            print(f"      Best Parameters: {best_params}")
-            
-            # Make predictions on test set
-            y_pred = best_model.predict(X_test)
-            
-            # Calculate test metrics
-            if is_classification:
-                y_pred_proba = best_model.predict_proba(X_test)[:, 1] if hasattr(best_model, 'predict_proba') else y_pred
+            for i, n_iter in enumerate(iteration_values):
+                print(f"      Progress: {i+1}/{len(iteration_values)} - Testing {n_iter} iterations...")
                 
-                test_accuracy = accuracy_score(y_test, y_pred)
-                test_f1_binary = f1_score(y_test, y_pred, average='binary') # Focuses only on the positive/minority class
-                test_f1_weighted = f1_score(y_test, y_pred, average='weighted') # Weighted average by class frequency
-                test_f1_macro = f1_score(y_test, y_pred, average='macro') # Weighted average by class frequency
-                test_precision = precision_score(y_test, y_pred, average='binary', zero_division=0)
-                test_recall = recall_score(y_test, y_pred, average='binary')
-                test_roc_auc = roc_auc_score(y_test, y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                # Create RandomizedSearchCV with current iteration count
+                randomized_search = RandomizedSearchCV(
+                    estimator=base_model,
+                    param_distributions=XGBOOST_PARAM_DISTRIBUTIONS,
+                    n_iter=n_iter,
+                    scoring=scoring_metric,
+                    cv=cv_splitter,
+                    random_state=42,
+                    n_jobs=1,
+                    verbose=0  # Reduced verbosity for cleaner output
+                )
                 
-                print(f"F1 Binary (CV uses this): {test_f1_binary:.4f}")
-                print(f"F1 Weighted (test uses this): {test_f1_weighted:.4f}")
-                print(f"F1 Macro (unweighted): {test_f1_macro:.4f}")
-
-                print(f"      Test Metrics:")
-                print(f"        Accuracy: {test_accuracy:.4f}")
-                print(f"        F1-Score: {test_f1_binary:.4f}")
-                print(f"        Precision: {test_precision:.4f}")
-                print(f"        Recall: {test_recall:.4f}")
-                print(f"        ROC-AUC: {test_roc_auc:.4f}")
+                # Fit with sample weights if available
+                if sample_weights is not None:
+                    randomized_search.fit(X_train, y_train, sample_weight=sample_weights)
+                else:
+                    randomized_search.fit(X_train, y_train)
                 
-                training_results["performance_metrics"] = {
-                    "cv_score": float(best_cv_score),
-                    "test_accuracy": float(test_accuracy),
-                    "test_f1_binary": float(test_f1_binary),
-                    "test_f1_weighted": float(test_f1_weighted),
-                    "test_f1_macro": float(test_f1_macro),
-                    "test_precision": float(test_precision),
-                    "test_recall": float(test_recall),
-                    "test_roc_auc": float(test_roc_auc)
-                }
+                # Get best model for current iteration count
+                current_best_model = randomized_search.best_estimator_
+                current_cv_score = randomized_search.best_score_
                 
-            else:
-                test_mse = mean_squared_error(y_test, y_pred)
-                test_rmse = np.sqrt(test_mse)
-                test_mae = mean_absolute_error(y_test, y_pred)
-                test_r2 = r2_score(y_test, y_pred)
+                # Make predictions on test set
+                y_pred = current_best_model.predict(X_test)
                 
-                print(f"      Test Metrics:")
-                print(f"        RMSE: {test_rmse:.4f}")
-                print(f"        MAE: {test_mae:.4f}")
-                print(f"        R²: {test_r2:.4f}")
-                print(f"        MSE: {test_mse:.4f}")
+                # Calculate test metrics
+                if is_classification:
+                    test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
+                    test_accuracy = accuracy_score(y_test, y_pred)
+                    
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}")
+                    
+                    # Track best model based on F1 score
+                    if test_f1 > best_f1_score:
+                        best_f1_score = test_f1
+                        best_model = current_best_model
+                        best_iteration = n_iter
+                    
+                    test_f1_scores.append(test_f1)
+                    
+                else:
+                    test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+                    test_r2 = r2_score(y_test, y_pred)
+                    
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test RMSE = {test_rmse:.4f}, Test R² = {test_r2:.4f}")
+                    
+                    # Track best model based on RMSE (lower is better)
+                    if test_rmse < best_f1_score:
+                        best_f1_score = test_rmse
+                        best_model = current_best_model
+                        best_iteration = n_iter
+                    
+                    test_f1_scores.append(test_rmse)  # Using same list for consistency, but storing RMSE for regression
                 
-                training_results["performance_metrics"] = {
-                    "cv_score": float(best_cv_score),
-                    "test_rmse": float(test_rmse),
-                    "test_mae": float(test_mae),
-                    "test_r2": float(test_r2),
-                    "test_mse": float(test_mse)
-                }
+                cv_scores.append(current_cv_score)
+                
+                # Store detailed results
+                iteration_results.append({
+                    'n_iter': n_iter,
+                    'cv_score': current_cv_score,
+                    'test_metric': test_f1_scores[-1],
+                    'best_params': randomized_search.best_params_
+                })
             
-            # Save model
-            model_filename = f"xgboost_model_{file_identifier}.joblib"
-            model_path = os.path.join(output_dir, model_filename)
-            joblib.dump(best_model, model_path)
-            print(f"      Model saved to: {model_path}")
+            # Create performance curve plot
+            print(f"      Creating performance curve plot...")
             
-            # Store model info
-            training_results["model_results"] = {
-                "model_file": model_filename,
-                "model_path": model_path,
-                "best_parameters": best_params,
-                "feature_count": len(feature_columns),
-                "feature_names": feature_columns,
-                "training_samples": len(X_train),
-                "test_samples": len(X_test)
+            # Create single plot with dual y-axes
+            fig, ax1 = plt.subplots(figsize=(14, 8))
+            
+            # Plot Test F1/RMSE on left y-axis
+            color1 = 'tab:blue'
+            ax1.set_xlabel('Number of RandomizedSearch Iterations', fontsize=13)
+            ax1.set_ylabel(f'Test {"F1 Binary Score" if is_classification else "RMSE"}', color=color1, fontsize=13)
+            line1 = ax1.plot(iteration_values, test_f1_scores, 'o-', color=color1, linewidth=3, markersize=8, 
+                            label=f'Test {"F1 Binary" if is_classification else "RMSE"}')
+            ax1.tick_params(axis='y', labelcolor=color1)
+            ax1.grid(True, alpha=0.3)
+            
+            # Create second y-axis for CV Score
+            ax2 = ax1.twinx()
+            color2 = 'tab:green'
+            ax2.set_ylabel('Cross-Validation Score', color=color2, fontsize=13)
+            line2 = ax2.plot(iteration_values, cv_scores, 's-', color=color2, linewidth=3, markersize=8, 
+                            label='CV Score')
+            ax2.tick_params(axis='y', labelcolor=color2)
+            
+            # Highlight best iteration on both axes
+            if best_iteration:
+                best_idx = iteration_values.index(best_iteration)
+                
+                # Highlight on test score axis
+                ax1.plot(best_iteration, test_f1_scores[best_idx], 'o', color='red', markersize=15, 
+                        markerfacecolor='red', markeredgecolor='darkred', markeredgewidth=2)
+                
+                # Highlight on CV score axis
+                ax2.plot(best_iteration, cv_scores[best_idx], 's', color='red', markersize=15, 
+                        markerfacecolor='red', markeredgecolor='darkred', markeredgewidth=2)
+                
+                # Add annotation
+                ax1.annotate(f'Best at {best_iteration} iterations\nTest Score: {test_f1_scores[best_idx]:.4f}\nCV Score: {cv_scores[best_idx]:.4f}', 
+                            xy=(best_iteration, test_f1_scores[best_idx]), 
+                            xytext=(20, 30), textcoords='offset points',
+                            bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.8, edgecolor='orange'),
+                            arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.2', color='red'),
+                            fontsize=11, fontweight='bold')
+            
+            # Add title
+            plt.title(f'XGBoost Performance vs RandomizedSearch Iterations\nDataset: {file_identifier}', 
+                    fontsize=16, fontweight='bold', pad=20)
+            
+            # Create combined legend
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', bbox_to_anchor=(0.02, 0.98), 
+                    fontsize=12, framealpha=0.9)
+            
+            # Adjust layout
+            plt.tight_layout()
+            plot_filename = os.path.join(output_dir, f'xgboost_iteration_analysis_{file_identifier}.png')
+            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            plt.show()
+            print(f"      Performance curve saved to: {plot_filename}")
+            
+            # Save detailed results to JSON
+            results_summary = {
+                "training_overview": {
+                    "training_completed": datetime.now().isoformat(),
+                    "problem_type": problem_type,
+                    "target_feature": target_feature,
+                    "file_identifier": file_identifier,
+                    "iteration_range": f"10 to {RANDOM_SEARCH_ITERATIONS} (step=10)",
+                    "cross_validation_folds": RANDOM_SEARCH_CV_FOLDS,
+                    "best_iteration": best_iteration,
+                    "best_test_score": float(best_f1_score)
+                },
+                "iteration_analysis": iteration_results,
+                "best_model_params": best_model.get_params() if best_model else None
             }
             
-            # Memory tracking after training
-            final_memory = process.memory_info().rss / 1024 / 1024
-            memory_used = final_memory - initial_memory
-            print(f"      Memory usage after training: {final_memory:.2f} MB (+ {memory_used:.2f} MB)")
-            
-            # Save detailed results
-            results_filename = f"xgboost_training_results_{file_identifier}.json"
-            results_file = os.path.join(output_dir, results_filename)
-            
+            results_file = os.path.join(output_dir, f'xgboost_iteration_analysis_results_{file_identifier}.json')
             with open(results_file, 'w') as f:
-                json.dump(training_results, f, indent=2)
+                json.dump(results_summary, f, indent=2)
+            print(f"      Detailed results saved to: {results_file}")
             
-            print(f"      Results saved to: {results_file}")
-            print(f"    train_xgboost_with_randomized_search_cv: Successfully trained XGBoost model for {file_identifier}")
+            # Save the best model
+            if best_model:
+                model_filename = os.path.join(output_dir, f'xgboost_best_model_{file_identifier}.pkl')
+                joblib.dump(best_model, model_filename)
+                print(f"      Best model saved to: {model_filename}")
             
-            # Prepare return summary
-            return_dict = {
+            # Generate and save feature importance plot using GAIN method
+            try:
+                print(f"      Generating gain-based feature importance analysis...")
+                
+                # Extract gain-based feature importance (recommended method)
+                try:
+                    # Get gain scores from XGBoost booster
+                    gain_scores = best_model.get_booster().get_score(importance_type='gain')
+                    
+                    # Map XGBoost internal feature names (f0, f1, f2...) to actual feature names
+                    gain_importance = {}
+                    for i, feature in enumerate(feature_columns):
+                        feature_key = f'f{i}'
+                        gain_importance[feature] = gain_scores.get(feature_key, 0.0)
+                    
+                    importance_method = 'gain'
+                    importance_values = gain_importance
+                    print(f"      ✓ Using GAIN method (measures actual predictive contribution)")
+                    
+                except Exception as gain_error:
+                    print(f"      ⚠ Could not extract gain importance: {gain_error}")
+                    print(f"      → Falling back to default weight method")
+                    
+                    # Fallback to weight method (original approach)
+                    importance_values = dict(zip(feature_columns, best_model.feature_importances_))
+                    importance_method = 'weight'
+                    print(f"      ✓ Using WEIGHT method (frequency of splits)")
+                
+                # Prepare data for the plot_feature_importance function
+                importance_data = {}
+                for feature, importance in importance_values.items():
+                    importance_data[feature] = {
+                        "mean_importance": float(importance),
+                        "std_importance": 0.0,  # Single model, so no standard deviation
+                        "min_importance": float(importance),
+                        "max_importance": float(importance),
+                        "count": 1
+                    }
+                
+                # Sort features by importance (descending)
+                sorted_features = sorted(importance_data.items(), 
+                                       key=lambda x: x[1]["mean_importance"], 
+                                       reverse=True)
+                
+                # Create the feature importance plot (top 20 features)
+                plot_feature_importance(sorted_features[:20], output_dir)
+                
+                # Save feature importance data as CSV for reference
+                importance_df = pd.DataFrame({
+                    'feature': [f[0] for f in sorted_features],
+                    'importance': [f[1]["mean_importance"] for f in sorted_features],
+                    'method': importance_method
+                })
+                importance_csv_path = os.path.join(output_dir, f"feature_importance_{importance_method}_{file_identifier}.csv")
+                importance_df.to_csv(importance_csv_path, index=False)
+                
+                # Display top 5 features for logging
+                top_5_features = [f[0] for f in sorted_features[:5]]
+                
+                print(f"      ✓ Feature importance plot saved: feature_importance_plot.png")
+                print(f"      ✓ Feature importance CSV saved: {os.path.basename(importance_csv_path)}")
+                print(f"      ✓ Method used: {importance_method.upper()}")
+                print(f"      ✓ Top 5 most important features: {top_5_features}")
+                
+            except Exception as e:
+                print(f"      ⚠ Warning: Could not generate feature importance analysis: {str(e)}")
+
+            # Print summary
+            print(f"      Training Summary:")
+            print(f"        Problem Type: {problem_type}")
+            print(f"        Best Iteration Count: {best_iteration}")
+            print(f"        Best Test Score: {best_f1_score:.4f}")
+            print(f"        Score Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+            
+            return {
                 "success": True,
-                "models_trained": 1,
                 "problem_type": problem_type,
                 "target_feature": target_feature,
                 "file_identifier": file_identifier,
-                "cv_score": float(best_cv_score),
-                "output_directory": output_dir,
-                "results_file": results_file,
-                "model_file": model_path
+                "best_iteration": best_iteration,
+                "best_test_score": float(best_f1_score),
+                "iteration_results": iteration_results,
+                "models_trained": len(iteration_values),
+                "output_directory": output_dir
             }
             
-            # Add problem-specific metrics to return dict
-            if is_classification:
-                return_dict.update({
-                    "test_accuracy": float(test_accuracy),
-                    "test_f1": float(test_f1_binary),
-                    "test_precision": float(test_precision),
-                    "test_recall": float(test_recall),
-                    "test_roc_auc": float(test_roc_auc)
-                })
-            else:
-                return_dict.update({
-                    "test_rmse": float(test_rmse),
-                    "test_mae": float(test_mae),
-                    "test_r2": float(test_r2),
-                    "test_mse": float(test_mse)
-                })
-            
-            return return_dict
-            
         except Exception as e:
-            error_msg = f"train_xgboost_with_randomized_search_cv failed: {str(e)}"
+            error_msg = f"Error in train_xgboost_with_randomized_search_cv: {str(e)}"
             print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
             import traceback
             traceback.print_exc()

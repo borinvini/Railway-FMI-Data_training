@@ -126,7 +126,7 @@ SCORE_METRIC = 'f1'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 10
+RANDOM_SEARCH_ITERATIONS = 20
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration
