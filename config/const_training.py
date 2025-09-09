@@ -5,11 +5,12 @@ TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
     "select_training_cols": True,
     "split_dataset": True,
+    "scale_weather_features": True,
 }
 
 #    "select_time_features": False,
 #    "drop_nan_columns": False,
-#    "scale_weather_features": False,
+#    
 #    "correlation_analysis": False,
 #    "non_weather_correlation_analysis": False,
 #    "correlation_analysis_by_station": False,

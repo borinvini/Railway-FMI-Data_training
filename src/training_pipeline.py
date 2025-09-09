@@ -1226,10 +1226,10 @@ class TrainingPipeline:
 
     def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
         """
-        Split merged training datasets into train and test sets.
+        Split merged training dataset into train and test sets.
         
-        This method finds all merged data files in data/output/merged_training_ready,
-        splits each dataset into training and testing sets, and saves them as separate files.
+        This method checks if exactly one CSV file exists in data/output/merged_training_ready,
+        and if so, splits that dataset into training and testing sets, saving them as separate files.
         Automatically uses stratified splitting for classification problems based on the target feature.
         
         Parameters:
@@ -1255,15 +1255,44 @@ class TrainingPipeline:
             merged_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
             os.makedirs(merged_training_ready_dir, exist_ok=True)
             
-            # Find all merged data files using glob pattern
-            merged_data_pattern = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*.csv")
-            merged_data_files = glob.glob(merged_data_pattern)
+            # Get all CSV files in the directory
+            all_csv_files = [f for f in os.listdir(merged_training_ready_dir) 
+                            if f.endswith('.csv') and os.path.isfile(os.path.join(merged_training_ready_dir, f))]
             
-            # Filter out existing train/test files to avoid re-splitting them
-            merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+            # Filter out existing train/test files to get only source files
+            source_csv_files = [f for f in all_csv_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
             
-            if not merged_data_files:
-                error_msg = "No merged data files found to split"
+            # Check if exactly one CSV file exists
+            if len(source_csv_files) == 0:
+                error_msg = "No CSV files found in the directory"
+                print(f"    split_dataset: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            elif len(source_csv_files) > 1:
+                error_msg = f"Expected exactly one CSV file, but found {len(source_csv_files)}: {', '.join(source_csv_files)}"
+                print(f"    split_dataset: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0,
+                    "found_files": source_csv_files
+                }
+            
+            # Proceed with the single CSV file
+            csv_filename = source_csv_files[0]
+            file_path = os.path.join(merged_training_ready_dir, csv_filename)
+            
+            print(f"    split_dataset: Found exactly one CSV file: {csv_filename}")
+            print(f"    split_dataset: Processing {csv_filename}...")
+            
+            # Read the dataset
+            df = pd.read_csv(file_path)
+            
+            if df.empty:
+                error_msg = f"File {csv_filename} is empty"
                 print(f"    split_dataset: {error_msg}")
                 return {
                     "success": False,
@@ -1271,199 +1300,115 @@ class TrainingPipeline:
                     "processed_files": 0
                 }
             
-            print(f"    split_dataset: Found {len(merged_data_files)} merged data files")
-            for file_path in merged_data_files:
-                print(f"      - {os.path.basename(file_path)}")
+            print(f"      Dataset shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
             
-            # Initialize storage for processing results
-            split_results = []
-            total_train_rows = 0
-            total_test_rows = 0
+            # Detect target column for stratification
+            target_column = DEFAULT_TARGET_FEATURE if DEFAULT_TARGET_FEATURE in df.columns else None
+            if stratify_column:
+                target_column = stratify_column if stratify_column in df.columns else target_column
             
-            # Process each merged data file
-            for file_path in merged_data_files:
-                try:
-                    filename = os.path.basename(file_path)
-                    print(f"    split_dataset: Processing {filename}...")
+            # Determine if this is a classification problem
+            is_classification = False
+            stratify = None
+            
+            if target_column and target_column in df.columns:
+                unique_values = df[target_column].nunique()
+                is_classification = unique_values <= 10  # Assume classification if ≤ 10 unique values
+                
+                if is_classification:
+                    stratify = df[target_column]
+                    print(f"      Detected classification problem with target '{target_column}' ({unique_values} classes)")
                     
-                    # Read the merged dataset
-                    df = pd.read_csv(file_path)
+                    # Calculate class distribution before split
+                    class_distribution_before = {}
+                    value_counts = df[target_column].value_counts()
+                    total_samples = len(df)
                     
-                    if df.empty:
-                        print(f"    split_dataset: Warning - File {filename} is empty. Skipping.")
-                        continue
-                    
-                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
-                    
-                    # Determine target column and stratification logic
-                    target_column = DEFAULT_TARGET_FEATURE
-                    
-                    # Check if the default target feature exists in the dataset
-                    if target_column not in df.columns:
-                        # Try to find an alternative target from valid options
-                        target_options = VALID_TARGET_FEATURES
-                        target_column = None
+                    for class_value, count in value_counts.items():
+                        class_distribution_before[class_value] = {
+                            'count': int(count),
+                            'percentage': (count / total_samples) * 100
+                        }
                         
-                        for option in target_options:
-                            if option in df.columns:
-                                target_column = option
-                                break
-                        
-                        if not target_column:
-                            print(f"      Warning: No target column found in {filename}. Skipping.")
-                            continue
-                    
-                    print(f"      Using target column: {target_column}")
-                    
-                    # Determine if this is a classification or regression problem
-                    is_classification = True
-                    if target_column in REGRESSION_PROBLEM:
-                        is_classification = False
-                        print(f"      Target '{target_column}' indicates a regression problem")
-                    else:
-                        print(f"      Target '{target_column}' indicates a classification problem")
-                    
-                    # Calculate class distribution for classification problems (BEFORE split)
-                    class_distribution_before = None
-                    class_distribution_train = None
-                    class_distribution_test = None
-                    
-                    if is_classification:
-                        # Calculate class distribution before split
-                        value_counts = df[target_column].value_counts()
-                        total_samples = len(df)
-                        class_distribution_before = {}
-                        
-                        for class_value, count in value_counts.items():
-                            percentage = (count / total_samples) * 100
-                            class_distribution_before[class_value] = {
-                                'count': count,
-                                'percentage': percentage
-                            }
-                        
-                        print(f"      Class distribution before split:")
-                        for class_value, stats in class_distribution_before.items():
-                            print(f"        Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
-                    
-                    # Prepare stratification
-                    stratify = None
-                    if stratify_column:
-                        # Use explicitly provided stratify column
-                        if stratify_column in df.columns:
-                            stratify = df[stratify_column]
-                            print(f"      Using explicit stratified split on column: {stratify_column}")
-                        else:
-                            print(f"      Warning: Specified stratify column '{stratify_column}' not found. Using automatic detection.")
-                    
-                    # Auto-detect stratification for classification problems
-                    if stratify is None and is_classification:
-                        # Use the target column for stratification in classification
-                        stratify = df[target_column]
-                        print(f"      Using stratified split on target column: {target_column}")
-                    
-                    # Perform the train-test split
-                    train_df, test_df = train_test_split(
-                        df,
-                        test_size=test_size,
-                        random_state=random_state,
-                        stratify=stratify
-                    )
-                    
-                    # Calculate class distribution for classification problems (AFTER split)
-                    if is_classification:
-                        # Calculate class distribution for train set
-                        train_value_counts = train_df[target_column].value_counts()
-                        train_total = len(train_df)
-                        class_distribution_train = {}
-                        
-                        for class_value, count in train_value_counts.items():
-                            percentage = (count / train_total) * 100
-                            class_distribution_train[class_value] = {
-                                'count': count,
-                                'percentage': percentage
-                            }
-                        
-                        # Calculate class distribution for test set
-                        test_value_counts = test_df[target_column].value_counts()
-                        test_total = len(test_df)
-                        class_distribution_test = {}
-                        
-                        for class_value, count in test_value_counts.items():
-                            percentage = (count / test_total) * 100
-                            class_distribution_test[class_value] = {
-                                'count': count,
-                                'percentage': percentage
-                            }
-                        
-                        print(f"      Class distribution after split:")
-                        print(f"        Train set:")
-                        for class_value, stats in class_distribution_train.items():
-                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
-                        print(f"        Test set:")
-                        for class_value, stats in class_distribution_test.items():
-                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
-                    
-                    # Generate output filenames
-                    base_filename = filename.replace('.csv', '')
-                    train_filename = f"{base_filename}_train.csv"
-                    test_filename = f"{base_filename}_test.csv"
-                    
-                    train_path = os.path.join(merged_training_ready_dir, train_filename)
-                    test_path = os.path.join(merged_training_ready_dir, test_filename)
-                    
-                    # Save the train and test sets
-                    train_df.to_csv(train_path, index=False)
-                    test_df.to_csv(test_path, index=False)
-                    
-                    print(f"      Saved train set to: {train_filename}")
-                    print(f"      Saved test set to: {test_filename}")
-                    
-                    # Store results for this file
-                    result_data = {
-                        'original_file': filename,
-                        'train_file': train_filename,
-                        'test_file': test_filename,
-                        'target_column': target_column,
-                        'is_classification': is_classification,
-                        'stratified': stratify is not None,
-                        'original_rows': len(df),
-                        'train_rows': len(train_df),
-                        'test_rows': len(test_df),
-                        'test_size_actual': len(test_df) / len(df)
+                    print(f"      Class distribution:")
+                    for class_value, stats in class_distribution_before.items():
+                        print(f"        Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)")
+                else:
+                    print(f"      Detected regression problem with target '{target_column}'")
+            else:
+                print(f"      No target column detected - using simple random split")
+            
+           
+            train_df, test_df = train_test_split(
+                df,
+                test_size=test_size,
+                random_state=random_state,
+                stratify=stratify
+            )
+            
+            print(f"      Split results:")
+            print(f"        Train set: {len(train_df):,} samples ({(len(train_df) / len(df)) * 100:.1f}%)")
+            print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(df)) * 100:.1f}%)")
+            
+            # Generate output filenames
+            base_name = csv_filename.replace('.csv', '')
+            train_filename = f"{base_name}_train.csv"
+            test_filename = f"{base_name}_test.csv"
+            
+            train_path = os.path.join(merged_training_ready_dir, train_filename)
+            test_path = os.path.join(merged_training_ready_dir, test_filename)
+            
+            # Save train and test sets
+            train_df.to_csv(train_path, index=False)
+            test_df.to_csv(test_path, index=False)
+            
+            print(f"      Saved train set to: {train_filename}")
+            print(f"      Saved test set to: {test_filename}")
+            
+            # Calculate class distribution after split for classification problems
+            class_distribution_train = {}
+            class_distribution_test = {}
+            
+            if is_classification and target_column:
+                # Train set distribution
+                train_value_counts = train_df[target_column].value_counts()
+                for class_value, count in train_value_counts.items():
+                    class_distribution_train[class_value] = {
+                        'count': int(count),
+                        'percentage': (count / len(train_df)) * 100
                     }
-                    
-                    # Add class distribution data for classification problems
-                    if is_classification:
-                        result_data['class_distribution_before'] = class_distribution_before
-                        result_data['class_distribution_train'] = class_distribution_train
-                        result_data['class_distribution_test'] = class_distribution_test
-                    
-                    split_results.append(result_data)
-                    
-                    total_train_rows += len(train_df)
-                    total_test_rows += len(test_df)
-                    
-                    print(f"      Successfully processed {filename}")
-                    
-                except Exception as e:
-                    print(f"    split_dataset: Error processing {filename}: {str(e)}")
-                    continue
+                
+                # Test set distribution
+                test_value_counts = test_df[target_column].value_counts()
+                for class_value, count in test_value_counts.items():
+                    class_distribution_test[class_value] = {
+                        'count': int(count),
+                        'percentage': (count / len(test_df)) * 100
+                    }
             
-            # Check if we processed any files successfully
-            if not split_results:
-                error_msg = "No files were successfully split"
-                print(f"    split_dataset: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
+            # Prepare result data
+            result_data = {
+                'filename': csv_filename,
+                'original_rows': len(df),
+                'train_rows': len(train_df),
+                'test_rows': len(test_df),
+                'train_file': train_filename,
+                'test_file': test_filename,
+                'test_size_requested': test_size,
+                'test_size_actual': len(test_df) / len(df),
+                'target_column': target_column,
+                'is_classification': is_classification
+            }
             
-            print(f"    split_dataset: Split operation completed for {len(split_results)} files")
-            print(f"    split_dataset: Total train rows: {total_train_rows:,}")
-            print(f"    split_dataset: Total test rows: {total_test_rows:,}")
+            # Add class distribution data for classification problems
+            if is_classification:
+                result_data['class_distribution_before'] = class_distribution_before
+                result_data['class_distribution_train'] = class_distribution_train
+                result_data['class_distribution_test'] = class_distribution_test
             
-            # Save enhanced summary information
+            print(f"      Successfully processed {csv_filename}")
+            
+            # Save summary information
             summary_filename = "split_summary.txt"
             summary_path = os.path.join(merged_training_ready_dir, summary_filename)
             
@@ -1472,62 +1417,60 @@ class TrainingPipeline:
                 f.write("=" * 40 + "\n\n")
                 
                 f.write(f"Split timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Input file: {csv_filename}\n")
                 f.write(f"Test size: {test_size}\n")
                 f.write(f"Random state: {random_state}\n")
-                f.write(f"Default target feature: {DEFAULT_TARGET_FEATURE}\n")
-                f.write(f"Files processed: {len(split_results)}\n")
-                f.write(f"Total train rows: {total_train_rows:,}\n")
-                f.write(f"Total test rows: {total_test_rows:,}\n\n")
+                f.write(f"Stratify column: {target_column}\n\n")
                 
-                # File details with enhanced class distribution information
-                f.write("Split details:\n")
-                f.write("-" * 30 + "\n")
-                for result in split_results:
-                    f.write(f"Original: {result['original_file']}\n")
-                    f.write(f"  Target: {result['target_column']}\n")
-                    f.write(f"  Problem type: {'Classification' if result['is_classification'] else 'Regression'}\n")
-                    f.write(f"  Stratified: {'Yes' if result['stratified'] else 'No'}\n")
-                    f.write(f"  Train: {result['train_file']} ({result['train_rows']:,} rows)\n")
-                    f.write(f"  Test: {result['test_file']} ({result['test_rows']:,} rows)\n")
-                    f.write(f"  Actual test ratio: {result['test_size_actual']:.3f}\n")
+                f.write(f"Dataset Information:\n")
+                f.write(f"  Original rows: {result_data['original_rows']:,}\n")
+                f.write(f"  Columns: {df.shape[1]}\n")
+                f.write(f"  Problem type: {'Classification' if is_classification else 'Regression'}\n\n")
+                
+                f.write(f"Split Results:\n")
+                f.write(f"  Train set: {result_data['train_rows']:,} samples ({(result_data['train_rows'] / result_data['original_rows']) * 100:.1f}%)\n")
+                f.write(f"  Test set: {result_data['test_rows']:,} samples ({(result_data['test_rows'] / result_data['original_rows']) * 100:.1f}%)\n")
+                f.write(f"  Actual test size: {result_data['test_size_actual']:.3f}\n\n")
+                
+                f.write(f"Output Files:\n")
+                f.write(f"  Train: {result_data['train_file']}\n")
+                f.write(f"  Test: {result_data['test_file']}\n\n")
+                
+                # Add class distribution info for classification
+                if is_classification:
+                    f.write(f"Class Distribution Analysis:\n")
+                    f.write(f"  Target column: {target_column}\n\n")
                     
-                    # Add class distribution information for classification problems
-                    if result['is_classification'] and 'class_distribution_before' in result:
-                        f.write(f"\n  Class Distribution Analysis:\n")
-                        f.write(f"  {'-' * 25}\n")
-                        
-                        # Before split
-                        f.write(f"  Before Split (Total: {result['original_rows']:,} samples):\n")
-                        for class_value, stats in result['class_distribution_before'].items():
-                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-                        
-                        # After split - Train set
-                        f.write(f"\n  After Split - Train Set ({result['train_rows']:,} samples):\n")
-                        for class_value, stats in result['class_distribution_train'].items():
-                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-                        
-                        # After split - Test set
-                        f.write(f"\n  After Split - Test Set ({result['test_rows']:,} samples):\n")
-                        for class_value, stats in result['class_distribution_test'].items():
-                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                    # Before split
+                    f.write(f"  Before Split ({result_data['original_rows']:,} samples):\n")
+                    for class_value, stats in class_distribution_before.items():
+                        f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
                     
-                    f.write(f"\n")
+                    # After split - Train set
+                    f.write(f"\n  After Split - Train Set ({result_data['train_rows']:,} samples):\n")
+                    for class_value, stats in class_distribution_train.items():
+                        f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                    
+                    # After split - Test set
+                    f.write(f"\n  After Split - Test Set ({result_data['test_rows']:,} samples):\n")
+                    for class_value, stats in class_distribution_test.items():
+                        f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
             
             print(f"    split_dataset: Summary saved to {summary_filename}")
             
-            # Return success result following the pattern of other methods
+            # Return success result
             result = {
                 "success": True,
-                "processed_files": len(split_results),
-                "total_train_rows": total_train_rows,
-                "total_test_rows": total_test_rows,
+                "processed_files": 1,
+                "total_train_rows": len(train_df),
+                "total_test_rows": len(test_df),
                 "test_size": test_size,
-                "split_details": split_results,
+                "split_details": [result_data],
                 "summary_path": summary_path,
-                "message": f"Successfully split {len(split_results)} datasets into train/test sets"
+                "message": f"Successfully split dataset {csv_filename} into train/test sets"
             }
             
-            print(f"    split_dataset: Completed successfully - {len(split_results)} datasets split")
+            print(f"    split_dataset: Completed successfully - dataset split")
             
             return result
             
@@ -1541,7 +1484,245 @@ class TrainingPipeline:
                 "error": error_msg,
                 "processed_files": 0
             }
+
+    def scale_weather_features(self, csv_files=None):
+        """
+        Scale and normalize weather features using RobustScaler.
         
+        This method finds the single train/test split file pair, fits a RobustScaler on the weather 
+        features from training data only, then transforms both train and test sets using 
+        the training parameters. Saves scaled datasets to the scaled output folder.
+        
+        Modified to:
+        1. Load data from MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+        2. Process only a single train/test file pair (no loop)
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (currently not used - method discovers files automatically)
+            
+        Returns:
+        --------
+        dict
+            Results of the scaling operation including success status and scaling info
+        """
+        try:
+            print(f"    scale_weather_features: Starting weather feature scaling operation...")
+            
+            # Create output directory
+            scaled_training_ready_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            os.makedirs(scaled_training_ready_dir, exist_ok=True)
+            
+            merged_selected_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+            train_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_train.csv")
+            test_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_test.csv")
+            
+            train_files = glob.glob(train_pattern)
+            test_files = glob.glob(test_pattern)
+            
+
+            if len(train_files) == 0:
+                error_msg = "No training files found to scale"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            if len(train_files) > 1:
+                error_msg = f"Multiple training files found ({len(train_files)}). Expected exactly one train/test file pair."
+                print(f"    scale_weather_features: {error_msg}")
+                print(f"    scale_weather_features: Found files: {[os.path.basename(f) for f in train_files]}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            if len(test_files) == 0:
+                error_msg = "No test files found to scale"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            if len(test_files) > 1:
+                error_msg = f"Multiple test files found ({len(test_files)}). Expected exactly one train/test file pair."
+                print(f"    scale_weather_features: {error_msg}")
+                print(f"    scale_weather_features: Found files: {[os.path.basename(f) for f in test_files]}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Get the single train/test file pair
+            train_file = train_files[0]
+            train_filename = os.path.basename(train_file)
+            
+            # Find corresponding test file
+            test_filename = train_filename.replace('_train.csv', '_test.csv')
+            expected_test_file = os.path.join(merged_selected_training_ready_dir, test_filename)
+            
+            if not os.path.exists(expected_test_file):
+                error_msg = f"Corresponding test file not found: {test_filename}"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            test_file = expected_test_file
+            
+            print(f"    scale_weather_features: Processing single train/test file pair:")
+            print(f"      Train file: {train_filename}")
+            print(f"      Test file: {test_filename}")
+            
+            # Load the datasets
+            print(f"    scale_weather_features: Loading datasets...")
+            train_df = pd.read_csv(train_file)
+            test_df = pd.read_csv(test_file)
+            
+            if train_df.empty:
+                error_msg = f"Training dataset {train_filename} is empty"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            if test_df.empty:
+                error_msg = f"Test dataset {test_filename} is empty"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    scale_weather_features: Train dataset shape: {train_df.shape}")
+            print(f"    scale_weather_features: Test dataset shape: {test_df.shape}")
+            
+            # Identify weather features that exist in the dataset
+            available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
+            
+            if not available_weather_features:
+                error_msg = f"No weather features found in {train_filename}"
+                print(f"    scale_weather_features: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    scale_weather_features: Found {len(available_weather_features)} weather features to scale")
+            print(f"      Weather features: {available_weather_features}")
+            
+            # Create and fit scaler on training data only
+            scaler = RobustScaler()
+            
+            # Extract weather features for scaling
+            train_weather_features = train_df[available_weather_features]
+            test_weather_features = test_df[available_weather_features]
+            
+            # Fit scaler on training data only
+            scaler.fit(train_weather_features)
+            
+            # Transform both train and test sets using training parameters
+            train_weather_scaled = scaler.transform(train_weather_features)
+            test_weather_scaled = scaler.transform(test_weather_features)
+            
+            # Create scaled DataFrames
+            train_scaled_df = train_df.copy()
+            test_scaled_df = test_df.copy()
+            
+            # Replace weather feature columns with scaled versions
+            train_scaled_df[available_weather_features] = train_weather_scaled
+            test_scaled_df[available_weather_features] = test_weather_scaled
+            
+            # Generate output filenames
+            scaled_train_filename = train_filename.replace('.csv', '.csv')
+            scaled_test_filename = test_filename.replace('.csv', '.csv')
+            
+            scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
+            scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
+            
+            # Save scaled datasets
+            train_scaled_df.to_csv(scaled_train_path, index=False)
+            test_scaled_df.to_csv(scaled_test_path, index=False)
+            
+            print(f"    scale_weather_features: ✓ Scaled train dataset saved to: {scaled_train_filename}")
+            print(f"    scale_weather_features: ✓ Scaled test dataset saved to: {scaled_test_filename}")
+            
+            # Prepare scaling result
+            scaling_result = {
+                "original_train_file": train_filename,
+                "original_test_file": test_filename,
+                "scaled_train_file": scaled_train_filename,
+                "scaled_test_file": scaled_test_filename,
+                "train_rows": len(train_df),
+                "test_rows": len(test_df),
+                "weather_features_scaled": available_weather_features,
+                "scaling_method": "RobustScaler"
+            }
+            
+            # Save scaling summary
+            summary_filename = "scaling_summary.txt"
+            summary_path = os.path.join(scaled_training_ready_dir, summary_filename)
+            
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write("Weather Feature Scaling Summary\n")
+                f.write("=" * 40 + "\n\n")
+                
+                f.write(f"Scaling timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Scaler type: RobustScaler\n")
+                f.write(f"Source directory: {MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER}\n")
+                f.write(f"Output directory: {MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER}\n\n")
+                
+                f.write(f"Files processed:\n")
+                f.write(f"  Train file: {train_filename} ({len(train_df):,} rows)\n")
+                f.write(f"  Test file: {test_filename} ({len(test_df):,} rows)\n")
+                f.write(f"  Scaled train file: {scaled_train_filename}\n")
+                f.write(f"  Scaled test file: {scaled_test_filename}\n\n")
+                
+                f.write("Weather features scaled:\n")
+                f.write("-" * 25 + "\n")
+                for feature in ALL_WEATHER_FEATURES:
+                    status = "✓ Scaled" if feature in available_weather_features else "✗ Not found"
+                    f.write(f"  {feature}: {status}\n")
+            
+            print(f"    scale_weather_features: Scaling summary saved to: {summary_filename}")
+            
+            # Return successful result
+            return {
+                "success": True,
+                "processed_files": 1,
+                "train_rows": len(train_df),
+                "test_rows": len(test_df),
+                "weather_features_scaled": available_weather_features,
+                "scaling_summary": scaling_result,
+                "output_directory": scaled_training_ready_dir,
+                "message": f"Successfully scaled weather features for single train/test file pair: {train_filename}, {test_filename}"
+            }
+            
+        except Exception as e:
+            error_msg = f"scale_weather_features failed: {str(e)}"
+            print(f"    scale_weather_features: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+
+
 ############################
 ## OLD METHODS
 ############################
@@ -2583,238 +2764,6 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
-    def scale_weather_features(self, csv_files=None):
-        """
-        Scale and normalize weather features using RobustScaler.
-        
-        This method finds all train/test split files, fits a RobustScaler on the weather 
-        features from training data only, then transforms both train and test sets using 
-        the training parameters. Saves scaled datasets to the scaled output folder.
-        
-        Parameters:
-        -----------
-        csv_files : list, optional
-            List of CSV file paths (currently not used - method discovers files automatically)
-            
-        Returns:
-        --------
-        dict
-            Results of the scaling operation including success status and scaling info
-        """
-        try:
-            print(f"    scale_weather_features: Starting weather feature scaling operation...")
-            
-            # Create output directory
-            scaled_training_ready_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
-            os.makedirs(scaled_training_ready_dir, exist_ok=True)
-            
-            # Find all train/test split files
-            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
-            train_pattern = os.path.join(merged_training_ready_dir, "merged_data_*_train.csv")
-            test_pattern = os.path.join(merged_training_ready_dir, "merged_data_*_test.csv")
-            
-            train_files = glob.glob(train_pattern)
-            test_files = glob.glob(test_pattern)
-            
-            if not train_files:
-                error_msg = "No training files found to scale"
-                print(f"    scale_weather_features: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            if not test_files:
-                error_msg = "No test files found to scale"
-                print(f"    scale_weather_features: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            print(f"    scale_weather_features: Found {len(train_files)} train files and {len(test_files)} test files")
-            
-            # Initialize storage for processing results
-            scaling_results = []
-            total_train_rows = 0
-            total_test_rows = 0
-            
-            # Process each pair of train/test files
-            for train_file in train_files:
-                try:
-                    # Find corresponding test file
-                    train_filename = os.path.basename(train_file)
-                    test_filename = train_filename.replace('_train.csv', '_test.csv')
-                    test_file = os.path.join(merged_training_ready_dir, test_filename)
-                    
-                    if not os.path.exists(test_file):
-                        print(f"    scale_weather_features: Warning - No corresponding test file for {train_filename}. Skipping.")
-                        continue
-                    
-                    print(f"    scale_weather_features: Processing {train_filename} and {test_filename}...")
-                    
-                    # Read the datasets
-                    train_df = pd.read_csv(train_file)
-                    test_df = pd.read_csv(test_file)
-                    
-                    if train_df.empty or test_df.empty:
-                        print(f"    scale_weather_features: Warning - Empty datasets found. Skipping.")
-                        continue
-                    
-                    # Identify weather features that exist in the dataset
-                    available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
-                    
-                    if not available_weather_features:
-                        print(f"    scale_weather_features: Warning - No weather features found in {train_filename}. Skipping.")
-                        continue
-                    
-                    print(f"    scale_weather_features: Found {len(available_weather_features)} weather features to scale")
-                    print(f"      Weather features: {available_weather_features}")
-                    
-                    # Create and fit scaler on training data only
-                    scaler = RobustScaler()
-                    
-                    # Extract weather features for scaling
-                    train_weather_features = train_df[available_weather_features]
-                    test_weather_features = test_df[available_weather_features]
-                    
-                    # Fit scaler on training data only
-                    scaler.fit(train_weather_features)
-                    
-                    # Transform both train and test sets using training parameters
-                    train_weather_scaled = scaler.transform(train_weather_features)
-                    test_weather_scaled = scaler.transform(test_weather_features)
-                    
-                    # Create scaled DataFrames
-                    train_scaled_df = train_df.copy()
-                    test_scaled_df = test_df.copy()
-                    
-                    # Replace weather feature columns with scaled versions
-                    train_scaled_df[available_weather_features] = train_weather_scaled
-                    test_scaled_df[available_weather_features] = test_weather_scaled
-                    
-                    # Generate output filenames
-                    scaled_train_filename = train_filename.replace('.csv', '_scaled.csv')
-                    scaled_test_filename = test_filename.replace('.csv', '_scaled.csv')
-                    
-                    scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
-                    scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
-                    
-                    # Save scaled datasets
-                    train_scaled_df.to_csv(scaled_train_path, index=False)
-                    test_scaled_df.to_csv(scaled_test_path, index=False)
-                    
-                    # Save scaler for future use
-                    scaler_filename = train_filename.replace('_train.csv', '_weather_scaler.pkl')
-                    scaler_path = os.path.join(scaled_training_ready_dir, scaler_filename)
-                    joblib.dump(scaler, scaler_path)
-                    
-                    print(f"    scale_weather_features: ✓ Saved scaled train data to {scaled_train_filename}")
-                    print(f"    scale_weather_features: ✓ Saved scaled test data to {scaled_test_filename}")
-                    print(f"    scale_weather_features: ✓ Saved scaler to {scaler_filename}")
-                    
-                    # Store scaling statistics
-                    scaling_info = {
-                        "original_train_file": train_filename,
-                        "original_test_file": test_filename,
-                        "scaled_train_file": scaled_train_filename,
-                        "scaled_test_file": scaled_test_filename,
-                        "scaler_file": scaler_filename,
-                        "weather_features_scaled": available_weather_features,
-                        "train_rows": len(train_scaled_df),
-                        "test_rows": len(test_scaled_df),
-                        "features_count": len(available_weather_features),
-                        "scaler_stats": {
-                            "center_": scaler.center_.tolist() if hasattr(scaler, 'center_') else [],
-                            "scale_": scaler.scale_.tolist() if hasattr(scaler, 'scale_') else []
-                        }
-                    }
-                    
-                    scaling_results.append(scaling_info)
-                    total_train_rows += len(train_scaled_df)
-                    total_test_rows += len(test_scaled_df)
-                    
-                except Exception as e:
-                    error_msg = f"Failed to process {train_filename}: {str(e)}"
-                    print(f"    scale_weather_features: ✗ {error_msg}")
-                    scaling_results.append({
-                        "error": error_msg,
-                        "file": train_filename
-                    })
-                    continue
-            
-            # Save scaling summary
-            summary_filename = "scaling_summary.txt"
-            summary_path = os.path.join(scaled_training_ready_dir, summary_filename)
-            
-            with open(summary_path, 'w', encoding='utf-8') as f:
-                f.write("Weather Feature Scaling Summary\n")
-                f.write("=" * 40 + "\n\n")
-                
-                f.write(f"Scaling timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Scaler type: RobustScaler\n")
-                f.write(f"Total file pairs processed: {len([r for r in scaling_results if 'error' not in r])}\n")
-                f.write(f"Total train rows: {total_train_rows:,}\n")
-                f.write(f"Total test rows: {total_test_rows:,}\n\n")
-                
-                if scaling_results:
-                    f.write("Weather features scaled:\n")
-                    f.write("-" * 25 + "\n")
-                    for feature in ALL_WEATHER_FEATURES:
-                        feature_found = any(feature in result.get('weather_features_scaled', []) 
-                                        for result in scaling_results if 'error' not in result)
-                        status = "✓ Scaled" if feature_found else "✗ Not found"
-                        f.write(f"  {feature}: {status}\n")
-                    
-                    f.write("\nFile processing details:\n")
-                    f.write("-" * 25 + "\n")
-                    for result in scaling_results:
-                        if 'error' in result:
-                            f.write(f"  ✗ {result['file']}: {result['error']}\n")
-                        else:
-                            f.write(f"  ✓ {result['original_train_file']} -> {result['scaled_train_file']}\n")
-                            f.write(f"    Features: {len(result['weather_features_scaled'])}\n")
-                            f.write(f"    Train rows: {result['train_rows']:,}\n")
-                            f.write(f"    Test rows: {result['test_rows']:,}\n\n")
-            
-            print(f"    scale_weather_features: Summary saved to {summary_filename}")
-            
-            # Return success result
-            successful_files = len([r for r in scaling_results if 'error' not in r])
-            result = {
-                "success": True,
-                "processed_files": successful_files,
-                "total_train_rows": total_train_rows,
-                "total_test_rows": total_test_rows,
-                "scaling_results": scaling_results,
-                "weather_features_available": list(set([
-                    feature for result in scaling_results 
-                    for feature in result.get('weather_features_scaled', [])
-                    if 'error' not in result
-                ])),
-                "output_directory": scaled_training_ready_dir,
-                "summary_path": summary_path,
-                "message": f"Successfully scaled weather features for {successful_files} file pairs"
-            }
-            
-            print(f"    scale_weather_features: Completed successfully - {successful_files} file pairs processed")
-            print(f"    scale_weather_features: Total rows - Train: {total_train_rows:,}, Test: {total_test_rows:,}")
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"scale_weather_features failed: {str(e)}"
-            print(f"    scale_weather_features: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": error_msg,
-                "processed_files": 0
-            }
-        
     def train_decision_tree(self):
         """
         Train Decision Tree classifiers on scaled training data using RandomizedSearchCV.
