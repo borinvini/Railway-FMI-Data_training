@@ -4,27 +4,29 @@ import numpy as np
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
     "select_training_cols": True,
-    "select_time_features": False,
-    "drop_nan_columns": False,
-    "split_dataset": False,
-    "scale_weather_features": False,
-    "correlation_analysis": False,
-    "non_weather_correlation_analysis": False,
-    "correlation_analysis_by_station": False,
-    "snow_depth_delay_analysis": False,
-    "numeric_correlation_analysis": False,
-    "train_decision_tree": False,
-    "threshold_optimization_decision_tree": False,
-    "generate_borderline_smote_data": False,
-    "train_decision_tree_with_borderline_smote_data": False,
-    "threshold_optimization_decision_tree_borderline_smote": False,
-    "train_xgboost_with_randomized_search_cv": False,
-    "threshold_optimization_xgboost": False,
-    "train_xgboost_selected_features": False
+    "split_dataset": True,
 }
 
+#    "select_time_features": False,
+#    "drop_nan_columns": False,
+#    "scale_weather_features": False,
+#    "correlation_analysis": False,
+#    "non_weather_correlation_analysis": False,
+#    "correlation_analysis_by_station": False,
+#    "snow_depth_delay_analysis": False,
+#    "numeric_correlation_analysis": False,
+#    "train_decision_tree": False,
+#    "threshold_optimization_decision_tree": False,
+#    "generate_borderline_smote_data": False,
+#    "train_decision_tree_with_borderline_smote_data": False,
+#    "threshold_optimization_decision_tree_borderline_smote": False,
+#    "train_xgboost_with_randomized_search_cv": False,
+#    "threshold_optimization_xgboost": False,
+#    "train_xgboost_selected_features": False
+
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merged_training_ready"
-MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/501-merged_scaled_training_ready"
+MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER = "data/output/501-merged_selected_training_ready"
+MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/502-merged_selected_scaled_training_ready"
 
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"

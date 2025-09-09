@@ -74,6 +74,7 @@ from config.const_preprocessing import (
 )
 
 from config.const_training import (
+    MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -746,7 +747,805 @@ class TrainingPipeline:
 
             
         return result
-    
+
+    def merge_data_files(self, csv_files):
+        """
+        Merge multiple training-ready data files into a single dataset for training.
+        
+        This method loads all files from data/output/preprocessed_training_ready,
+        combines them into a unified dataset, and saves the result to 
+        data/output/merged_training_ready. It adds source tracking columns and 
+        creates detailed summary statistics.
+        
+        Parameters:
+        -----------
+        csv_files : list
+            List of CSV file paths to merge (currently not used - method discovers files automatically)
+            
+        Returns:
+        --------
+        dict
+            Results of the merge operation including success status and merged data info
+        """
+        try:
+            print(f"    merge_data_files: Starting merge operation...")
+            
+            # Create output directory using the constant from const.py
+            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+            os.makedirs(merged_training_ready_dir, exist_ok=True)
+            
+            # Find all training-ready CSV files using glob pattern
+            training_ready_pattern = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER, "training_ready_*.csv")
+            training_ready_files = glob.glob(training_ready_pattern)
+            
+            if not training_ready_files:
+                error_msg = "No training-ready files found to merge"
+                print(f"    merge_data_files: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    merge_data_files: Found {len(training_ready_files)} training-ready files")
+            for file_path in training_ready_files:
+                print(f"      - {os.path.basename(file_path)}")
+            
+            # Initialize storage for dataframes and file information
+            all_dataframes = []
+            file_info = []
+            
+            # Process each training-ready file
+            for file_path in training_ready_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"    merge_data_files: Processing {filename}...")
+                    
+                    # Extract month information from filename using regex
+                    # Expected format: training_ready_YYYY_MM.csv
+                    month_match = re.search(r'training_ready_(\d{4})_(\d{2})\.csv$', filename)
+                    
+                    if not month_match:
+                        print(f"    merge_data_files: Warning - Could not extract date from {filename}. Skipping.")
+                        continue
+                    
+                    year = int(month_match.group(1))
+                    month_number = int(month_match.group(2))
+                    
+                    # Read the CSV file
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"    merge_data_files: Warning - File {filename} is empty. Skipping.")
+                        continue
+                    
+                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
+                    
+                    # Add source tracking columns
+                    df = df.copy()  # Avoid modifying the original dataframe
+                    df['source_month'] = month_number
+                    df['source_year'] = year
+                    df['source_file'] = filename
+                    
+                    # Store the dataframe and file info
+                    all_dataframes.append(df)
+                    file_info.append({
+                        'filename': filename,
+                        'year': year,
+                        'month': month_number,
+                        'rows': len(df),
+                        'columns': len(df.columns)
+                    })
+                    
+                    print(f"      Successfully processed {filename}")
+                    
+                except Exception as e:
+                    print(f"    merge_data_files: Error processing {filename}: {str(e)}")
+                    continue
+            
+            # Check if we have any dataframes to merge
+            if not all_dataframes:
+                error_msg = "No valid dataframes found to merge"
+                print(f"    merge_data_files: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Merge all dataframes
+            print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")
+            merged_df = pd.concat(all_dataframes, ignore_index=True)
+            
+            print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
+
+            # Generate summary statistics
+            month_distribution = merged_df['source_month'].value_counts().sort_index()
+            year_distribution = merged_df['source_year'].value_counts().sort_index()
+
+            # Remove source tracking columns before saving
+            columns_to_remove = ['source_month', 'source_year', 'source_file']
+            print(f"    merge_data_files: Dropping source tracking columns: {', '.join(columns_to_remove)}")
+            merged_df = merged_df.drop(columns=columns_to_remove, errors='ignore')
+            
+            print(f"    merge_data_files: Removed source tracking columns. Final shape: {merged_df.shape}")
+
+            # Generate output filename
+            sorted_files = sorted(file_info, key=lambda x: (x['year'], x['month']))
+            first_file = sorted_files[0]
+            last_file = sorted_files[-1]
+
+            # Format: merged_data_YYYY-MM_to_YYYY-MM.csv
+            output_filename = f"merged_data_{first_file['year']}-{first_file['month']:02d}_to_{last_file['year']}-{last_file['month']:02d}.csv"
+            output_path = os.path.join(merged_training_ready_dir, output_filename)
+            
+            # Save merged dataset
+            merged_df.to_csv(output_path, index=False)
+            print(f"    merge_data_files: Saved merged dataset to {output_path}")
+
+            # Save summary information
+            summary_filename = "merge_summary.txt"
+            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write("Merged Training Dataset Summary\n")
+                f.write("=" * 40 + "\n\n")
+                
+                f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Output file: {output_filename}\n")
+                f.write(f"Total rows: {len(merged_df):,}\n")
+                f.write(f"Total columns: {len(merged_df.columns)}\n")
+                f.write(f"Files merged: {len(all_dataframes)}\n\n")
+                
+                # File details
+                f.write("Files processed:\n")
+                f.write("-" * 20 + "\n")
+                for info in file_info:
+                    f.write(f"{info['filename']}: {info['rows']:,} rows, {info['columns']} columns\n")
+                
+                # Month distribution
+                f.write("\nMonth distribution:\n")
+                f.write("-" * 20 + "\n")
+                for month, count in month_distribution.items():
+                    f.write(f"Month {month:02d}: {count:,} rows\n")
+                
+                # Year distribution
+                f.write("\nYear distribution:\n")
+                f.write("-" * 20 + "\n")
+                for year, count in year_distribution.items():
+                    f.write(f"Year {year}: {count:,} rows\n")
+                
+                # Column information
+                f.write("\nColumns in merged dataset:\n")
+                f.write("-" * 20 + "\n")
+                for col in merged_df.columns:
+                    f.write(f"{col}\n")
+                
+                # Data quality summary
+                f.write("\nData Quality Summary:\n")
+                f.write("-" * 20 + "\n")
+                missing_values = merged_df.isnull().sum()
+                if missing_values.sum() > 0:
+                    f.write(f"Missing values per column:\n")
+                    for col, missing_count in missing_values.items():
+                        if missing_count > 0:
+                            missing_pct = (missing_count / len(merged_df)) * 100
+                            f.write(f"  {col}: {missing_count:,} ({missing_pct:.2f}%)\n")
+                else:
+                    f.write("No missing values found\n")
+            
+            print(f"    merge_data_files: Summary saved to {summary_filename}")
+            
+            # Return success result following the pattern of other methods
+            result = {
+                "success": True,
+                "data": merged_df,  # Include the merged dataframe for potential chaining
+                "output_path": output_path,
+                "summary_path": summary_path,
+                "processed_files": len(all_dataframes),
+                "total_rows": len(merged_df),
+                "total_columns": len(merged_df.columns),
+                "files_merged": len(all_dataframes),
+                "month_distribution": month_distribution.to_dict(),
+                "file_details": file_info,
+                "message": f"Successfully merged {len(all_dataframes)} files into {len(merged_df):,} rows"
+            }
+            
+            print(f"    merge_data_files: Completed successfully - {len(all_dataframes)} files merged into {len(merged_df):,} rows")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"merge_data_files failed: {str(e)}"
+            print(f"    merge_data_files: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+
+    def select_training_cols(self, data=None, original_file_path=None):
+        """
+        Select training columns interactively by displaying all columns and allowing 
+        user to choose which ones to keep for training by entering comma-separated numbers.
+        
+        This method finds the most recent merged data file, displays all column names 
+        with numbers, and allows the user to select which columns to use for training
+        by entering their numbers separated by commas. The unselected columns are dropped.
+        
+        Parameters:
+        -----------
+        data : pandas.DataFrame, optional
+            Pre-loaded dataframe (not used - method discovers files automatically)
+        original_file_path : str, optional
+            Path to specific file to analyze (optional override)
+            
+        Returns:
+        --------
+        dict
+            Results including success status, filtered data, and column selection info
+        """
+        try:
+            print(f"    select_training_cols: Starting interactive column selection...")
+            
+            # Determine file path to analyze
+            if original_file_path and os.path.exists(original_file_path):
+                file_path = original_file_path
+                print(f"    select_training_cols: Using specified file: {os.path.basename(file_path)}")
+            else:
+                # Auto-discover merged files using the MERGED_TRAINING_READY_OUTPUT_FOLDER
+                merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
+                
+                # Create directory if it doesn't exist
+                os.makedirs(merged_training_ready_dir, exist_ok=True)
+                
+                # Find merged data files using glob pattern
+                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                # Filter out train/test files to get only the main merged files
+                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+                
+                if merged_data_files:
+                    # Use the most recent merged file
+                    file_path = max(merged_data_files, key=os.path.getmtime)
+                    print(f"    select_training_cols: Found merged file: {os.path.basename(file_path)}")
+                else:
+                    error_msg = f"No merged data files found in directory: {merged_training_ready_dir}"
+                    print(f"    select_training_cols: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "searched_directory": merged_training_ready_dir,
+                        "search_pattern": "merged_data_*.csv"
+                    }
+            
+            # Load the CSV file
+            print(f"    select_training_cols: Loading file: {file_path}")
+            
+            try:
+                df = pd.read_csv(file_path)
+            except Exception as e:
+                error_msg = f"Failed to load CSV file: {str(e)}"
+                print(f"    select_training_cols: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "file_path": file_path
+                }
+            
+            original_shape = df.shape
+            column_names = list(df.columns)
+            total_columns = len(column_names)
+            
+            print(f"    select_training_cols: Loaded dataset with shape: {original_shape}")
+            print(f"")
+            
+            # Display all columns with numbers for selection
+            print(f"    🎯 COLUMN SELECTION FOR TRAINING:")
+            print(f"    " + "="*80)
+            print(f"    Please select columns by entering their numbers separated by commas.")
+            print(f"    Total columns available: {total_columns}")
+            print(f"")
+            
+            # Analyze column types for summary
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+            datetime_cols = df.select_dtypes(include=['datetime']).columns.tolist()
+            boolean_cols = [col for col in df.columns if df[col].dtype == 'bool']
+            
+            # Display columns in a numbered list format
+            print(f"    📋 AVAILABLE COLUMNS:")
+            print(f"    " + "-"*80)
+            
+            for i, col in enumerate(column_names):
+                col_type = str(df[col].dtype)
+                non_null_count = df[col].count()
+                null_count = len(df) - non_null_count
+                null_percentage = (null_count / len(df)) * 100
+                unique_count = df[col].nunique()
+                
+                print(f"    {i+1:3d}. {col:<30} | Type: {col_type:<10} | "
+                    f"Non-null: {non_null_count:>6} | Nulls: {null_percentage:5.1f}% | "
+                    f"Unique: {unique_count:>5}")
+            
+            print(f"    " + "-"*80)
+            print(f"")
+            
+            # Display column type summary
+            print(f"    🔍 COLUMN TYPE SUMMARY:")
+            print(f"    📊 Numeric: {len(numeric_cols)} columns")
+            print(f"    📝 Categorical: {len(categorical_cols)} columns")
+            print(f"    📅 Datetime: {len(datetime_cols)} columns")
+            print(f"    ✓ Boolean: {len(boolean_cols)} columns")
+            print(f"")
+            
+            # Interactive column selection (simple comma-separated numbers only)
+            while True:
+                try:
+                    print(f"    💡 SELECTION INSTRUCTIONS:")
+                    print(f"    • Enter column numbers separated by commas (e.g., 1,3,5,8,12)")
+                    print(f"    • Example: To select columns 1, 5, 7, and 10, type: 1,5,7,10")
+                    print(f"")
+                    
+                    user_input = input("    Enter column numbers: ").strip()
+                    
+                    if not user_input:
+                        print(f"    ❌ Please enter at least one column number.")
+                        continue
+                    
+                    # Parse comma-separated numbers
+                    try:
+                        selected_indices = []
+                        numbers = [num.strip() for num in user_input.split(',')]
+                        
+                        for num_str in numbers:
+                            if num_str:  # Skip empty strings
+                                col_num = int(num_str)
+                                if 1 <= col_num <= total_columns:
+                                    selected_indices.append(col_num - 1)  # Convert to 0-based index
+                                else:
+                                    print(f"    ❌ Invalid column number: {col_num}. Must be between 1 and {total_columns}")
+                                    selected_indices = []
+                                    break
+                        
+                        if selected_indices:
+                            # Remove duplicates and sort
+                            selected_indices = sorted(list(set(selected_indices)))
+                            break
+                        else:
+                            print(f"    ❌ No valid columns selected. Please try again.")
+                            continue
+                            
+                    except ValueError:
+                        print(f"    ❌ Invalid input. Please enter only numbers separated by commas.")
+                        continue
+                        
+                except KeyboardInterrupt:
+                    print(f"\n    ⚠️  Operation cancelled by user.")
+                    return {
+                        "success": False,
+                        "error": "Operation cancelled by user"
+                    }
+                except Exception as e:
+                    print(f"    ❌ Error processing input: {str(e)}")
+                    continue
+            
+            # Apply column selection
+            selected_columns = [column_names[i] for i in selected_indices]
+            dropped_columns = [col for col in column_names if col not in selected_columns]
+            
+            print(f"")
+            print(f"    ✅ COLUMN SELECTION SUMMARY:")
+            print(f"    " + "="*60)
+            print(f"    📊 Total columns: {total_columns}")
+            print(f"    ✅ Selected: {len(selected_columns)} columns")
+            print(f"    ❌ Dropped: {len(dropped_columns)} columns")
+            print(f"")
+            
+            print(f"    📋 SELECTED COLUMNS ({len(selected_columns)}):")
+            for i, col in enumerate(selected_columns, 1):
+                print(f"    {i:3d}. {col}")
+            
+            if dropped_columns:
+                print(f"")
+                print(f"    🗑️  DROPPED COLUMNS ({len(dropped_columns)}):")
+                for i, col in enumerate(dropped_columns, 1):
+                    print(f"    {i:3d}. {col}")
+            
+            print(f"")
+            
+            # Create filtered dataframe
+            df_filtered = df[selected_columns].copy()
+            final_shape = df_filtered.shape
+            
+            print(f"    📏 DATASET TRANSFORMATION:")
+            print(f"    Original shape: {original_shape}")
+            print(f"    Final shape: {final_shape}")
+            print(f"")
+            
+            # Save the filtered dataset to the selected training ready folder
+            try:
+                # Create the selected training ready output directory
+                selected_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+                os.makedirs(selected_training_ready_dir, exist_ok=True)
+                
+                # Generate output filename based on original file
+                original_filename = os.path.basename(file_path)
+                output_filename = original_filename.replace('.csv', '.csv')
+                output_path = os.path.join(selected_training_ready_dir, output_filename)
+                
+                df_filtered.to_csv(output_path, index=False)
+                print(f"    💾 Saved filtered dataset to: {output_filename}")
+                print(f"    📁 Location: {MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER}")
+            except Exception as save_error:
+                print(f"    ⚠️  Warning: Could not save filtered dataset: {str(save_error)}")
+                output_path = None
+            
+            print(f"")
+            
+            # Prepare results
+            result = {
+                "success": True,
+                "data": df_filtered,
+                "file_path": file_path,
+                "output_path": output_path,
+                "original_shape": original_shape,
+                "final_shape": final_shape,
+                "total_columns": total_columns,
+                "selected_columns": selected_columns,
+                "dropped_columns": dropped_columns,
+                "column_selection_summary": {
+                    "total_available": total_columns,
+                    "selected_count": len(selected_columns),
+                    "dropped_count": len(dropped_columns)
+                },
+                "column_types": {
+                    "numeric": len([col for col in selected_columns if col in numeric_cols]),
+                    "categorical": len([col for col in selected_columns if col in categorical_cols]),
+                    "datetime": len([col for col in selected_columns if col in datetime_cols]),
+                    "boolean": len([col for col in selected_columns if col in boolean_cols])
+                },
+                "message": f"Successfully selected {len(selected_columns)} out of {total_columns} columns for training"
+            }
+            
+            print(f"    ✅ Column selection completed successfully!")
+            print(f"")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"select_training_cols failed: {str(e)}"
+            print(f"    select_training_cols: {error_msg}")
+            return {
+                "success": False,
+                "error": error_msg
+            }
+
+    def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
+        """
+        Split merged training datasets into train and test sets.
+        
+        This method finds all merged data files in data/output/merged_training_ready,
+        splits each dataset into training and testing sets, and saves them as separate files.
+        Automatically uses stratified splitting for classification problems based on the target feature.
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (currently not used - method discovers files automatically)
+        test_size : float, optional
+            Proportion of the dataset to include in the test split. Defaults to 0.2.
+        random_state : int, optional
+            Random seed for reproducibility. Defaults to 42.
+        stratify_column : str, optional
+            Column name to use for stratified splitting. If None, uses automatic detection based on target feature.
+            
+        Returns:
+        --------
+        dict
+            Results of the split operation including success status and split info
+        """
+        try:
+            print(f"    split_dataset: Starting dataset splitting operation...")
+            
+            # Create/ensure output directory exists
+            merged_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+            os.makedirs(merged_training_ready_dir, exist_ok=True)
+            
+            # Find all merged data files using glob pattern
+            merged_data_pattern = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*.csv")
+            merged_data_files = glob.glob(merged_data_pattern)
+            
+            # Filter out existing train/test files to avoid re-splitting them
+            merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
+            
+            if not merged_data_files:
+                error_msg = "No merged data files found to split"
+                print(f"    split_dataset: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    split_dataset: Found {len(merged_data_files)} merged data files")
+            for file_path in merged_data_files:
+                print(f"      - {os.path.basename(file_path)}")
+            
+            # Initialize storage for processing results
+            split_results = []
+            total_train_rows = 0
+            total_test_rows = 0
+            
+            # Process each merged data file
+            for file_path in merged_data_files:
+                try:
+                    filename = os.path.basename(file_path)
+                    print(f"    split_dataset: Processing {filename}...")
+                    
+                    # Read the merged dataset
+                    df = pd.read_csv(file_path)
+                    
+                    if df.empty:
+                        print(f"    split_dataset: Warning - File {filename} is empty. Skipping.")
+                        continue
+                    
+                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
+                    
+                    # Determine target column and stratification logic
+                    target_column = DEFAULT_TARGET_FEATURE
+                    
+                    # Check if the default target feature exists in the dataset
+                    if target_column not in df.columns:
+                        # Try to find an alternative target from valid options
+                        target_options = VALID_TARGET_FEATURES
+                        target_column = None
+                        
+                        for option in target_options:
+                            if option in df.columns:
+                                target_column = option
+                                break
+                        
+                        if not target_column:
+                            print(f"      Warning: No target column found in {filename}. Skipping.")
+                            continue
+                    
+                    print(f"      Using target column: {target_column}")
+                    
+                    # Determine if this is a classification or regression problem
+                    is_classification = True
+                    if target_column in REGRESSION_PROBLEM:
+                        is_classification = False
+                        print(f"      Target '{target_column}' indicates a regression problem")
+                    else:
+                        print(f"      Target '{target_column}' indicates a classification problem")
+                    
+                    # Calculate class distribution for classification problems (BEFORE split)
+                    class_distribution_before = None
+                    class_distribution_train = None
+                    class_distribution_test = None
+                    
+                    if is_classification:
+                        # Calculate class distribution before split
+                        value_counts = df[target_column].value_counts()
+                        total_samples = len(df)
+                        class_distribution_before = {}
+                        
+                        for class_value, count in value_counts.items():
+                            percentage = (count / total_samples) * 100
+                            class_distribution_before[class_value] = {
+                                'count': count,
+                                'percentage': percentage
+                            }
+                        
+                        print(f"      Class distribution before split:")
+                        for class_value, stats in class_distribution_before.items():
+                            print(f"        Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
+                    
+                    # Prepare stratification
+                    stratify = None
+                    if stratify_column:
+                        # Use explicitly provided stratify column
+                        if stratify_column in df.columns:
+                            stratify = df[stratify_column]
+                            print(f"      Using explicit stratified split on column: {stratify_column}")
+                        else:
+                            print(f"      Warning: Specified stratify column '{stratify_column}' not found. Using automatic detection.")
+                    
+                    # Auto-detect stratification for classification problems
+                    if stratify is None and is_classification:
+                        # Use the target column for stratification in classification
+                        stratify = df[target_column]
+                        print(f"      Using stratified split on target column: {target_column}")
+                    
+                    # Perform the train-test split
+                    train_df, test_df = train_test_split(
+                        df,
+                        test_size=test_size,
+                        random_state=random_state,
+                        stratify=stratify
+                    )
+                    
+                    # Calculate class distribution for classification problems (AFTER split)
+                    if is_classification:
+                        # Calculate class distribution for train set
+                        train_value_counts = train_df[target_column].value_counts()
+                        train_total = len(train_df)
+                        class_distribution_train = {}
+                        
+                        for class_value, count in train_value_counts.items():
+                            percentage = (count / train_total) * 100
+                            class_distribution_train[class_value] = {
+                                'count': count,
+                                'percentage': percentage
+                            }
+                        
+                        # Calculate class distribution for test set
+                        test_value_counts = test_df[target_column].value_counts()
+                        test_total = len(test_df)
+                        class_distribution_test = {}
+                        
+                        for class_value, count in test_value_counts.items():
+                            percentage = (count / test_total) * 100
+                            class_distribution_test[class_value] = {
+                                'count': count,
+                                'percentage': percentage
+                            }
+                        
+                        print(f"      Class distribution after split:")
+                        print(f"        Train set:")
+                        for class_value, stats in class_distribution_train.items():
+                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
+                        print(f"        Test set:")
+                        for class_value, stats in class_distribution_test.items():
+                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
+                    
+                    # Generate output filenames
+                    base_filename = filename.replace('.csv', '')
+                    train_filename = f"{base_filename}_train.csv"
+                    test_filename = f"{base_filename}_test.csv"
+                    
+                    train_path = os.path.join(merged_training_ready_dir, train_filename)
+                    test_path = os.path.join(merged_training_ready_dir, test_filename)
+                    
+                    # Save the train and test sets
+                    train_df.to_csv(train_path, index=False)
+                    test_df.to_csv(test_path, index=False)
+                    
+                    print(f"      Saved train set to: {train_filename}")
+                    print(f"      Saved test set to: {test_filename}")
+                    
+                    # Store results for this file
+                    result_data = {
+                        'original_file': filename,
+                        'train_file': train_filename,
+                        'test_file': test_filename,
+                        'target_column': target_column,
+                        'is_classification': is_classification,
+                        'stratified': stratify is not None,
+                        'original_rows': len(df),
+                        'train_rows': len(train_df),
+                        'test_rows': len(test_df),
+                        'test_size_actual': len(test_df) / len(df)
+                    }
+                    
+                    # Add class distribution data for classification problems
+                    if is_classification:
+                        result_data['class_distribution_before'] = class_distribution_before
+                        result_data['class_distribution_train'] = class_distribution_train
+                        result_data['class_distribution_test'] = class_distribution_test
+                    
+                    split_results.append(result_data)
+                    
+                    total_train_rows += len(train_df)
+                    total_test_rows += len(test_df)
+                    
+                    print(f"      Successfully processed {filename}")
+                    
+                except Exception as e:
+                    print(f"    split_dataset: Error processing {filename}: {str(e)}")
+                    continue
+            
+            # Check if we processed any files successfully
+            if not split_results:
+                error_msg = "No files were successfully split"
+                print(f"    split_dataset: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    split_dataset: Split operation completed for {len(split_results)} files")
+            print(f"    split_dataset: Total train rows: {total_train_rows:,}")
+            print(f"    split_dataset: Total test rows: {total_test_rows:,}")
+            
+            # Save enhanced summary information
+            summary_filename = "split_summary.txt"
+            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
+            
+            with open(summary_path, 'w') as f:
+                f.write("Dataset Split Summary\n")
+                f.write("=" * 40 + "\n\n")
+                
+                f.write(f"Split timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Test size: {test_size}\n")
+                f.write(f"Random state: {random_state}\n")
+                f.write(f"Default target feature: {DEFAULT_TARGET_FEATURE}\n")
+                f.write(f"Files processed: {len(split_results)}\n")
+                f.write(f"Total train rows: {total_train_rows:,}\n")
+                f.write(f"Total test rows: {total_test_rows:,}\n\n")
+                
+                # File details with enhanced class distribution information
+                f.write("Split details:\n")
+                f.write("-" * 30 + "\n")
+                for result in split_results:
+                    f.write(f"Original: {result['original_file']}\n")
+                    f.write(f"  Target: {result['target_column']}\n")
+                    f.write(f"  Problem type: {'Classification' if result['is_classification'] else 'Regression'}\n")
+                    f.write(f"  Stratified: {'Yes' if result['stratified'] else 'No'}\n")
+                    f.write(f"  Train: {result['train_file']} ({result['train_rows']:,} rows)\n")
+                    f.write(f"  Test: {result['test_file']} ({result['test_rows']:,} rows)\n")
+                    f.write(f"  Actual test ratio: {result['test_size_actual']:.3f}\n")
+                    
+                    # Add class distribution information for classification problems
+                    if result['is_classification'] and 'class_distribution_before' in result:
+                        f.write(f"\n  Class Distribution Analysis:\n")
+                        f.write(f"  {'-' * 25}\n")
+                        
+                        # Before split
+                        f.write(f"  Before Split (Total: {result['original_rows']:,} samples):\n")
+                        for class_value, stats in result['class_distribution_before'].items():
+                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                        
+                        # After split - Train set
+                        f.write(f"\n  After Split - Train Set ({result['train_rows']:,} samples):\n")
+                        for class_value, stats in result['class_distribution_train'].items():
+                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                        
+                        # After split - Test set
+                        f.write(f"\n  After Split - Test Set ({result['test_rows']:,} samples):\n")
+                        for class_value, stats in result['class_distribution_test'].items():
+                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+                    
+                    f.write(f"\n")
+            
+            print(f"    split_dataset: Summary saved to {summary_filename}")
+            
+            # Return success result following the pattern of other methods
+            result = {
+                "success": True,
+                "processed_files": len(split_results),
+                "total_train_rows": total_train_rows,
+                "total_test_rows": total_test_rows,
+                "test_size": test_size,
+                "split_details": split_results,
+                "summary_path": summary_path,
+                "message": f"Successfully split {len(split_results)} datasets into train/test sets"
+            }
+            
+            print(f"    split_dataset: Completed successfully - {len(split_results)} datasets split")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"split_dataset failed: {str(e)}"
+            print(f"    split_dataset: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+        
+############################
+## OLD METHODS
+############################
+
     def threshold_optimization_xgboost(self):
         """
         Optimize XGBoost classification thresholds using ROC analysis.
@@ -1571,384 +2370,6 @@ class TrainingPipeline:
                 "processed_files": 0
             }
 
-    def merge_data_files(self, csv_files):
-        """
-        Merge multiple training-ready data files into a single dataset for training.
-        
-        This method loads all files from data/output/preprocessed_training_ready,
-        combines them into a unified dataset, and saves the result to 
-        data/output/merged_training_ready. It adds source tracking columns and 
-        creates detailed summary statistics.
-        
-        Parameters:
-        -----------
-        csv_files : list
-            List of CSV file paths to merge (currently not used - method discovers files automatically)
-            
-        Returns:
-        --------
-        dict
-            Results of the merge operation including success status and merged data info
-        """
-        try:
-            print(f"    merge_data_files: Starting merge operation...")
-            
-            # Create output directory using the constant from const.py
-            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
-            os.makedirs(merged_training_ready_dir, exist_ok=True)
-            
-            # Find all training-ready CSV files using glob pattern
-            training_ready_pattern = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER, "training_ready_*.csv")
-            training_ready_files = glob.glob(training_ready_pattern)
-            
-            if not training_ready_files:
-                error_msg = "No training-ready files found to merge"
-                print(f"    merge_data_files: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            print(f"    merge_data_files: Found {len(training_ready_files)} training-ready files")
-            for file_path in training_ready_files:
-                print(f"      - {os.path.basename(file_path)}")
-            
-            # Initialize storage for dataframes and file information
-            all_dataframes = []
-            file_info = []
-            
-            # Process each training-ready file
-            for file_path in training_ready_files:
-                try:
-                    filename = os.path.basename(file_path)
-                    print(f"    merge_data_files: Processing {filename}...")
-                    
-                    # Extract month information from filename using regex
-                    # Expected format: training_ready_YYYY_MM.csv
-                    month_match = re.search(r'training_ready_(\d{4})_(\d{2})\.csv$', filename)
-                    
-                    if not month_match:
-                        print(f"    merge_data_files: Warning - Could not extract date from {filename}. Skipping.")
-                        continue
-                    
-                    year = int(month_match.group(1))
-                    month_number = int(month_match.group(2))
-                    
-                    # Read the CSV file
-                    df = pd.read_csv(file_path)
-                    
-                    if df.empty:
-                        print(f"    merge_data_files: Warning - File {filename} is empty. Skipping.")
-                        continue
-                    
-                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
-                    
-                    # Add source tracking columns
-                    df = df.copy()  # Avoid modifying the original dataframe
-                    df['source_month'] = month_number
-                    df['source_year'] = year
-                    df['source_file'] = filename
-                    
-                    # Store the dataframe and file info
-                    all_dataframes.append(df)
-                    file_info.append({
-                        'filename': filename,
-                        'year': year,
-                        'month': month_number,
-                        'rows': len(df),
-                        'columns': len(df.columns)
-                    })
-                    
-                    print(f"      Successfully processed {filename}")
-                    
-                except Exception as e:
-                    print(f"    merge_data_files: Error processing {filename}: {str(e)}")
-                    continue
-            
-            # Check if we have any dataframes to merge
-            if not all_dataframes:
-                error_msg = "No valid dataframes found to merge"
-                print(f"    merge_data_files: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            # Merge all dataframes
-            print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")
-            merged_df = pd.concat(all_dataframes, ignore_index=True)
-            
-            print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
-
-            # Generate summary statistics
-            month_distribution = merged_df['source_month'].value_counts().sort_index()
-            year_distribution = merged_df['source_year'].value_counts().sort_index()
-
-            # Remove source tracking columns before saving
-            columns_to_remove = ['source_month', 'source_year', 'source_file']
-            print(f"    merge_data_files: Dropping source tracking columns: {', '.join(columns_to_remove)}")
-            merged_df = merged_df.drop(columns=columns_to_remove, errors='ignore')
-            
-            print(f"    merge_data_files: Removed source tracking columns. Final shape: {merged_df.shape}")
-
-            # Generate output filename
-            sorted_files = sorted(file_info, key=lambda x: (x['year'], x['month']))
-            first_file = sorted_files[0]
-            last_file = sorted_files[-1]
-
-            # Format: merged_data_YYYY-MM_to_YYYY-MM.csv
-            output_filename = f"merged_data_{first_file['year']}-{first_file['month']:02d}_to_{last_file['year']}-{last_file['month']:02d}.csv"
-            output_path = os.path.join(merged_training_ready_dir, output_filename)
-            
-            # Save merged dataset
-            merged_df.to_csv(output_path, index=False)
-            print(f"    merge_data_files: Saved merged dataset to {output_path}")
-
-            # Save summary information
-            summary_filename = "merge_summary.txt"
-            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
-            
-            with open(summary_path, 'w') as f:
-                f.write("Merged Training Dataset Summary\n")
-                f.write("=" * 40 + "\n\n")
-                
-                f.write(f"Merge timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Output file: {output_filename}\n")
-                f.write(f"Total rows: {len(merged_df):,}\n")
-                f.write(f"Total columns: {len(merged_df.columns)}\n")
-                f.write(f"Files merged: {len(all_dataframes)}\n\n")
-                
-                # File details
-                f.write("Files processed:\n")
-                f.write("-" * 20 + "\n")
-                for info in file_info:
-                    f.write(f"{info['filename']}: {info['rows']:,} rows, {info['columns']} columns\n")
-                
-                # Month distribution
-                f.write("\nMonth distribution:\n")
-                f.write("-" * 20 + "\n")
-                for month, count in month_distribution.items():
-                    f.write(f"Month {month:02d}: {count:,} rows\n")
-                
-                # Year distribution
-                f.write("\nYear distribution:\n")
-                f.write("-" * 20 + "\n")
-                for year, count in year_distribution.items():
-                    f.write(f"Year {year}: {count:,} rows\n")
-                
-                # Column information
-                f.write("\nColumns in merged dataset:\n")
-                f.write("-" * 20 + "\n")
-                for col in merged_df.columns:
-                    f.write(f"{col}\n")
-                
-                # Data quality summary
-                f.write("\nData Quality Summary:\n")
-                f.write("-" * 20 + "\n")
-                missing_values = merged_df.isnull().sum()
-                if missing_values.sum() > 0:
-                    f.write(f"Missing values per column:\n")
-                    for col, missing_count in missing_values.items():
-                        if missing_count > 0:
-                            missing_pct = (missing_count / len(merged_df)) * 100
-                            f.write(f"  {col}: {missing_count:,} ({missing_pct:.2f}%)\n")
-                else:
-                    f.write("No missing values found\n")
-            
-            print(f"    merge_data_files: Summary saved to {summary_filename}")
-            
-            # Return success result following the pattern of other methods
-            result = {
-                "success": True,
-                "data": merged_df,  # Include the merged dataframe for potential chaining
-                "output_path": output_path,
-                "summary_path": summary_path,
-                "processed_files": len(all_dataframes),
-                "total_rows": len(merged_df),
-                "total_columns": len(merged_df.columns),
-                "files_merged": len(all_dataframes),
-                "month_distribution": month_distribution.to_dict(),
-                "file_details": file_info,
-                "message": f"Successfully merged {len(all_dataframes)} files into {len(merged_df):,} rows"
-            }
-            
-            print(f"    merge_data_files: Completed successfully - {len(all_dataframes)} files merged into {len(merged_df):,} rows")
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"merge_data_files failed: {str(e)}"
-            print(f"    merge_data_files: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": error_msg,
-                "processed_files": 0
-            }
-
-    def select_training_cols(self, data=None, original_file_path=None):
-        """
-        Display all column names from the merged training data files on terminal.
-        
-        This method finds the most recent merged data file in the merged_training_ready 
-        directory and displays all column names to help with training column selection.
-        It follows the same file discovery pattern as other pipeline stages.
-        
-        Parameters:
-        -----------
-        data : pandas.DataFrame, optional
-            Pre-loaded dataframe (not used - method discovers files automatically)
-        original_file_path : str, optional
-            Path to specific file to analyze (optional override)
-            
-        Returns:
-        --------
-        dict
-            Results of the column display operation including success status and column info
-        """
-        try:
-            print(f"    select_training_cols: Starting column analysis...")
-            
-            # Determine file path to analyze
-            if original_file_path and os.path.exists(original_file_path):
-                file_path = original_file_path
-                print(f"    select_training_cols: Using specified file: {os.path.basename(file_path)}")
-            else:
-                # Auto-discover merged files using the updated MERGED_TRAINING_READY_OUTPUT_FOLDER
-                merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
-                
-                # Create directory if it doesn't exist
-                os.makedirs(merged_training_ready_dir, exist_ok=True)
-                
-                # Find merged data files using glob pattern
-                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
-                merged_data_files = glob.glob(merged_data_pattern)
-                
-                # Filter out train/test files to get only the main merged files
-                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
-                
-                if merged_data_files:
-                    # Use the most recent merged file
-                    file_path = max(merged_data_files, key=os.path.getmtime)
-                    print(f"    select_training_cols: Found merged file: {os.path.basename(file_path)}")
-                else:
-                    error_msg = f"No merged data files found in directory: {merged_training_ready_dir}"
-                    print(f"    select_training_cols: {error_msg}")
-                    print(f"    select_training_cols: Searched for pattern: merged_data_*.csv")
-                    return {
-                        "success": False,
-                        "error": error_msg,
-                        "searched_directory": merged_training_ready_dir,
-                        "search_pattern": "merged_data_*.csv"
-                    }
-            
-            # Load the CSV file to get column information
-            print(f"    select_training_cols: Loading file: {file_path}")
-            
-            try:
-                df = pd.read_csv(file_path)
-            except Exception as e:
-                error_msg = f"Failed to load CSV file: {str(e)}"
-                print(f"    select_training_cols: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "file_path": file_path
-                }
-            
-            # Get column information
-            total_columns = len(df.columns)
-            column_names = list(df.columns)
-            data_shape = df.shape
-            
-            # Display comprehensive column information on terminal
-            print(f"")
-            print(f"    ╔════════════════════════════════════════════════════════════════════════════════╗")
-            print(f"    ║                          TRAINING COLUMNS ANALYSIS                             ║")
-            print(f"    ╠════════════════════════════════════════════════════════════════════════════════╣")
-            print(f"    ║ File: {os.path.basename(file_path):<68} ║")
-            print(f"    ║ Dataset Shape: {str(data_shape):<61} ║")
-            print(f"    ║ Total Columns: {total_columns:<61} ║")
-            print(f"    ╚════════════════════════════════════════════════════════════════════════════════╝")
-            print(f"")
-            print(f"    📋 ALL AVAILABLE COLUMNS:")
-            print(f"    " + "="*80)
-            
-            # Display columns in a formatted way (4 columns per row for better readability)
-            columns_per_row = 4
-            for i in range(0, total_columns, columns_per_row):
-                row_columns = column_names[i:i + columns_per_row]
-                formatted_row = []
-                
-                for j, col in enumerate(row_columns):
-                    col_num = i + j + 1
-                    formatted_col = f"{col_num:2d}. {col}"
-                    formatted_row.append(f"{formatted_col:<18}")
-                
-                print(f"    {' '.join(formatted_row)}")
-            
-            print(f"    " + "="*80)
-            print(f"")
-            
-            # Additional analysis - categorize columns by type if possible
-            print(f"    🔍 COLUMN TYPE ANALYSIS:")
-            print(f"    " + "-"*40)
-            
-            # Try to categorize columns based on common patterns
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-            datetime_cols = df.select_dtypes(include=['datetime']).columns.tolist()
-            boolean_cols = [col for col in df.columns if df[col].dtype == 'bool']
-            
-            print(f"    📊 Numeric columns ({len(numeric_cols)}): {', '.join(numeric_cols[:10])}")
-            if len(numeric_cols) > 10:
-                print(f"       ... and {len(numeric_cols) - 10} more numeric columns")
-            
-            print(f"    📝 Categorical columns ({len(categorical_cols)}): {', '.join(categorical_cols[:10])}")
-            if len(categorical_cols) > 10:
-                print(f"       ... and {len(categorical_cols) - 10} more categorical columns")
-                
-            if datetime_cols:
-                print(f"    📅 Datetime columns ({len(datetime_cols)}): {', '.join(datetime_cols)}")
-            
-            if boolean_cols:
-                print(f"    ✓ Boolean columns ({len(boolean_cols)}): {', '.join(boolean_cols)}")
-            
-            print(f"")
-            print(f"    ✅ Column analysis completed successfully!")
-            print(f"")
-            
-            # Return success result with detailed information
-            return {
-                "success": True,
-                "file_path": file_path,
-                "dataset_shape": data_shape,
-                "total_columns": total_columns,
-                "column_names": column_names,
-                "column_types": {
-                    "numeric": len(numeric_cols),
-                    "categorical": len(categorical_cols), 
-                    "datetime": len(datetime_cols),
-                    "boolean": len(boolean_cols)
-                },
-                "numeric_columns": numeric_cols,
-                "categorical_columns": categorical_cols,
-                "datetime_columns": datetime_cols,
-                "boolean_columns": boolean_cols,
-                "message": f"Successfully analyzed {total_columns} columns from {os.path.basename(file_path)}"
-            }
-            
-        except Exception as e:
-            error_msg = f"select_training_cols failed: {str(e)}"
-            print(f"    select_training_cols: {error_msg}")
-            return {
-                "success": False,
-                "error": error_msg
-            }
-
     def select_time_features(self, data=None, original_file_path=None):
         """
         Select time features based on configuration - keep original or sin/cos features.
@@ -2162,324 +2583,6 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
-    def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
-        """
-        Split merged training datasets into train and test sets.
-        
-        This method finds all merged data files in data/output/merged_training_ready,
-        splits each dataset into training and testing sets, and saves them as separate files.
-        Automatically uses stratified splitting for classification problems based on the target feature.
-        
-        Parameters:
-        -----------
-        csv_files : list, optional
-            List of CSV file paths (currently not used - method discovers files automatically)
-        test_size : float, optional
-            Proportion of the dataset to include in the test split. Defaults to 0.2.
-        random_state : int, optional
-            Random seed for reproducibility. Defaults to 42.
-        stratify_column : str, optional
-            Column name to use for stratified splitting. If None, uses automatic detection based on target feature.
-            
-        Returns:
-        --------
-        dict
-            Results of the split operation including success status and split info
-        """
-        try:
-            print(f"    split_dataset: Starting dataset splitting operation...")
-            
-            # Create/ensure output directory exists
-            merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
-            os.makedirs(merged_training_ready_dir, exist_ok=True)
-            
-            # Find all merged data files using glob pattern
-            merged_data_pattern = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*.csv")
-            merged_data_files = glob.glob(merged_data_pattern)
-            
-            # Filter out existing train/test files to avoid re-splitting them
-            merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
-            
-            if not merged_data_files:
-                error_msg = "No merged data files found to split"
-                print(f"    split_dataset: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            print(f"    split_dataset: Found {len(merged_data_files)} merged data files")
-            for file_path in merged_data_files:
-                print(f"      - {os.path.basename(file_path)}")
-            
-            # Initialize storage for processing results
-            split_results = []
-            total_train_rows = 0
-            total_test_rows = 0
-            
-            # Process each merged data file
-            for file_path in merged_data_files:
-                try:
-                    filename = os.path.basename(file_path)
-                    print(f"    split_dataset: Processing {filename}...")
-                    
-                    # Read the merged dataset
-                    df = pd.read_csv(file_path)
-                    
-                    if df.empty:
-                        print(f"    split_dataset: Warning - File {filename} is empty. Skipping.")
-                        continue
-                    
-                    print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
-                    
-                    # Determine target column and stratification logic
-                    target_column = DEFAULT_TARGET_FEATURE
-                    
-                    # Check if the default target feature exists in the dataset
-                    if target_column not in df.columns:
-                        # Try to find an alternative target from valid options
-                        target_options = VALID_TARGET_FEATURES
-                        target_column = None
-                        
-                        for option in target_options:
-                            if option in df.columns:
-                                target_column = option
-                                break
-                        
-                        if not target_column:
-                            print(f"      Warning: No target column found in {filename}. Skipping.")
-                            continue
-                    
-                    print(f"      Using target column: {target_column}")
-                    
-                    # Determine if this is a classification or regression problem
-                    is_classification = True
-                    if target_column in REGRESSION_PROBLEM:
-                        is_classification = False
-                        print(f"      Target '{target_column}' indicates a regression problem")
-                    else:
-                        print(f"      Target '{target_column}' indicates a classification problem")
-                    
-                    # Calculate class distribution for classification problems (BEFORE split)
-                    class_distribution_before = None
-                    class_distribution_train = None
-                    class_distribution_test = None
-                    
-                    if is_classification:
-                        # Calculate class distribution before split
-                        value_counts = df[target_column].value_counts()
-                        total_samples = len(df)
-                        class_distribution_before = {}
-                        
-                        for class_value, count in value_counts.items():
-                            percentage = (count / total_samples) * 100
-                            class_distribution_before[class_value] = {
-                                'count': count,
-                                'percentage': percentage
-                            }
-                        
-                        print(f"      Class distribution before split:")
-                        for class_value, stats in class_distribution_before.items():
-                            print(f"        Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
-                    
-                    # Prepare stratification
-                    stratify = None
-                    if stratify_column:
-                        # Use explicitly provided stratify column
-                        if stratify_column in df.columns:
-                            stratify = df[stratify_column]
-                            print(f"      Using explicit stratified split on column: {stratify_column}")
-                        else:
-                            print(f"      Warning: Specified stratify column '{stratify_column}' not found. Using automatic detection.")
-                    
-                    # Auto-detect stratification for classification problems
-                    if stratify is None and is_classification:
-                        # Use the target column for stratification in classification
-                        stratify = df[target_column]
-                        print(f"      Using stratified split on target column: {target_column}")
-                    
-                    # Perform the train-test split
-                    train_df, test_df = train_test_split(
-                        df,
-                        test_size=test_size,
-                        random_state=random_state,
-                        stratify=stratify
-                    )
-                    
-                    # Calculate class distribution for classification problems (AFTER split)
-                    if is_classification:
-                        # Calculate class distribution for train set
-                        train_value_counts = train_df[target_column].value_counts()
-                        train_total = len(train_df)
-                        class_distribution_train = {}
-                        
-                        for class_value, count in train_value_counts.items():
-                            percentage = (count / train_total) * 100
-                            class_distribution_train[class_value] = {
-                                'count': count,
-                                'percentage': percentage
-                            }
-                        
-                        # Calculate class distribution for test set
-                        test_value_counts = test_df[target_column].value_counts()
-                        test_total = len(test_df)
-                        class_distribution_test = {}
-                        
-                        for class_value, count in test_value_counts.items():
-                            percentage = (count / test_total) * 100
-                            class_distribution_test[class_value] = {
-                                'count': count,
-                                'percentage': percentage
-                            }
-                        
-                        print(f"      Class distribution after split:")
-                        print(f"        Train set:")
-                        for class_value, stats in class_distribution_train.items():
-                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
-                        print(f"        Test set:")
-                        for class_value, stats in class_distribution_test.items():
-                            print(f"          Class {class_value}: {stats['count']} samples ({stats['percentage']:.2f}%)")
-                    
-                    # Generate output filenames
-                    base_filename = filename.replace('.csv', '')
-                    train_filename = f"{base_filename}_train.csv"
-                    test_filename = f"{base_filename}_test.csv"
-                    
-                    train_path = os.path.join(merged_training_ready_dir, train_filename)
-                    test_path = os.path.join(merged_training_ready_dir, test_filename)
-                    
-                    # Save the train and test sets
-                    train_df.to_csv(train_path, index=False)
-                    test_df.to_csv(test_path, index=False)
-                    
-                    print(f"      Saved train set to: {train_filename}")
-                    print(f"      Saved test set to: {test_filename}")
-                    
-                    # Store results for this file
-                    result_data = {
-                        'original_file': filename,
-                        'train_file': train_filename,
-                        'test_file': test_filename,
-                        'target_column': target_column,
-                        'is_classification': is_classification,
-                        'stratified': stratify is not None,
-                        'original_rows': len(df),
-                        'train_rows': len(train_df),
-                        'test_rows': len(test_df),
-                        'test_size_actual': len(test_df) / len(df)
-                    }
-                    
-                    # Add class distribution data for classification problems
-                    if is_classification:
-                        result_data['class_distribution_before'] = class_distribution_before
-                        result_data['class_distribution_train'] = class_distribution_train
-                        result_data['class_distribution_test'] = class_distribution_test
-                    
-                    split_results.append(result_data)
-                    
-                    total_train_rows += len(train_df)
-                    total_test_rows += len(test_df)
-                    
-                    print(f"      Successfully processed {filename}")
-                    
-                except Exception as e:
-                    print(f"    split_dataset: Error processing {filename}: {str(e)}")
-                    continue
-            
-            # Check if we processed any files successfully
-            if not split_results:
-                error_msg = "No files were successfully split"
-                print(f"    split_dataset: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
-            print(f"    split_dataset: Split operation completed for {len(split_results)} files")
-            print(f"    split_dataset: Total train rows: {total_train_rows:,}")
-            print(f"    split_dataset: Total test rows: {total_test_rows:,}")
-            
-            # Save enhanced summary information
-            summary_filename = "split_summary.txt"
-            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
-            
-            with open(summary_path, 'w') as f:
-                f.write("Dataset Split Summary\n")
-                f.write("=" * 40 + "\n\n")
-                
-                f.write(f"Split timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Test size: {test_size}\n")
-                f.write(f"Random state: {random_state}\n")
-                f.write(f"Default target feature: {DEFAULT_TARGET_FEATURE}\n")
-                f.write(f"Files processed: {len(split_results)}\n")
-                f.write(f"Total train rows: {total_train_rows:,}\n")
-                f.write(f"Total test rows: {total_test_rows:,}\n\n")
-                
-                # File details with enhanced class distribution information
-                f.write("Split details:\n")
-                f.write("-" * 30 + "\n")
-                for result in split_results:
-                    f.write(f"Original: {result['original_file']}\n")
-                    f.write(f"  Target: {result['target_column']}\n")
-                    f.write(f"  Problem type: {'Classification' if result['is_classification'] else 'Regression'}\n")
-                    f.write(f"  Stratified: {'Yes' if result['stratified'] else 'No'}\n")
-                    f.write(f"  Train: {result['train_file']} ({result['train_rows']:,} rows)\n")
-                    f.write(f"  Test: {result['test_file']} ({result['test_rows']:,} rows)\n")
-                    f.write(f"  Actual test ratio: {result['test_size_actual']:.3f}\n")
-                    
-                    # Add class distribution information for classification problems
-                    if result['is_classification'] and 'class_distribution_before' in result:
-                        f.write(f"\n  Class Distribution Analysis:\n")
-                        f.write(f"  {'-' * 25}\n")
-                        
-                        # Before split
-                        f.write(f"  Before Split (Total: {result['original_rows']:,} samples):\n")
-                        for class_value, stats in result['class_distribution_before'].items():
-                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-                        
-                        # After split - Train set
-                        f.write(f"\n  After Split - Train Set ({result['train_rows']:,} samples):\n")
-                        for class_value, stats in result['class_distribution_train'].items():
-                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-                        
-                        # After split - Test set
-                        f.write(f"\n  After Split - Test Set ({result['test_rows']:,} samples):\n")
-                        for class_value, stats in result['class_distribution_test'].items():
-                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-                    
-                    f.write(f"\n")
-            
-            print(f"    split_dataset: Summary saved to {summary_filename}")
-            
-            # Return success result following the pattern of other methods
-            result = {
-                "success": True,
-                "processed_files": len(split_results),
-                "total_train_rows": total_train_rows,
-                "total_test_rows": total_test_rows,
-                "test_size": test_size,
-                "split_details": split_results,
-                "summary_path": summary_path,
-                "message": f"Successfully split {len(split_results)} datasets into train/test sets"
-            }
-            
-            print(f"    split_dataset: Completed successfully - {len(split_results)} datasets split")
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"split_dataset failed: {str(e)}"
-            print(f"    split_dataset: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": error_msg,
-                "processed_files": 0
-            }
-        
     def scale_weather_features(self, csv_files=None):
         """
         Scale and normalize weather features using RobustScaler.
