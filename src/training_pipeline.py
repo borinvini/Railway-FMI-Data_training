@@ -1722,6 +1722,356 @@ class TrainingPipeline:
                 "processed_files": 0
             }
 
+    def train_xgboost_with_randomized_search_cv(self):
+        """
+        Train XGBoost models with hyperparameter optimization using RandomizedSearchCV.
+        
+        Modified to work with single train/test file pairs and check the specified
+        MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER location.
+        
+        This method:
+        1. Checks for files in the MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+        2. Verifies if we have exactly one train/test file pair
+        3. If yes, proceeds with XGBoost training using RandomizedSearchCV
+        4. Performs comprehensive hyperparameter optimization
+        5. Saves trained models and detailed performance results
+        
+        Features:
+        - Supports both classification and regression problems
+        - Automatic problem type detection based on target feature
+        - Cross-validation with stratified sampling for classification
+        - Sample weighting for imbalanced datasets
+        - Memory usage monitoring
+        - Comprehensive model evaluation metrics
+        - Detailed logging and error handling
+        
+        Input Data Sources:
+        - Training Files: MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER/merged_data_train_scaled.csv
+        - Test Files: MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER/merged_data_test_scaled.csv
+        
+        Output:
+        - Trained XGBoost models saved to: data/output/xgboost_randomized_search/
+        
+        Returns:
+        --------
+        dict
+            A summary of the XGBoost training results including model performance metrics.
+        """
+        try:
+            print(f"    train_xgboost_with_randomized_search_cv: Starting XGBoost training with hyperparameter optimization...")
+            
+            # Create output directory
+            output_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            
+            print(f"    train_xgboost_with_randomized_search_cv: Output directory: {output_dir}")
+            
+            scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            
+            # Find training and test files in the specified location
+            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train.csv")
+            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test.csv")
+            
+            train_files = glob.glob(train_pattern)
+            test_files = glob.glob(test_pattern)
+            
+            if not train_files or not test_files:
+                error_msg = f"Training or test files not found in {scaled_data_dir}. Train files: {len(train_files)}, Test files: {len(test_files)}"
+                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Check if we have exactly one train/test file pair
+            if len(train_files) != 1 or len(test_files) != 1:
+                error_msg = f"Expected exactly one train and one test file. Found {len(train_files)} train files and {len(test_files)} test files"
+                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            train_file = train_files[0]
+            test_file = test_files[0]
+            
+            # Verify the files are corresponding pairs
+            train_filename = os.path.basename(train_file)
+            test_filename = os.path.basename(test_file)
+            expected_test_filename = train_filename.replace('_train.csv', '_test.csv')
+            
+            if test_filename != expected_test_filename:
+                error_msg = f"Train and test files don't match. Train: {train_filename}, Test: {test_filename}, Expected: {expected_test_filename}"
+                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            print(f"    train_xgboost_with_randomized_search_cv: Found valid train/test pair:")
+            print(f"      Train file: {train_filename}")
+            print(f"      Test file: {test_filename}")
+            
+            # Extract file identifier
+            identifier_match = re.search(r'merged_data_(.+?)_train\.csv', train_filename)
+            if not identifier_match:
+                error_msg = f"Could not extract identifier from {train_filename}"
+                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            file_identifier = identifier_match.group(1)
+            print(f"    train_xgboost_with_randomized_search_cv: Processing dataset: {file_identifier}")
+            
+            # Determine problem type based on target feature
+            target_feature = DEFAULT_TARGET_FEATURE
+            is_classification = target_feature in CLASSIFICATION_PROBLEM
+            is_regression = target_feature in REGRESSION_PROBLEM
+            
+            if not (is_classification or is_regression):
+                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
+                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            problem_type = "classification" if is_classification else "regression"
+            print(f"    train_xgboost_with_randomized_search_cv: Detected {problem_type} problem for target '{target_feature}'")
+            
+            # Initialize results structure
+            training_results = {
+                "training_overview": {
+                    "training_completed": datetime.now().isoformat(),
+                    "problem_type": problem_type,
+                    "target_feature": target_feature,
+                    "file_identifier": file_identifier,
+                    "hyperparameter_search_iterations": RANDOM_SEARCH_ITERATIONS,
+                    "cross_validation_folds": RANDOM_SEARCH_CV_FOLDS
+                },
+                "xgboost_config": {
+                    "param_distributions": format_param_distributions_for_json(XGBOOST_PARAM_DISTRIBUTIONS),
+                    "methods_config": XGBOOST_METHODS_CONFIG.get(problem_type, [])
+                },
+                "model_results": {},
+                "performance_metrics": {}
+            }
+            
+            # Memory tracking
+            process = psutil.Process()
+            initial_memory = process.memory_info().rss / 1024 / 1024
+            print(f"    train_xgboost_with_randomized_search_cv: Initial memory usage: {initial_memory:.2f} MB")
+            
+            # Load training and test data
+            print(f"      Loading training data from {train_file}")
+            train_df = pd.read_csv(train_file)
+            
+            print(f"      Loading test data from {test_file}")
+            test_df = pd.read_csv(test_file)
+            
+            # Check if target feature exists
+            if target_feature not in train_df.columns:
+                error_msg = f"Target feature '{target_feature}' not found in dataset"
+                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+            
+            # Prepare features and target
+            feature_columns = [col for col in train_df.columns if col != target_feature]
+            
+            X_train = train_df[feature_columns]
+            y_train = train_df[target_feature]
+            X_test = test_df[feature_columns]
+            y_test = test_df[target_feature]
+            
+            print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
+            print(f"      Features: {len(feature_columns)}")
+            print(f"      Target distribution - Train: {y_train.value_counts().to_dict() if is_classification else f'Mean: {y_train.mean():.4f}, Std: {y_train.std():.4f}'}")
+            
+            # Calculate sample weights if applicable
+            sample_weights = None
+            if WEIGHT_DELAY_COLUMN in train_df.columns:
+                print(f"      Calculating sample weights using '{WEIGHT_DELAY_COLUMN}'...")
+                weights = train_df[WEIGHT_DELAY_COLUMN].values
+                
+                if is_classification:
+                    # Cap weights for classification
+                    weights = np.clip(weights, 1, MAX_SAMPLE_WEIGHT_CLASSIFICATION)
+                else:
+                    # Cap weights for regression
+                    weights = np.clip(weights, 1, MAX_SAMPLE_WEIGHT_REGRESSION)
+                
+                sample_weights = weights
+                print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
+            
+            # Set up cross-validation strategy
+            if is_classification:
+                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
+                base_model = xgb.XGBClassifier(
+                    random_state=42,
+                    n_jobs=1,
+                    eval_metric='logloss'
+                )
+            else:
+                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
+                base_model = xgb.XGBRegressor(
+                    random_state=42,
+                    n_jobs=1,
+                    eval_metric='rmse'
+                )
+            
+            # Perform hyperparameter optimization
+            print(f"      Starting RandomizedSearchCV with {RANDOM_SEARCH_ITERATIONS} iterations...")
+            
+            randomized_search = RandomizedSearchCV(
+                estimator=base_model,
+                param_distributions=XGBOOST_PARAM_DISTRIBUTIONS,
+                n_iter=RANDOM_SEARCH_ITERATIONS,
+                scoring=SCORE_METRIC,
+                cv=cv_splitter,
+                random_state=42,
+                n_jobs=1,
+                verbose=1
+            )
+            
+            # Fit with sample weights if available
+            if sample_weights is not None:
+                randomized_search.fit(X_train, y_train, sample_weight=sample_weights)
+            else:
+                randomized_search.fit(X_train, y_train)
+            
+            best_model = randomized_search.best_estimator_
+            best_params = randomized_search.best_params_
+            best_cv_score = randomized_search.best_score_
+            
+            print(f"      Best CV Score: {best_cv_score:.4f}")
+            print(f"      Best Parameters: {best_params}")
+            
+            # Make predictions on test set
+            y_pred = best_model.predict(X_test)
+            
+            # Calculate test metrics
+            if is_classification:
+                y_pred_proba = best_model.predict_proba(X_test)[:, 1] if hasattr(best_model, 'predict_proba') else y_pred
+                
+                test_accuracy = accuracy_score(y_test, y_pred)
+                test_f1 = f1_score(y_test, y_pred, average='weighted')
+                test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                test_recall = recall_score(y_test, y_pred, average='weighted')
+                test_roc_auc = roc_auc_score(y_test, y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                
+                print(f"      Test Metrics:")
+                print(f"        Accuracy: {test_accuracy:.4f}")
+                print(f"        F1-Score: {test_f1:.4f}")
+                print(f"        Precision: {test_precision:.4f}")
+                print(f"        Recall: {test_recall:.4f}")
+                print(f"        ROC-AUC: {test_roc_auc:.4f}")
+                
+                training_results["performance_metrics"] = {
+                    "cv_score": float(best_cv_score),
+                    "test_accuracy": float(test_accuracy),
+                    "test_f1": float(test_f1),
+                    "test_precision": float(test_precision),
+                    "test_recall": float(test_recall),
+                    "test_roc_auc": float(test_roc_auc)
+                }
+                
+            else:
+                test_mse = mean_squared_error(y_test, y_pred)
+                test_rmse = np.sqrt(test_mse)
+                test_mae = mean_absolute_error(y_test, y_pred)
+                test_r2 = r2_score(y_test, y_pred)
+                
+                print(f"      Test Metrics:")
+                print(f"        RMSE: {test_rmse:.4f}")
+                print(f"        MAE: {test_mae:.4f}")
+                print(f"        R²: {test_r2:.4f}")
+                print(f"        MSE: {test_mse:.4f}")
+                
+                training_results["performance_metrics"] = {
+                    "cv_score": float(best_cv_score),
+                    "test_rmse": float(test_rmse),
+                    "test_mae": float(test_mae),
+                    "test_r2": float(test_r2),
+                    "test_mse": float(test_mse)
+                }
+            
+            # Save model
+            model_filename = f"xgboost_model_{file_identifier}.joblib"
+            model_path = os.path.join(output_dir, model_filename)
+            joblib.dump(best_model, model_path)
+            print(f"      Model saved to: {model_path}")
+            
+            # Store model info
+            training_results["model_results"] = {
+                "model_file": model_filename,
+                "model_path": model_path,
+                "best_parameters": best_params,
+                "feature_count": len(feature_columns),
+                "training_samples": len(X_train),
+                "test_samples": len(X_test)
+            }
+            
+            # Memory tracking after training
+            final_memory = process.memory_info().rss / 1024 / 1024
+            memory_used = final_memory - initial_memory
+            print(f"      Memory usage after training: {final_memory:.2f} MB (+ {memory_used:.2f} MB)")
+            
+            # Save detailed results
+            results_filename = f"xgboost_training_results_{file_identifier}.json"
+            results_file = os.path.join(output_dir, results_filename)
+            
+            with open(results_file, 'w') as f:
+                json.dump(training_results, f, indent=2)
+            
+            print(f"      Results saved to: {results_file}")
+            print(f"    train_xgboost_with_randomized_search_cv: Successfully trained XGBoost model for {file_identifier}")
+            
+            # Prepare return summary
+            return_dict = {
+                "success": True,
+                "models_trained": 1,
+                "problem_type": problem_type,
+                "target_feature": target_feature,
+                "file_identifier": file_identifier,
+                "cv_score": float(best_cv_score),
+                "output_directory": output_dir,
+                "results_file": results_file,
+                "model_file": model_path
+            }
+            
+            # Add problem-specific metrics to return dict
+            if is_classification:
+                return_dict.update({
+                    "test_accuracy": float(test_accuracy),
+                    "test_f1": float(test_f1),
+                    "test_precision": float(test_precision),
+                    "test_recall": float(test_recall),
+                    "test_roc_auc": float(test_roc_auc)
+                })
+            else:
+                return_dict.update({
+                    "test_rmse": float(test_rmse),
+                    "test_mae": float(test_mae),
+                    "test_r2": float(test_r2),
+                    "test_mse": float(test_mse)
+                })
+            
+            return return_dict
+            
+        except Exception as e:
+            error_msg = f"train_xgboost_with_randomized_search_cv failed: {str(e)}"
+            print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
+            }
 
 ############################
 ## OLD METHODS
@@ -4506,447 +4856,6 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
-    def train_xgboost_with_randomized_search_cv(self):
-        """
-        Train XGBoost models with hyperparameter optimization using RandomizedSearchCV.
-        
-        This method trains XGBoost models on the scaled training data with comprehensive
-        hyperparameter tuning. It automatically detects whether the problem is classification 
-        or regression based on the target feature.
-        
-        Input Data Sources:
-        - Training Files: D:/Dev/Railway-FMI-Data_training/data/output/4-merged_scaled_training_ready/merged*data_train_scaled.csv
-        - Test Files: D:/Dev/Railway-FMI-Data_training/data/output/4-merged_scaled_training_ready/merged*data_test_scaled.csv
-        
-        Output:
-        - Trained XGBoost models saved to: data/output/xgboost_randomized_search/
-        
-        Returns:
-        --------
-        dict
-            A summary of the XGBoost training results including model performance metrics.
-        """
-        try:
-            print(f"    train_xgboost_with_randomized_search_cv: Starting XGBoost training with hyperparameter optimization...")
-            
-            # Create output directory
-            output_dir = os.path.join(self.project_root, "data/output/xgboost_randomized_search")
-            os.makedirs(output_dir, exist_ok=True)
-            
-            print(f"    train_xgboost_with_randomized_search_cv: Output directory: {output_dir}")
-            
-            # Find training and test files using relative paths
-            train_pattern = os.path.join(self.project_root, "data/output/4-merged_scaled_training_ready/merged_data_*_train_scaled.csv")
-            test_pattern = os.path.join(self.project_root, "data/output/4-merged_scaled_training_ready/merged_data_*_test_scaled.csv")
-            
-            train_files = glob.glob(train_pattern)
-            test_files = glob.glob(test_pattern)
-            
-            if not train_files or not test_files:
-                error_msg = f"Training or test files not found. Train files: {len(train_files)}, Test files: {len(test_files)}"
-                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            print(f"    train_xgboost_with_randomized_search_cv: Found {len(train_files)} training files and {len(test_files)} test files")
-            
-            # Determine problem type based on target feature
-            target_feature = DEFAULT_TARGET_FEATURE
-            is_classification = target_feature in CLASSIFICATION_PROBLEM
-            is_regression = target_feature in REGRESSION_PROBLEM
-            
-            if not (is_classification or is_regression):
-                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
-                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-            
-            problem_type = "classification" if is_classification else "regression"
-            print(f"    train_xgboost_with_randomized_search_cv: Detected {problem_type} problem for target '{target_feature}'")
-            
-            # Initialize results structure
-            training_results = {
-                "training_overview": {
-                    "training_completed": datetime.now().isoformat(),
-                    "problem_type": problem_type,
-                    "target_feature": target_feature,
-                    "total_files_processed": 0,
-                    "successful_trainings": 0,
-                    "failed_trainings": 0,
-                    "hyperparameter_search_iterations": RANDOM_SEARCH_ITERATIONS,
-                    "cross_validation_folds": RANDOM_SEARCH_CV_FOLDS
-                },
-                "xgboost_config": {
-                    "param_distributions": format_param_distributions_for_json(XGBOOST_PARAM_DISTRIBUTIONS),
-                    "methods_config": XGBOOST_METHODS_CONFIG.get(problem_type, [])
-                },
-                "file_results": [],
-                "aggregate_metrics": {}
-            }
-            
-            successful_trainings = 0
-            failed_trainings = 0
-            all_cv_scores = []
-            all_test_scores = []
-            best_score = -float('inf')
-            best_file = None
-            
-            # Memory tracking
-            process = psutil.Process()
-            initial_memory = process.memory_info().rss / 1024 / 1024
-            print(f"    train_xgboost_with_randomized_search_cv: Initial memory usage: {initial_memory:.2f} MB")
-            
-            # Process each training/test file pair
-            for train_file in train_files:
-                try:
-                    # Extract file identifier from train file name
-                    train_filename = os.path.basename(train_file)
-                    # Extract identifier (e.g., "2023_01" from "merged_data_2023_01_train_scaled.csv")
-                    identifier_match = re.search(r'merged_data_(.+?)_train_scaled\.csv', train_filename)
-                    if not identifier_match:
-                        print(f"    train_xgboost_with_randomized_search_cv: Warning - Could not extract identifier from {train_filename}")
-                        continue
-                    
-                    file_identifier = identifier_match.group(1)
-                    
-                    # Find corresponding test file
-                    test_filename = train_filename.replace('_train_scaled.csv', '_test_scaled.csv')
-                    test_file = None
-                    for tf in test_files:
-                        if os.path.basename(tf) == test_filename:
-                            test_file = tf
-                            break
-                    
-                    if not test_file or not os.path.exists(test_file):
-                        print(f"    train_xgboost_with_randomized_search_cv: Warning - No corresponding test file for {train_filename}")
-                        failed_trainings += 1
-                        continue
-                    
-                    print(f"    train_xgboost_with_randomized_search_cv: Processing {file_identifier}")
-                    
-                    # Load training and test data
-                    print(f"      Loading training data from {train_file}")
-                    train_df = pd.read_csv(train_file)
-                    
-                    print(f"      Loading test data from {test_file}")
-                    test_df = pd.read_csv(test_file)
-                    
-                    # Check if target feature exists
-                    if target_feature not in train_df.columns:
-                        print(f"      Warning - Target feature '{target_feature}' not found in {file_identifier}")
-                        failed_trainings += 1
-                        continue
-                    
-                    # Prepare features and target
-                    feature_columns = [col for col in train_df.columns if col != target_feature]
-                    
-                    X_train = train_df[feature_columns]
-                    y_train = train_df[target_feature]
-                    X_test = test_df[feature_columns]
-                    y_test = test_df[target_feature]
-                    
-                    print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
-                    print(f"      Target distribution - Train: {y_train.value_counts().to_dict() if is_classification else f'Mean: {y_train.mean():.3f}, Std: {y_train.std():.3f}'}")
-                    
-                    # Handle missing values
-                    X_train = X_train.fillna(0)
-                    X_test = X_test.fillna(0)
-                    
-                    # Calculate sample weights if enabled
-                    sample_weights = None
-                    if WEIGHT_DELAY_COLUMN != 'NONE' and WEIGHT_DELAY_COLUMN in train_df.columns:
-                        delays = train_df[WEIGHT_DELAY_COLUMN].fillna(0)
-                        sample_weights = np.ones(len(y_train))
-                        
-                        if is_classification:
-                            # Higher weights for delayed samples
-                            delayed_idx = (delays > 0)
-                            if np.any(delayed_idx):
-                                mean_delay = delays[delayed_idx].mean()
-                                sample_weights[delayed_idx] = np.minimum(
-                                    MAX_SAMPLE_WEIGHT_CLASSIFICATION, 
-                                    1 + delays[delayed_idx] / mean_delay
-                                )
-                        else:
-                            # Higher weights for larger target values
-                            sample_weights = np.minimum(
-                                MAX_SAMPLE_WEIGHT_REGRESSION,
-                                1.0 + np.abs(y_train) / (np.abs(y_train).mean() * 2)
-                            )
-                        
-                        print(f"      Sample weights range: [{sample_weights.min():.2f} - {sample_weights.max():.2f}]")
-                    
-                    # Set up cross-validation strategy
-                    if is_classification:
-                        cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
-                        scoring_metric = 'f1'
-                    else:
-                        cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
-                        scoring_metric = 'neg_mean_squared_error'
-                    
-                    # Initialize XGBoost model based on problem type
-                    if is_classification:
-                        base_model = xgb.XGBClassifier(
-                            random_state=42,
-                            n_jobs=1,  # Prevent memory issues
-                            eval_metric='logloss'
-                        )
-                    else:
-                        base_model = xgb.XGBRegressor(
-                            random_state=42,
-                            n_jobs=1,  # Prevent memory issues
-                            eval_metric='rmse'
-                        )
-                    
-                    # Perform hyperparameter optimization
-                    print(f"      Starting RandomizedSearchCV with {RANDOM_SEARCH_ITERATIONS} iterations...")
-                    
-                    randomized_search = RandomizedSearchCV(
-                        estimator=base_model,
-                        param_distributions=XGBOOST_PARAM_DISTRIBUTIONS,
-                        n_iter=RANDOM_SEARCH_ITERATIONS,
-                        scoring=scoring_metric,
-                        cv=cv_splitter,
-                        random_state=42,
-                        n_jobs=1,  # Prevent memory issues
-                        verbose=2
-                    )
-                    
-                    # Fit with sample weights if available
-                    if sample_weights is not None:
-                        randomized_search.fit(X_train, y_train, sample_weight=sample_weights)
-                    else:
-                        randomized_search.fit(X_train, y_train)
-                    
-                    best_model = randomized_search.best_estimator_
-                    best_params = randomized_search.best_params_
-                    best_cv_score = randomized_search.best_score_
-                    
-                    print(f"      Best CV Score: {best_cv_score:.4f}")
-                    print(f"      Best Parameters: {best_params}")
-                    
-                    # Make predictions on test set
-                    y_pred = best_model.predict(X_test)
-                    
-                    # Calculate test metrics
-                    if is_classification:
-                        test_accuracy = accuracy_score(y_test, y_pred)
-                        test_f1 = f1_score(y_test, y_pred, average='weighted')
-                        test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                        test_recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-                        
-                        # Calculate confusion matrix
-                        conf_matrix = confusion_matrix(y_test, y_pred)
-                        
-                        if hasattr(best_model, 'predict_proba'):
-                            y_proba = best_model.predict_proba(X_test)
-                            if y_proba.shape[1] == 2:  # Binary classification
-                                test_auc = roc_auc_score(y_test, y_proba[:, 1])
-                            else:
-                                test_auc = roc_auc_score(y_test, y_proba, multi_class='ovr')
-                        else:
-                            test_auc = None
-                        
-                        test_score = test_f1  # Use F1 as primary metric for classification
-                        
-                        print(f"      Classification Results:")
-                        print(f"        Accuracy: {test_accuracy:.4f}")
-                        print(f"        F1 Score: {test_f1:.4f}")
-                        print(f"        Precision: {test_precision:.4f}")
-                        print(f"        Recall: {test_recall:.4f}")
-                        if test_auc is not None:
-                            print(f"        ROC AUC: {test_auc:.4f}")
-                        
-                        # Save confusion matrix
-                        conf_matrix_result = save_confusion_matrix(
-                            conf_matrix, 
-                            y_test, 
-                            y_pred, 
-                            file_identifier, 
-                            output_dir
-                        )
-                        
-                        file_metrics = {
-                            "accuracy": float(test_accuracy),
-                            "f1_score": float(test_f1),
-                            "precision": float(test_precision),
-                            "recall": float(test_recall),
-                            "roc_auc": float(test_auc) if test_auc is not None else None,
-                            "confusion_matrix_file": conf_matrix_result
-                        }
-                        
-                    else:
-                        test_mse = mean_squared_error(y_test, y_pred)
-                        test_rmse = np.sqrt(test_mse)
-                        test_mae = mean_absolute_error(y_test, y_pred)
-                        test_r2 = r2_score(y_test, y_pred)
-                        
-                        test_score = -test_mse  # Use negative MSE (higher is better)
-                        
-                        print(f"      Regression Results:")
-                        print(f"        RMSE: {test_rmse:.4f}")
-                        print(f"        MAE: {test_mae:.4f}")
-                        print(f"        R² Score: {test_r2:.4f}")
-                        print(f"        MSE: {test_mse:.4f}")
-                        
-                        file_metrics = {
-                            "rmse": float(test_rmse),
-                            "mae": float(test_mae),
-                            "r2_score": float(test_r2),
-                            "mse": float(test_mse)
-                        }
-                    
-                    # Track best performing model
-                    if test_score > best_score:
-                        best_score = test_score
-                        best_file = file_identifier
-                    
-                    # Save trained model
-                    model_filename = f"xgboost_model_{file_identifier}.joblib"
-                    model_path = os.path.join(output_dir, model_filename)
-                    joblib.dump(best_model, model_path)
-                    
-                    # Save feature importance
-                    if hasattr(best_model, 'feature_importances_'):
-                        feature_importance_df = pd.DataFrame({
-                            'feature': feature_columns,
-                            'importance': best_model.feature_importances_
-                        }).sort_values('importance', ascending=False)
-                        
-                        importance_filename = f"feature_importance_{file_identifier}.csv"
-                        importance_path = os.path.join(output_dir, importance_filename)
-                        feature_importance_df.to_csv(importance_path, index=False)
-                    
-                    # Store results
-                    file_result = {
-                        "file_identifier": file_identifier,
-                        "train_file": train_file,
-                        "test_file": test_file,
-                        "training_successful": True,
-                        "best_cv_score": float(best_cv_score),
-                        "best_parameters": best_params,
-                        "test_metrics": file_metrics,
-                        "model_file": model_path,
-                        "feature_importance_file": importance_path if hasattr(best_model, 'feature_importances_') else None,
-                        "dataset_info": {
-                            "train_samples": int(len(X_train)),
-                            "test_samples": int(len(X_test)),
-                            "num_features": int(len(feature_columns)),
-                            "target_feature": target_feature
-                        }
-                    }
-                    
-                    training_results["file_results"].append(file_result)
-                    all_cv_scores.append(best_cv_score)
-                    all_test_scores.append(test_score)
-                    successful_trainings += 1
-                    
-                    print(f"      ✓ Successfully trained XGBoost model for {file_identifier}")
-                    
-                    # Memory cleanup
-                    del X_train, X_test, y_train, y_test, train_df, test_df
-                    current_memory = process.memory_info().rss / 1024 / 1024
-                    print(f"      Memory usage: {current_memory:.2f} MB")
-                    
-                except Exception as e:
-                    error_msg = f"Failed to train XGBoost for {file_identifier if 'file_identifier' in locals() else 'unknown'}: {str(e)}"
-                    print(f"      ✗ {error_msg}")
-                    
-                    training_results["file_results"].append({
-                        "file_identifier": file_identifier if 'file_identifier' in locals() else "unknown",
-                        "train_file": train_file,
-                        "training_successful": False,
-                        "error": str(e)
-                    })
-                    failed_trainings += 1
-                    continue
-            
-            # Finalize results
-            if successful_trainings > 0:
-                training_results["training_overview"].update({
-                    "total_files_processed": successful_trainings + failed_trainings,
-                    "successful_trainings": successful_trainings,
-                    "failed_trainings": failed_trainings
-                })
-                
-                # Calculate aggregate metrics
-                if is_classification:
-                    avg_f1_scores = [result["test_metrics"]["f1_score"] for result in training_results["file_results"] if result["training_successful"]]
-                    avg_accuracies = [result["test_metrics"]["accuracy"] for result in training_results["file_results"] if result["training_successful"]]
-                    
-                    training_results["aggregate_metrics"] = {
-                        "average_cv_score": float(np.mean(all_cv_scores)),
-                        "average_test_f1": float(np.mean(avg_f1_scores)),
-                        "average_test_accuracy": float(np.mean(avg_accuracies)),
-                        "best_performing_file": {
-                            "file_identifier": best_file,
-                            "test_score": float(best_score)
-                        } if best_file else None
-                    }
-                else:
-                    avg_rmse_scores = [result["test_metrics"]["rmse"] for result in training_results["file_results"] if result["training_successful"]]
-                    avg_r2_scores = [result["test_metrics"]["r2_score"] for result in training_results["file_results"] if result["training_successful"]]
-                    
-                    training_results["aggregate_metrics"] = {
-                        "average_cv_score": float(np.mean(all_cv_scores)),
-                        "average_test_rmse": float(np.mean(avg_rmse_scores)),
-                        "average_test_r2": float(np.mean(avg_r2_scores)),
-                        "best_performing_file": {
-                            "file_identifier": best_file,
-                            "test_score": float(best_score)
-                        } if best_file else None
-                    }
-                
-                # Save consolidated results
-                results_file = os.path.join(output_dir, "xgboost_randomized_search_training_results.json")
-                with open(results_file, 'w') as f:
-                    json.dump(training_results, f, indent=2)
-                
-                final_memory = process.memory_info().rss / 1024 / 1024
-                print(f"    train_xgboost_with_randomized_search_cv: Final memory usage: {final_memory:.2f} MB")
-                print(f"    train_xgboost_with_randomized_search_cv: Completed successfully!")
-                print(f"    train_xgboost_with_randomized_search_cv: Trained {successful_trainings} XGBoost models")
-                print(f"    train_xgboost_with_randomized_search_cv: Average CV Score: {np.mean(all_cv_scores):.4f}")
-                
-                if is_classification:
-                    print(f"    train_xgboost_with_randomized_search_cv: Average Test F1: {training_results['aggregate_metrics']['average_test_f1']:.4f}")
-                else:
-                    print(f"    train_xgboost_with_randomized_search_cv: Average Test RMSE: {training_results['aggregate_metrics']['average_test_rmse']:.4f}")
-                
-                print(f"    train_xgboost_with_randomized_search_cv: Results saved to: {output_dir}")
-                
-                return {
-                    "success": True,
-                    "models_trained": successful_trainings,
-                    "problem_type": problem_type,
-                    "target_feature": target_feature,
-                    "average_cv_score": float(np.mean(all_cv_scores)),
-                    "output_directory": output_dir,
-                    "results_file": results_file,
-                    **training_results["aggregate_metrics"]
-                }
-            else:
-                error_msg = "No XGBoost models were successfully trained"
-                print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-                
-        except Exception as e:
-            error_msg = f"train_xgboost_with_randomized_search_cv failed: {str(e)}"
-            print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "success": False,
-                "error": error_msg
-            }
-        
     def drop_nan_columns(self, data=None, input_path=None, save_results=True):
         """
         Drop columns that contain at least one NaN value from the merged dataset.

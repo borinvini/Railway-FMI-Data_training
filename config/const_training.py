@@ -6,11 +6,11 @@ TRAINING_STATE_MACHINE = {
     "select_training_cols": True,
     "split_dataset": True,
     "scale_weather_features": True,
+    "train_xgboost_with_randomized_search_cv": True,
 }
 
 #    "select_time_features": False,
 #    "drop_nan_columns": False,
-#    
 #    "correlation_analysis": False,
 #    "non_weather_correlation_analysis": False,
 #    "correlation_analysis_by_station": False,
@@ -32,7 +32,7 @@ MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/502-merged_selected_sc
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
-XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/xgboost_randomized_search"
+XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_threshold_optimized"
 BORDERLINE_SMOTE_OUTPUT_FOLDER = "data/output/borderline_smote_synthetic"
