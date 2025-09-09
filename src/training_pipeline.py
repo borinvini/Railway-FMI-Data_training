@@ -2005,20 +2005,81 @@ class TrainingPipeline:
             plt.show()
             print(f"      Performance curve saved to: {plot_filename}")
             
+            # CREATE AND SAVE FEATURE IMPORTANCE PLOT
+            if best_model is not None:
+                print(f"      Creating feature importance plot...")
+                
+                # Get feature importance from the best model
+                feature_importance = best_model.feature_importances_
+                feature_names = feature_columns
+                
+                # Create DataFrame for easier handling
+                importance_df = pd.DataFrame({
+                    'feature': feature_names,
+                    'importance': feature_importance
+                }).sort_values('importance', ascending=True)
+                
+                # Create feature importance plot
+                plt.figure(figsize=(12, max(8, len(feature_names) * 0.4)))
+                
+                # Create horizontal bar plot
+                bars = plt.barh(range(len(importance_df)), importance_df['importance'])
+                
+                # Customize the plot
+                plt.yticks(range(len(importance_df)), importance_df['feature'])
+                plt.xlabel('Feature Importance', fontsize=12)
+                plt.title(f'XGBoost Feature Importance - Best Model ({problem_type.title()})\n'
+                        f'Dataset: {file_identifier} | Best Iteration: {best_iteration}', fontsize=14)
+                
+                # Add value labels on bars
+                for i, (bar, importance) in enumerate(zip(bars, importance_df['importance'])):
+                    plt.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height()/2, 
+                            f'{importance:.3f}', 
+                            ha='left', va='center', fontsize=10)
+                
+                # Color bars based on importance (gradient from red to green)
+                normalized_importance = (importance_df['importance'] - importance_df['importance'].min()) / \
+                                    (importance_df['importance'].max() - importance_df['importance'].min() + 1e-8)
+                
+                colors = plt.cm.RdYlGn(normalized_importance)
+                for bar, color in zip(bars, colors):
+                    bar.set_color(color)
+                
+                plt.grid(axis='x', alpha=0.3)
+                plt.tight_layout()
+                
+                # Save feature importance plot
+                importance_plot_filename = os.path.join(output_dir, f'xgboost_feature_importance_{file_identifier}.png')
+                plt.savefig(importance_plot_filename, dpi=300, bbox_inches='tight')
+                print(f"      Feature importance plot saved to: {importance_plot_filename}")
+                plt.close()
+                
+                # Save feature importance data as CSV
+                importance_csv_filename = os.path.join(output_dir, f'xgboost_feature_importance_{file_identifier}.csv')
+                importance_df.sort_values('importance', ascending=False).to_csv(importance_csv_filename, index=False)
+                print(f"      Feature importance data saved to: {importance_csv_filename}")
+        
+
             # Save detailed results to JSON
             results_summary = {
                 "training_overview": {
-                    "training_completed": datetime.now().isoformat(),
+                    "dataset_identifier": file_identifier,
                     "problem_type": problem_type,
                     "target_feature": target_feature,
-                    "file_identifier": file_identifier,
-                    "iteration_range": f"10 to {RANDOM_SEARCH_ITERATIONS} (step=10)",
+                    "n_features": len(feature_columns),
+                    "n_train_samples": len(X_train),
+                    "n_test_samples": len(X_test),
+                    "used_sample_weights": sample_weights is not None,
                     "cross_validation_folds": RANDOM_SEARCH_CV_FOLDS,
                     "best_iteration": best_iteration,
-                    "best_test_score": float(best_f1_score)
+                    "best_test_score": float(best_f1_score),
                 },
                 "iteration_analysis": iteration_results,
-                "best_model_params": best_model.get_params() if best_model else None
+                "best_model_params": best_model.get_params() if best_model else None,
+                "feature_importance": {
+                    "top_10_features": importance_df.tail(10)[['feature', 'importance']].to_dict('records') if best_model else None,
+                    "total_features": len(feature_columns)
+                }
             }
             
             results_file = os.path.join(output_dir, f'xgboost_iteration_analysis_results_{file_identifier}.json')
@@ -2048,7 +2109,8 @@ class TrainingPipeline:
                 "best_test_score": float(best_f1_score),
                 "iteration_results": iteration_results,
                 "models_trained": len(iteration_values),
-                "output_directory": output_dir
+                "output_directory": output_dir,
+                "feature_importance_saved": best_model is not None
             }
             
         except Exception as e:
