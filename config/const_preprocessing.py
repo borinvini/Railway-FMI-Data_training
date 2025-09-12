@@ -48,7 +48,7 @@ TRAINING_READY_OUTPUT_FOLDER = "data/output/101-preprocessed_training_ready"
 WEATHER_MISSING_THRESHOLD = 30.0
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'trainDelayed'  
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes_eachStation_offset'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 

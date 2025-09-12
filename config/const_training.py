@@ -68,7 +68,7 @@ TOP_FEATURES_COUNT = 5
 TEST_SIZE = 0.2
 
 # Sample weighting parameters for delay-based weighting
-WEIGHT_DELAY_COLUMN = 'differenceInMinutes_eachStation_offset' # Put 'NONE' to disable the weights
+WEIGHT_DELAY_COLUMN = 'NONE' # Put 'NONE' to disable the weights
 MAX_SAMPLE_WEIGHT_CLASSIFICATION = 5.0  # Put 1 to disable the weights for classification
 MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Put 1 to disable the weights for regression
 

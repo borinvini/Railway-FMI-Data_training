@@ -1919,9 +1919,9 @@ class TrainingPipeline:
                 base_model = xgb.XGBRegressor(
                     random_state=42,
                     n_jobs=1,
-                    eval_metric='rmse'
+                    eval_metric='mae'
                 )
-                scoring_metric = 'neg_mean_squared_error'
+                scoring_metric = 'neg_mean_absolute_error'
             
             # Define iteration range: 10 to 100 (step=10)
             iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
