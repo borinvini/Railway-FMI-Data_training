@@ -1793,8 +1793,6 @@ class TrainingPipeline:
         3. Plots test_f1_binary vs n_iter curve
         4. Saves the best model and performance metrics
         """
-        import matplotlib.pyplot as plt
-        import seaborn as sns
         
         try:
             print(f"    train_xgboost_with_randomized_search_cv: Starting XGBoost training with iteration analysis...")
@@ -1931,6 +1929,8 @@ class TrainingPipeline:
             iteration_results = []
             test_f1_scores = []
             cv_scores = []
+            test_mae_scores = []  
+            test_mape_scores = []  
             
             best_model = None
             best_f1_score = -np.inf if is_classification else np.inf
@@ -1984,9 +1984,14 @@ class TrainingPipeline:
                     
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+                    test_mae = mean_absolute_error(y_test, y_pred) 
                     test_r2 = r2_score(y_test, y_pred)
+
+                    epsilon = 1e-8
+                    test_mape = np.mean(np.abs((y_test - y_pred) / np.maximum(np.abs(y_test), epsilon))) * 100
+    
                     
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test RMSE = {test_rmse:.4f}, Test R² = {test_r2:.4f}")
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test RMSE = {test_rmse:.4f}, Test R² = {test_r2:.4f}, Test MAE = {test_mae:.4f}, Test MAPE = {test_mape:.2f}%")
                     
                     # Track best model based on RMSE (lower is better)
                     if test_rmse < best_f1_score:
@@ -1994,7 +1999,9 @@ class TrainingPipeline:
                         best_model = current_best_model
                         best_iteration = n_iter
                     
-                    test_f1_scores.append(test_rmse)  # Using same list for consistency, but storing RMSE for regression
+                    test_f1_scores.append(test_rmse) 
+                    test_mae_scores.append(test_mae)      # ADD THIS
+                    test_mape_scores.append(test_mape)    # ADD THIS
                 
                 cv_scores.append(current_cv_score)
                 
@@ -2003,8 +2010,38 @@ class TrainingPipeline:
                     'n_iter': n_iter,
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
+                    'test_mae': test_mae_scores[-1] if not is_classification else None,      # ADD THIS
+                    'test_mape': test_mape_scores[-1] if not is_classification else None,    # ADD THIS
                     'best_params': randomized_search.best_params_
                 })
+
+                # Calculate final metrics on the best model
+                print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
+
+                # Make final predictions with best model
+                final_y_pred = best_model.predict(X_test)
+
+                if is_classification:
+                    # Your existing classification metrics
+                    final_test_accuracy = accuracy_score(y_test, final_y_pred)
+                    final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
+                    final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
+                    final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                    
+                    if hasattr(best_model, 'predict_proba'):
+                        final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
+                        final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                    else:
+                        final_test_auc = 0.0
+                        
+                else:  # regression
+                    final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
+                    final_test_mae = mean_absolute_error(y_test, final_y_pred)
+                    final_test_r2 = r2_score(y_test, final_y_pred)
+                    
+                    # Calculate final MAPE
+                    epsilon = 1e-8
+                    final_test_mape = np.mean(np.abs((y_test - final_y_pred) / np.maximum(np.abs(y_test), epsilon))) * 100
             
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
@@ -2121,33 +2158,61 @@ class TrainingPipeline:
                 print(f"      Feature importance data saved to: {importance_csv_filename}")
         
 
-            # Save detailed results to JSON
-            results_summary = {
-                "training_overview": {
-                    "dataset_identifier": file_identifier,
+                # Create comprehensive results dictionary
+                results = {
+                    "file_identifier": file_identifier,
                     "problem_type": problem_type,
                     "target_feature": target_feature,
-                    "n_features": len(feature_columns),
-                    "feature_names": feature_columns,
-                    "n_train_samples": len(X_train),
-                    "n_test_samples": len(X_test),
-                    "used_sample_weights": sample_weights is not None,
-                    "cross_validation_folds": RANDOM_SEARCH_CV_FOLDS,
+                    "dataset_info": {
+                        "train_samples": len(X_train),
+                        "test_samples": len(X_test),
+                        "features_count": len(feature_columns),
+                        "train_file": train_file,
+                        "test_file": test_file
+                    },
                     "best_iteration": best_iteration,
-                    "best_test_score": float(best_f1_score),
-                },
-                "iteration_analysis": iteration_results,
-                "best_model_params": best_model.get_params() if best_model else None,
-                "feature_importance": {
-                    "top_10_features": importance_df.tail(10)[['feature', 'importance']].to_dict('records') if best_model else None,
-                    "total_features": len(feature_columns)
+                    "iteration_analysis": iteration_results,
+                    "best_model_params": best_model.get_params() if best_model else None,
+                    "feature_importance": dict(zip(feature_columns, best_model.feature_importances_)) if best_model else None
                 }
-            }
+
+                # Add problem-specific metrics
+                if is_classification:
+                    results["final_metrics"] = {
+                        "test_accuracy": float(final_test_accuracy),
+                        "test_f1": float(final_test_f1),
+                        "test_precision": float(final_test_precision),
+                        "test_recall": float(final_test_recall),
+                        "test_auc": float(final_test_auc)
+                    }
+                else:
+                    results["final_metrics"] = {
+                        "test_rmse": float(final_test_rmse),
+                        "test_mae": float(final_test_mae),          # ADD THIS
+                        "test_mape": float(final_test_mape),        # ADD THIS
+                        "test_r2": float(final_test_r2)
+                    }
+
+                # Add iteration-wise metrics summary
+                if not is_classification:
+                    results["iteration_metrics_summary"] = {
+                        "rmse_values": [float(x) for x in test_f1_scores],
+                        "mae_values": [float(x) for x in test_mae_scores],      # ADD THIS
+                        "mape_values": [float(x) for x in test_mape_scores],    # ADD THIS
+                        "cv_scores": [float(x) for x in cv_scores],
+                        "best_rmse": float(min(test_f1_scores)),
+                        "best_mae": float(min(test_mae_scores)),                # ADD THIS
+                        "best_mape": float(min(test_mape_scores)),              # ADD THIS
+                        "average_rmse": float(np.mean(test_f1_scores)),
+                        "average_mae": float(np.mean(test_mae_scores)),         # ADD THIS
+                        "average_mape": float(np.mean(test_mape_scores))        # ADD THIS
+                    }
             
-            results_file = os.path.join(output_dir, f'xgboost_iteration_analysis_results_{file_identifier}.json')
+            results_file = os.path.join(output_dir, f"xgboost_iteration_analysis_{file_identifier}.json")
             with open(results_file, 'w') as f:
-                json.dump(results_summary, f, indent=2)
-            print(f"      Detailed results saved to: {results_file}")
+                json.dump(results, f, indent=2)
+
+            print(f"      Results saved to: {results_file}")
             
             # Save the best model
             if best_model:
@@ -2162,18 +2227,31 @@ class TrainingPipeline:
             print(f"        Best Test Score: {best_f1_score:.4f}")
             print(f"        Score Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
             
-            return {
-                "success": True,
-                "problem_type": problem_type,
-                "target_feature": target_feature,
-                "file_identifier": file_identifier,
-                "best_iteration": best_iteration,
-                "best_test_score": float(best_f1_score),
-                "iteration_results": iteration_results,
-                "models_trained": len(iteration_values),
-                "output_directory": output_dir,
-                "feature_importance_saved": best_model is not None
-            }
+            if is_classification:
+                return {
+                    "success": True,
+                    "models_trained": 1,
+                    "problem_type": problem_type,
+                    "target_feature": target_feature,
+                    "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
+                    "test_f1": float(final_test_f1),
+                    "output_directory": output_dir,
+                    "results_file": results_file
+                }
+            else:
+                return {
+                    "success": True,
+                    "models_trained": 1,
+                    "problem_type": problem_type,
+                    "target_feature": target_feature,
+                    "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
+                    "test_rmse": float(final_test_rmse),
+                    "test_mae": float(final_test_mae),         
+                    "test_mape": float(final_test_mape),        
+                    "test_r2": float(final_test_r2),
+                    "output_directory": output_dir,
+                    "results_file": results_file
+                }
             
         except Exception as e:
             error_msg = f"Error in train_xgboost_with_randomized_search_cv: {str(e)}"
