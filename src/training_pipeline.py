@@ -2220,6 +2220,10 @@ class TrainingPipeline:
                 joblib.dump(best_model, model_filename)
                 print(f"      Best model saved to: {model_filename}")
             
+            # Find the index of the best iteration in the results list
+            best_iteration_idx = iteration_values.index(best_iteration) if best_iteration else 0
+
+
             # Print summary
             print(f"      Training Summary:")
             print(f"        Problem Type: {problem_type}")
