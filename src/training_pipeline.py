@@ -2210,7 +2210,8 @@ class TrainingPipeline:
             
             results_file = os.path.join(output_dir, f"xgboost_iteration_analysis_{file_identifier}.json")
             with open(results_file, 'w') as f:
-                json.dump(results, f, indent=2)
+                results_str = json.loads(json.dumps(results, default=str))
+                json.dump(results_str, f, indent=2)
 
             print(f"      Results saved to: {results_file}")
             
