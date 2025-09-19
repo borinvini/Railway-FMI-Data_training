@@ -1,5 +1,6 @@
 import ast
 from contextlib import contextmanager
+import datetime
 import logging
 import os
 import re
@@ -1664,6 +1665,9 @@ class PreprocessingPipeline:
                 
                 # Extract month (1-12)
                 df.loc[mask, 'month'] = df.loc[mask, 'actualTime_parsed'].dt.month
+
+                # Extract day of month (1-31)
+                df.loc[mask, 'day_of_month'] = df.loc[mask, 'actualTime_parsed'].dt.day
                 
                 # Extract hour and minute in HH:MM format
                 hour_values = df.loc[mask, 'actualTime_parsed'].dt.hour
@@ -1678,7 +1682,7 @@ class PreprocessingPipeline:
                 df = df.drop('actualTime_parsed', axis=1)
                 
                 # Convert new columns to appropriate data types
-                for col in ['month', 'day_of_week']:
+                for col in ['month', 'day_of_week', 'day_of_month']:
                     if col in df.columns:
                         # Fill NaN values with 0 for rows that couldn't be parsed, then convert to int
                         df[col] = df[col].fillna(0).astype(int)
@@ -1710,12 +1714,12 @@ class PreprocessingPipeline:
                 
                 # Final summary
                 print(f"\nFinal temporal columns added:")
-                for col in ['month', 'hour', 'day_of_week']:
+                for col in ['month', 'hour', 'day_of_week', 'day_of_month']:
                     if col in df.columns:
                         print(f"  - {col}: {df[col].dtype}")
                 
                 logger.info(f"Temporal feature extraction completed successfully for {len(df)} rows")
-                logger.info(f"Added columns: month, hour, day_of_week")
+                logger.info(f"Added columns: month, hour, day_of_week, day_of_month")
 
                 print(f"\n--- SAVING PROCESSED process_actual_time_column DATA ---")
                 
@@ -3130,19 +3134,16 @@ class PreprocessingPipeline:
 
     def filter_strong_weather_causes(self, dataframe=None, month_id=None, filename=None):
         """
-        Filter the dataframe to keep only rows where causes_related_to_weather equals 3 (strong weather indicators).
+        Filter the dataframe to keep entire train schedules for trains that have weather-related causes on specific days.
         
-        This method filters the data to focus on train delays that are strongly related to weather conditions.
-        Based on the causes_related_to_weather column:
-        - 3: Strong weather indicator ('I1', 'I2' category codes)
-        - 2: Possible weather indicator 
-        - 1: Weak weather indicator
-        - 0: No weather indicator
+        New Logic:
+        1. Identify rows where causes_related_to_weather == 3 (strong weather indicators)
+        2. Extract train_id and day_of_month for those rows
+        3. Keep ALL rows for those specific train_id + day_of_month combinations
+        4. Drop all other trains that don't have weather-related causes
         
-        Only rows with value 3 (strong weather indicators) are retained.
-        
-        If the 'causes_related_to_weather' column is not found, the entire dataframe is dropped
-        and a CSV file with only column names (no data) is saved.
+        This approach keeps complete train schedules/journeys for trains that experienced weather delays,
+        rather than keeping only the individual delayed records.
         
         Parameters:
         -----------
@@ -3156,55 +3157,35 @@ class PreprocessingPipeline:
         Returns:
         --------
         pandas.DataFrame
-            The filtered dataframe containing only strong weather-related delays.
-            Returns empty dataframe with column names if causes_related_to_weather column is missing.
+            The filtered dataframe containing complete train schedules for trains with weather-related delays.
         """
-        import re
-        import os
-        from datetime import datetime
-        
-        # Check if dataframe is provided
+        # Input validation
         if dataframe is None:
             print("Error: Dataframe must be provided")
             return None
             
         df = dataframe.copy()
+        print(f"Filtering for complete train schedules with weather causes in dataframe with {len(df)} rows")
         
-        # Extract month and year information
-        month_info = "Unknown"
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Extract date information for logging
         year_info = "Unknown"
+        month_info = "Unknown"
         
-        # Priority 1: Try to get month from dataframe's 'month' column
-        if 'month' in df.columns and not df.empty:
+        if month_id:
             try:
-                # Get the first non-null month value
-                month_values = df['month'].dropna()
-                if not month_values.empty:
-                    first_month = month_values.iloc[0]
-                    if isinstance(first_month, (int, float)) and not pd.isna(first_month):
-                        month_info = f"{int(first_month):02d}"
-                    elif isinstance(first_month, str):
-                        month_info = first_month.strip()
-                    print(f"Extracted month from dataframe 'month' column: {month_info}")
+                parts = month_id.split('_')
+                if len(parts) >= 2:
+                    year_info = parts[0].split('-')[-1] if '-' in parts[0] else parts[0]
+                    month_info = parts[1]
             except Exception as e:
-                print(f"Could not extract month from dataframe 'month' column: {e}")
+                print(f"Could not parse month_id: {e}")
         
-        # Priority 2: Try to get from month_id parameter
-        if month_info == "Unknown" and month_id:
+        if filename and (year_info == "Unknown" or month_info == "Unknown"):
             try:
-                # month_id should be in format YYYY_MM
-                if '_' in month_id:
-                    year_part, month_part = month_id.split('_')
-                    month_info = month_part
-                    year_info = year_part
-                    print(f"Extracted from month_id parameter: Year={year_info}, Month={month_info}")
-            except Exception as e:
-                print(f"Could not extract month from month_id parameter: {e}")
-        
-        # Priority 3: Try to extract from filename
-        if month_info == "Unknown" and filename:
-            try:
-                # Extract from filename pattern: matched_data_YYYY_MM.csv
                 match = re.search(r'(\d{4}).*?(\d{2})', filename)
                 if match:
                     year_info, month_info = match.groups()
@@ -3218,44 +3199,41 @@ class PreprocessingPipeline:
             print(f"Using current year: {year_info}")
         
         # Use the logging context manager for comprehensive logging
-        with self.get_logger("filter_strong_weather_causes.log", "strong_weather_filter", month_id) as logger:
-            print(f"Filtering for strong weather causes in dataframe with {len(df)} rows")
-            logger.info(f"=== STRONG WEATHER CAUSES FILTERING START ===")
+        with self.get_logger("filter_weather_train_schedules.log", "weather_train_filter", month_id) as logger:
+            logger.info(f"=== WEATHER TRAIN SCHEDULE FILTERING START ===")
             logger.info(f"Input dataframe shape: {df.shape}")
             logger.info(f"Processing month: {month_info}, Year: {year_info}")
             
-            if df.empty:
-                print("Warning: Empty dataframe")
-                logger.warning("Empty dataframe provided - no filtering performed")
-                return df
+            # Check if required columns exist
+            required_columns = ['causes_related_to_weather', 'train_id', 'day_of_month']
+            missing_columns = [col for col in required_columns if col not in df.columns]
             
-            # Check if 'causes_related_to_weather' column exists
-            if 'causes_related_to_weather' not in df.columns:
-                warning_msg = f"'causes_related_to_weather' column not found in dataframe for {year_info}-{month_info}. Dropping entire dataframe and saving empty CSV with column names only."
+            if missing_columns:
+                warning_msg = f"Required columns not found: {missing_columns}. Available columns: {list(df.columns)}"
                 print(f"Warning: {warning_msg}")
                 logger.warning(warning_msg)
-                logger.info(f"Available columns: {list(df.columns)}")
                 
                 # Create empty dataframe with same columns but no data
                 empty_df = pd.DataFrame(columns=df.columns)
                 logger.info(f"Returning empty dataframe with {len(empty_df.columns)} columns and 0 rows")
-                
                 return empty_df
+            
+            # Store original statistics
+            original_rows = len(df)
+            original_trains = df['train_id'].nunique()
+            original_days = df['day_of_month'].nunique()
             
             # Log initial data distribution
             logger.info(f"Initial data analysis:")
-            logger.info(f"  - Total rows: {len(df):,}")
-            logger.info(f"  - Total columns: {len(df.columns)}")
-            logger.info(f"  - Month/Year: {month_info}/{year_info}")
+            logger.info(f"  - Total rows: {original_rows:,}")
+            logger.info(f"  - Unique trains: {original_trains:,}")
+            logger.info(f"  - Unique days: {original_days:,}")
             
-            # Store original row count
-            original_rows = len(df)
-            
-            # Show distribution of causes_related_to_weather values in original data
+            # Show distribution of causes_related_to_weather values
             value_counts = df['causes_related_to_weather'].value_counts().sort_index()
             
             print(f"\nOriginal causes_related_to_weather distribution for {year_info}-{month_info}:")
-            logger.info(f"Original causes_related_to_weather distribution for {year_info}-{month_info}:")
+            logger.info(f"Original causes_related_to_weather distribution:")
             
             for value, count in value_counts.items():
                 percentage = (count / original_rows) * 100
@@ -3274,72 +3252,128 @@ class PreprocessingPipeline:
                 print(log_msg)
                 logger.info(log_msg)
             
-            # Filter to keep only rows where causes_related_to_weather equals 3 (strong weather indicators)
-            logger.info("Applying filter: causes_related_to_weather == 3")
-            filtered_df = df[df['causes_related_to_weather'] == 3].copy()
+            # Step 1: Identify rows with strong weather causes (causes_related_to_weather == 3)
+            weather_rows = df[df['causes_related_to_weather'] == 3]
+            weather_affected_count = len(weather_rows)
+            
+            if weather_affected_count == 0:
+                warning_msg = f"No rows with strong weather causes (value = 3) found for {year_info}-{month_info}!"
+                print(f"WARNING: {warning_msg}")
+                logger.warning(warning_msg)
+                
+                # Return empty dataframe
+                empty_df = pd.DataFrame(columns=df.columns)
+                return empty_df
+            
+            # Step 2: Get unique combinations of train_id and day_of_month for weather-affected trains
+            weather_train_days = weather_rows[['train_id', 'day_of_month']].drop_duplicates()
+            unique_combinations = len(weather_train_days)
+            
+            print(f"\nWeather-affected train analysis:")
+            print(f"  - Rows with weather causes: {weather_affected_count:,}")
+            print(f"  - Unique train+day combinations: {unique_combinations:,}")
+            
+            logger.info(f"Weather-affected analysis:")
+            logger.info(f"  - Rows with strong weather causes: {weather_affected_count:,}")
+            logger.info(f"  - Unique train+day combinations affected: {unique_combinations:,}")
+            
+            # Step 3: Create a filter to keep ALL rows for these train+day combinations
+            # Create a merged key for efficient filtering
+            df['_temp_key'] = df['train_id'].astype(str) + '_' + df['day_of_month'].astype(str)
+            weather_keys = (weather_rows['train_id'].astype(str) + '_' + weather_rows['day_of_month'].astype(str)).unique()
+            
+            # Filter to keep all rows for weather-affected train+day combinations
+            filtered_df = df[df['_temp_key'].isin(weather_keys)].copy()
+            
+            # Remove the temporary key column
+            filtered_df = filtered_df.drop(columns=['_temp_key'])
+            df = df.drop(columns=['_temp_key'])  # Clean up original df too
             
             # Calculate filtering statistics
             filtered_rows = len(filtered_df)
-            filtered_percentage = (filtered_rows / original_rows) * 100 if original_rows > 0 else 0
+            filtered_trains = filtered_df['train_id'].nunique()
+            filtered_days = filtered_df['day_of_month'].nunique()
+            
+            retained_percentage = (filtered_rows / original_rows) * 100 if original_rows > 0 else 0
             removed_rows = original_rows - filtered_rows
             removed_percentage = (removed_rows / original_rows) * 100 if original_rows > 0 else 0
             
             # Display and log filtering results
-            print(f"\n=== STRONG WEATHER CAUSES FILTERING RESULTS ({year_info}-{month_info}) ===")
+            print(f"\n=== WEATHER TRAIN SCHEDULE FILTERING RESULTS ({year_info}-{month_info}) ===")
             logger.info(f"=== FILTERING RESULTS SUMMARY ({year_info}-{month_info}) ===")
             
             results_summary = [
                 f"Original rows: {original_rows:,}",
-                f"Rows with strong weather causes (value = 3): {filtered_rows:,} ({filtered_percentage:.1f}%)",
-                f"Rows removed: {removed_rows:,} ({removed_percentage:.1f}%)",
-                f"Data retention rate: {filtered_percentage:.1f}%"
+                f"Original unique trains: {original_trains:,}",
+                f"Trains with weather causes: {weather_train_days['train_id'].nunique():,}",
+                f"Filtered rows (complete schedules): {filtered_rows:,} ({retained_percentage:.1f}%)",
+                f"Filtered unique trains: {filtered_trains:,}",
+                f"Rows removed: {removed_rows:,} ({removed_percentage:.1f}%)"
             ]
             
             for result in results_summary:
                 print(result)
                 logger.info(result)
             
+            # Analyze the distribution of weather causes in the filtered data
+            if len(filtered_df) > 0:
+                filtered_value_counts = filtered_df['causes_related_to_weather'].value_counts().sort_index()
+                
+                print(f"\nFiltered data causes_related_to_weather distribution:")
+                logger.info(f"Filtered data causes_related_to_weather distribution:")
+                
+                for value, count in filtered_value_counts.items():
+                    percentage = (count / filtered_rows) * 100
+                    if value == 0:
+                        label = "No weather indicator"
+                    elif value == 1:
+                        label = "Weak weather indicator"
+                    elif value == 2:
+                        label = "Possible weather indicator"
+                    elif value == 3:
+                        label = "Strong weather indicator"
+                    else:
+                        label = f"Unknown value ({value})"
+                    
+                    log_msg = f"  {value}: {count:,} rows ({percentage:.1f}%) - {label}"
+                    print(log_msg)
+                    logger.info(log_msg)
+            
             # Log detailed statistics
             logger.info("=== DETAILED FILTERING STATISTICS ===")
-            logger.info(f"Filter criteria: Keep rows where causes_related_to_weather == 3")
-            logger.info(f"Rows meeting criteria: {filtered_rows:,}")
-            logger.info(f"Rows not meeting criteria: {removed_rows:,}")
-            logger.info(f"Percentage of data retained: {filtered_percentage:.2f}%")
-            logger.info(f"Percentage of data removed: {removed_percentage:.2f}%")
+            logger.info(f"Filter criteria: Keep complete schedules for trains with weather causes on specific days")
+            logger.info(f"Original data: {original_rows:,} rows, {original_trains:,} trains")
+            logger.info(f"Weather-affected combinations: {unique_combinations:,} train+day pairs")
+            logger.info(f"Retained data: {filtered_rows:,} rows, {filtered_trains:,} trains")
+            logger.info(f"Data retention rate: {retained_percentage:.2f}%")
+            logger.info(f"Data removal rate: {removed_percentage:.2f}%")
             
-            # Warn if no data remains after filtering
+            # Warn if no data remains after filtering (should not happen after the check above)
             if filtered_rows == 0:
-                warning_msg = f"WARNING: No rows with strong weather causes found for {year_info}-{month_info}! The filtered dataset is empty."
-                recommendation = "Consider using a different filter criteria or checking the data."
+                warning_msg = f"WARNING: No complete train schedules found for weather-affected trains in {year_info}-{month_info}!"
                 print(warning_msg)
-                print(recommendation)
                 logger.warning(warning_msg)
-                logger.warning(recommendation)
-
-            # Drop the causes_related_to_weather column since it's no longer needed for training
-            # (all remaining rows have the same value: 3)
-            if 'causes_related_to_weather' in filtered_df.columns:
-                filtered_df = filtered_df.drop(columns=['causes_related_to_weather'])
-                print(f"Dropped 'causes_related_to_weather' column (no longer needed for training)")
-                logger.info("Dropped 'causes_related_to_weather' column - all remaining rows had value 3")
-
-            print(f"\n--- SAVING PROCESSED filter_strong_weather_causes DATA ---")
-                    
+            
+            # Save the filtered data
+            print(f"\n--- SAVING PROCESSED filter_weather_train_schedules DATA ---")
+            
             try:
                 saved_file_path = save_dataframe_to_csv(
                     folder_path=FOLDER_FILTER_STRONG_WEATHER_CAUSES,
                     month_id=self.current_file_id,
                     df=filtered_df,
-                    file_prefix="filter_strong_weather_causes"
+                    file_prefix="filter_weather_train_schedules"
                 )
-                        
-                print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
+                
+                print(f"✓ Successfully saved filtered train schedules to: {saved_file_path}")
+                logger.info(f"Saved filtered data to: {saved_file_path}")
                 
             except Exception as save_error:
                 print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+                logger.error(f"Failed to save processed data: {save_error}")
                 print("Continuing with processing, but data was not saved to folder.")
 
-            logger.info(f"=== STRONG WEATHER CAUSES FILTERING COMPLETE ({year_info}-{month_info}) ===")
+            logger.info(f"=== WEATHER TRAIN SCHEDULE FILTERING COMPLETE ({year_info}-{month_info}) ===")
             return filtered_df
 
     def remove_duplicates(self, dataframe=None, month_id=None):

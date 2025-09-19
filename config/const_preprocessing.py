@@ -3,7 +3,7 @@
 PREPROCESSING_STATE_MACHINE = {
     # Data extraction and preprocessing methods
     "extract_nested_data": True,
-    "filter_by_target_station": True,
+    "filter_by_target_station": False,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
@@ -17,7 +17,7 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_dayofweek_to_sincos": True,
     "drop_original_temporal_columns": False,
     "select_target": False, 
-    "filter_strong_weather_causes": False,
+    "filter_strong_weather_causes": True,
     "remove_duplicates": True,
     "save_training_ready_csv": True
 }
@@ -78,7 +78,7 @@ USE_SIN_COS_APPROACH = True
 TEMPORAL_SINCOS_FEATURES = ['month_sin', 'month_cos', 'hour_sin', 'hour_cos', 'day_week_sin', 'day_week_cos']
 
 # Valid prediction features (non-target features used for training)
-VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week", "causes_related_to_weather"]
+VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week", "day_of_month", "causes_related_to_weather", "train_id"]
 
 # Target features that are categoricals for classification problems
 CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
