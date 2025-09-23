@@ -525,6 +525,47 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ data_distribution_analysis (Comprehensive Data Distribution Analysis) (disabled)")
 
+        if state_machine.get("target_feature_analysis", False):
+            try:
+                print(f"    → target_feature_analysis (Comprehensive Target Feature Analysis)")
+                target_analysis_result = self.target_feature_analysis()
+                
+                if target_analysis_result and target_analysis_result.get("success", False):
+                    result["steps_executed"].append("target_feature_analysis")
+                    result["file_info"]["target_analysis_processed_files"] = target_analysis_result.get("processed_files", 0)
+                    print(f"      ✓ Successfully completed target feature analysis")
+                    print(f"      ✓ Files analyzed: {target_analysis_result.get('processed_files', 0)}")
+                    print(f"      ✓ Target feature: {target_analysis_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ Delay threshold: {target_analysis_result.get('delay_threshold', 'N/A')} minutes")
+                    print(f"      ✓ Total samples: {target_analysis_result.get('valid_target_rows', 0):,}")
+                    print(f"      ✓ Plots created: {target_analysis_result.get('plots_created', 0)}")
+                    print(f"      ✓ Results saved to: {target_analysis_result.get('output_directory', 'N/A')}")
+                    
+                    # Display key statistics if available
+                    if target_analysis_result.get('statistics'):
+                        stats = target_analysis_result['statistics']
+                        if 'zero_threshold_analysis' in stats:
+                            zero_stats = stats['zero_threshold_analysis']
+                            print(f"      ✓ Zero threshold (≥0): {zero_stats['delayed_count']:,} delayed ({zero_stats['delayed_percentage']:.1f}%)")
+                        
+                        if 'train_delay_threshold_analysis' in stats:
+                            threshold_stats = stats['train_delay_threshold_analysis']
+                            print(f"      ✓ {threshold_stats['threshold']}-min threshold: {threshold_stats['delayed_count']:,} delayed ({threshold_stats['delayed_percentage']:.1f}%)")
+                    
+                    result["success"] = True
+                else:
+                    error_msg = target_analysis_result.get("error", "target_feature_analysis returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"target_feature_analysis failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ target_feature_analysis (Comprehensive Target Feature Analysis) (disabled)")
+
         if state_machine.get("train_decision_tree", False):
             try:
                 print(f"    → train_decision_tree")
@@ -8312,6 +8353,420 @@ class TrainingPipeline:
         except Exception as e:
             error_msg = f"data_distribution_analysis failed: {str(e)}"
             print(f"    data_distribution_analysis: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+        
+    def target_feature_analysis(self, target_file=None):
+        """
+        Analyze the target feature 'differenceInMinutes_eachStation_offset' to understand delay patterns.
+        
+        This pipeline stage creates comprehensive visualizations and analysis of the target feature:
+        1. Binary bar plot: Delayed (>=0) vs Non-delayed (<0) trains
+        2. Binary bar plot: Delayed (>=TRAIN_DELAY_MINUTES) vs Non-delayed (<TRAIN_DELAY_MINUTES) trains
+        
+        Both plots include percentages for better understanding of class distribution.
+        
+        This stage helps understand:
+        - Overall delay distribution in the dataset
+        - Impact of different delay thresholds
+        - Class balance for classification problems
+        
+        Parameters:
+        -----------
+        target_file : str, optional
+            Specific file path to analyze. If None, will look for the first available merged file.
+            
+        Returns:
+        --------
+        dict
+            Results of the target feature analysis including plots and statistics
+        """
+        try:
+            print(f"    target_feature_analysis: Starting comprehensive target feature analysis...")
+            print(f"    target_feature_analysis: Target feature: {DEFAULT_TARGET_FEATURE}")
+            print(f"    target_feature_analysis: Delay threshold: {TRAIN_DELAY_MINUTES} minutes")
+            
+            # Create output directories
+            analysis_output_dir = os.path.join(self.project_root, "data/output/target_feature_analysis")
+            plots_dir = os.path.join(analysis_output_dir, "plots")
+            statistics_dir = os.path.join(analysis_output_dir, "statistics")
+            
+            os.makedirs(analysis_output_dir, exist_ok=True)
+            os.makedirs(plots_dir, exist_ok=True)
+            os.makedirs(statistics_dir, exist_ok=True)
+            
+            # Determine target file to analyze
+            target_file_path = None
+            
+            if target_file and os.path.exists(target_file):
+                target_file_path = target_file
+                print(f"    target_feature_analysis: Using specified target file: {os.path.basename(target_file)}")
+            else:
+                # Look for merged data in the specified folder pattern
+                merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                if merged_data_files:
+                    target_file_path = merged_data_files[0]  # Use first available file
+                    print(f"    target_feature_analysis: Using first available file: {os.path.basename(target_file_path)}")
+                    print(f"    target_feature_analysis: Found {len(merged_data_files)} matching files")
+            
+            # Check if target file exists
+            if not target_file_path or not os.path.exists(target_file_path):
+                error_msg = f"No valid merged data file found for target feature analysis."
+                error_msg += f"\nPattern searched: {os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, 'merged_data_*_train.csv')}"
+                print(f"    target_feature_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    target_feature_analysis: Loading dataset from {os.path.basename(target_file_path)}...")
+            
+            # Read the dataset
+            df = pd.read_csv(target_file_path)
+            
+            if df.empty:
+                error_msg = f"Dataset is empty: {target_file_path}"
+                print(f"    target_feature_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            # Check if target feature exists
+            if DEFAULT_TARGET_FEATURE not in df.columns:
+                error_msg = f"Target feature '{DEFAULT_TARGET_FEATURE}' not found in dataset"
+                error_msg += f"\nAvailable columns: {list(df.columns)}"
+                print(f"    target_feature_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            total_rows = len(df)
+            print(f"    target_feature_analysis: Dataset shape: {total_rows:,} rows")
+            print(f"    target_feature_analysis: Analyzing target feature: {DEFAULT_TARGET_FEATURE}")
+            
+            # Extract target feature data
+            target_data = df[DEFAULT_TARGET_FEATURE].dropna()
+            target_rows = len(target_data)
+            
+            if target_rows == 0:
+                error_msg = f"No valid target data found (all values are NaN)"
+                print(f"    target_feature_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    target_feature_analysis: Valid target data: {target_rows:,} rows")
+            
+            # Calculate statistics for different delay definitions
+            
+            # Definition 1: Delayed if >= 0 (any positive delay)
+            delayed_zero_threshold = target_data > 0
+            delayed_zero_count = delayed_zero_threshold.sum()
+            non_delayed_zero_count = target_rows - delayed_zero_count
+            delayed_zero_percentage = (delayed_zero_count / target_rows) * 100
+            non_delayed_zero_percentage = (non_delayed_zero_count / target_rows) * 100
+            
+            # Definition 2: Delayed if >= TRAIN_DELAY_MINUTES
+            delayed_threshold = target_data >= TRAIN_DELAY_MINUTES
+            delayed_threshold_count = delayed_threshold.sum()
+            non_delayed_threshold_count = target_rows - delayed_threshold_count
+            delayed_threshold_percentage = (delayed_threshold_count / target_rows) * 100
+            non_delayed_threshold_percentage = (non_delayed_threshold_count / target_rows) * 100
+            
+            print(f"    target_feature_analysis: Statistics calculated:")
+            print(f"      Zero threshold (>=0): {delayed_zero_count:,} delayed ({delayed_zero_percentage:.1f}%)")
+            print(f"      {TRAIN_DELAY_MINUTES}min threshold (>={TRAIN_DELAY_MINUTES}): {delayed_threshold_count:,} delayed ({delayed_threshold_percentage:.1f}%)")
+            
+            # Create visualizations
+            print(f"    target_feature_analysis: Creating visualizations...")
+            
+            # Set up the plotting style
+            plt.style.use('default')
+            sns.set_palette("husl")
+            
+            # Create figure with two subplots
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+            
+            # Plot 1: Binary classification with zero threshold (>0)
+            categories_zero = ['Non-delayed\n(<=0 min)', 'Delayed\n(>0 min)']
+            counts_zero = [non_delayed_zero_count, delayed_zero_count]
+            percentages_zero = [non_delayed_zero_percentage, delayed_zero_percentage]
+            colors_zero = ['#2E8B57', '#DC143C']  # SeaGreen, Crimson
+            
+            bars1 = ax1.bar(categories_zero, counts_zero, color=colors_zero, alpha=0.8, edgecolor='black', linewidth=1)
+            ax1.set_title(f'Train Delay Distribution\n(Zero Threshold: >=0 minutes)', fontsize=14, fontweight='bold', pad=20)
+            ax1.set_ylabel('Number of Trains', fontsize=12)
+            ax1.set_xlabel('Train Status', fontsize=12)
+            
+            # Add percentage labels on bars
+            for bar, count, percentage in zip(bars1, counts_zero, percentages_zero):
+                height = bar.get_height()
+                ax1.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                        f'{count:,}\n({percentage:.1f}%)',
+                        ha='center', va='bottom', fontweight='bold', fontsize=11)
+            
+            # Add grid for better readability
+            ax1.grid(True, alpha=0.3, axis='y')
+            ax1.set_ylim(0, max(counts_zero) * 1.15)
+            
+            # Plot 2: Binary classification with TRAIN_DELAY_MINUTES threshold
+            categories_threshold = [f'Non-delayed\n(<{TRAIN_DELAY_MINUTES} min)', f'Delayed\n(>={TRAIN_DELAY_MINUTES} min)']
+            counts_threshold = [non_delayed_threshold_count, delayed_threshold_count]
+            percentages_threshold = [non_delayed_threshold_percentage, delayed_threshold_percentage]
+            colors_threshold = ['#4682B4', '#FF6347']  # SteelBlue, Tomato
+            
+            bars2 = ax2.bar(categories_threshold, counts_threshold, color=colors_threshold, alpha=0.8, edgecolor='black', linewidth=1)
+            ax2.set_title(f'Train Delay Distribution\n({TRAIN_DELAY_MINUTES}-Minute Threshold: >={TRAIN_DELAY_MINUTES} minutes)', fontsize=14, fontweight='bold', pad=20)
+            ax2.set_ylabel('Number of Trains', fontsize=12)
+            ax2.set_xlabel('Train Status', fontsize=12)
+            
+            # Add percentage labels on bars
+            for bar, count, percentage in zip(bars2, counts_threshold, percentages_threshold):
+                height = bar.get_height()
+                ax2.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                        f'{count:,}\n({percentage:.1f}%)',
+                        ha='center', va='bottom', fontweight='bold', fontsize=11)
+            
+            # Add grid for better readability
+            ax2.grid(True, alpha=0.3, axis='y')
+            ax2.set_ylim(0, max(counts_threshold) * 1.15)
+            
+            # Add overall title and adjust layout
+            fig.suptitle(DEFAULT_TARGET_FEATURE, fontsize=16, fontweight='bold', y=0.95)
+            
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.85)
+            
+            # Save the combined plot
+            plot_path = os.path.join(plots_dir, "target_feature_delay_distribution.png")
+            plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close()
+            
+            print(f"    target_feature_analysis: Saved delay distribution plot: {os.path.basename(plot_path)}")
+            
+            # Create additional statistical plots
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+            
+            # Plot 1: Histogram of target feature values
+            ax1.hist(target_data, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
+            ax1.axvline(0, color='red', linestyle='--', linewidth=2, label='Zero threshold')
+            ax1.axvline(TRAIN_DELAY_MINUTES, color='orange', linestyle='--', linewidth=2, label=f'{TRAIN_DELAY_MINUTES}-min threshold')
+            ax1.set_xlabel('Delay (minutes)', fontsize=12)
+            ax1.set_ylabel('Frequency', fontsize=12)
+            ax1.set_title('Distribution of Target Feature Values', fontsize=14, fontweight='bold')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Plot 2: Box plot showing delay distribution
+            box_data = [target_data[target_data < 0], target_data[(target_data >= 0) & (target_data < TRAIN_DELAY_MINUTES)], target_data[target_data >= TRAIN_DELAY_MINUTES]]
+            box_labels = [f'Early\n(<0)', f'Minor Delay\n(0-{TRAIN_DELAY_MINUTES-1})', f'Significant Delay\n(>={TRAIN_DELAY_MINUTES})']
+            
+            bp = ax2.boxplot(box_data, labels=box_labels, patch_artist=True)
+            colors_box = ['lightgreen', 'yellow', 'lightcoral']
+            for patch, color in zip(bp['boxes'], colors_box):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            
+            ax2.set_ylabel('Delay (minutes)', fontsize=12)
+            ax2.set_title('Delay Distribution by Category', fontsize=14, fontweight='bold')
+            ax2.grid(True, alpha=0.3)
+            
+            # Plot 3: Cumulative distribution
+            sorted_delays = np.sort(target_data)
+            cumulative_prob = np.arange(1, len(sorted_delays) + 1) / len(sorted_delays)
+            ax3.plot(sorted_delays, cumulative_prob, linewidth=2, color='purple')
+            ax3.axvline(0, color='red', linestyle='--', alpha=0.7, label='Zero threshold')
+            ax3.axvline(TRAIN_DELAY_MINUTES, color='orange', linestyle='--', alpha=0.7, label=f'{TRAIN_DELAY_MINUTES}-min threshold')
+            ax3.set_xlabel('Delay (minutes)', fontsize=12)
+            ax3.set_ylabel('Cumulative Probability', fontsize=12)
+            ax3.set_title('Cumulative Distribution Function', fontsize=14, fontweight='bold')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            
+            # Plot 4: Summary statistics table
+            ax4.axis('off')
+            
+            # Calculate comprehensive statistics
+            stats_data = [
+                ['Statistic', 'Value'],
+                ['Total Samples', f'{target_rows:,}'],
+                ['Mean Delay', f'{target_data.mean():.2f} min'],
+                ['Median Delay', f'{target_data.median():.2f} min'],
+                ['Standard Deviation', f'{target_data.std():.2f} min'],
+                ['Minimum Delay', f'{target_data.min():.2f} min'],
+                ['Maximum Delay', f'{target_data.max():.2f} min'],
+                ['', ''],
+                ['Zero Threshold (>=0)', ''],
+                ['  Delayed Trains', f'{delayed_zero_count:,} ({delayed_zero_percentage:.1f}%)'],
+                ['  Non-delayed Trains', f'{non_delayed_zero_count:,} ({non_delayed_zero_percentage:.1f}%)'],
+                ['', ''],
+                [f'{TRAIN_DELAY_MINUTES}-Min Threshold (>={TRAIN_DELAY_MINUTES})', ''],
+                ['  Delayed Trains', f'{delayed_threshold_count:,} ({delayed_threshold_percentage:.1f}%)'],
+                ['  Non-delayed Trains', f'{non_delayed_threshold_count:,} ({non_delayed_threshold_percentage:.1f}%)']
+            ]
+            
+            # Create table
+            table = ax4.table(cellText=stats_data[1:], colLabels=stats_data[0], 
+                            cellLoc='left', loc='center', colWidths=[0.6, 0.4])
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1, 2)
+            
+            # Style the table
+            for i in range(len(stats_data)):
+                for j in range(len(stats_data[0])):
+                    if i == 0:  # Header row
+                        table[(i, j)].set_facecolor('#4472C4')
+                        table[(i, j)].set_text_props(weight='bold', color='white')
+                    elif stats_data[i][1] == '':  # Section headers
+                        table[(i, j)].set_facecolor('#D9E2F3')
+                        table[(i, j)].set_text_props(weight='bold')
+                    else:
+                        table[(i, j)].set_facecolor('#F2F2F2' if i % 2 == 0 else 'white')
+            
+            ax4.set_title('Target Feature Statistics Summary', fontsize=14, fontweight='bold', pad=20)
+            
+            plt.suptitle(f'Comprehensive Target Feature Analysis\n{DEFAULT_TARGET_FEATURE}', 
+                        fontsize=16, fontweight='bold', y=0.95)
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.88)
+            
+            # Save the comprehensive analysis plot
+            comprehensive_plot_path = os.path.join(plots_dir, "target_feature_comprehensive_analysis.png")
+            plt.savefig(comprehensive_plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+            plt.close()
+            
+            print(f"    target_feature_analysis: Saved comprehensive analysis plot: {os.path.basename(comprehensive_plot_path)}")
+            
+            # Save detailed statistics to JSON
+            statistics_data = {
+                "analysis_timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "dataset_info": {
+                    "file_path": target_file_path,
+                    "file_name": os.path.basename(target_file_path),
+                    "total_rows": total_rows,
+                    "valid_target_rows": target_rows,
+                    "target_feature": DEFAULT_TARGET_FEATURE
+                },
+                "descriptive_statistics": {
+                    "mean": float(target_data.mean()),
+                    "median": float(target_data.median()),
+                    "std": float(target_data.std()),
+                    "min": float(target_data.min()),
+                    "max": float(target_data.max()),
+                    "q25": float(target_data.quantile(0.25)),
+                    "q75": float(target_data.quantile(0.75)),
+                    "iqr": float(target_data.quantile(0.75) - target_data.quantile(0.25))
+                },
+                "zero_threshold_analysis": {
+                    "threshold": 0,
+                    "delayed_count": int(delayed_zero_count),
+                    "delayed_percentage": float(delayed_zero_percentage),
+                    "non_delayed_count": int(non_delayed_zero_count),
+                    "non_delayed_percentage": float(non_delayed_zero_percentage)
+                },
+                "train_delay_threshold_analysis": {
+                    "threshold": TRAIN_DELAY_MINUTES,
+                    "delayed_count": int(delayed_threshold_count),
+                    "delayed_percentage": float(delayed_threshold_percentage),
+                    "non_delayed_count": int(non_delayed_threshold_count),
+                    "non_delayed_percentage": float(non_delayed_threshold_percentage)
+                },
+                "output_files": {
+                    "delay_distribution_plot": plot_path,
+                    "comprehensive_analysis_plot": comprehensive_plot_path,
+                    "statistics_json": os.path.join(statistics_dir, "target_feature_statistics.json")
+                }
+            }
+            
+            # Save statistics to JSON file
+            json_path = os.path.join(statistics_dir, "target_feature_statistics.json")
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(statistics_data, f, indent=2)
+            
+            print(f"    target_feature_analysis: Saved statistics to: {os.path.basename(json_path)}")
+            
+            # Create summary report with UTF-8 encoding
+            summary_path = os.path.join(analysis_output_dir, "target_feature_analysis_summary.txt")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write("Target Feature Analysis Summary\n")
+                f.write("=" * 50 + "\n\n")
+                
+                f.write(f"Analysis Timestamp: {statistics_data['analysis_timestamp']}\n")
+                f.write(f"Dataset: {os.path.basename(target_file_path)}\n")
+                f.write(f"Target Feature: {DEFAULT_TARGET_FEATURE}\n\n")
+                
+                f.write("Dataset Information:\n")
+                f.write(f"  Total Rows: {total_rows:,}\n")
+                f.write(f"  Valid Target Rows: {target_rows:,}\n")
+                f.write(f"  Missing Values: {total_rows - target_rows:,}\n\n")
+                
+                f.write("Descriptive Statistics:\n")
+                f.write(f"  Mean: {statistics_data['descriptive_statistics']['mean']:.2f} minutes\n")
+                f.write(f"  Median: {statistics_data['descriptive_statistics']['median']:.2f} minutes\n")
+                f.write(f"  Std Dev: {statistics_data['descriptive_statistics']['std']:.2f} minutes\n")
+                f.write(f"  Range: {statistics_data['descriptive_statistics']['min']:.2f} to {statistics_data['descriptive_statistics']['max']:.2f} minutes\n\n")
+                
+                f.write("Zero Threshold Analysis (>=0 minutes):\n")
+                f.write(f"  Delayed: {delayed_zero_count:,} ({delayed_zero_percentage:.1f}%)\n")
+                f.write(f"  Non-delayed: {non_delayed_zero_count:,} ({non_delayed_zero_percentage:.1f}%)\n\n")
+                
+                f.write(f"{TRAIN_DELAY_MINUTES}-Minute Threshold Analysis (>={TRAIN_DELAY_MINUTES} minutes):\n")
+                f.write(f"  Delayed: {delayed_threshold_count:,} ({delayed_threshold_percentage:.1f}%)\n")
+                f.write(f"  Non-delayed: {non_delayed_threshold_count:,} ({non_delayed_threshold_percentage:.1f}%)\n\n")
+                
+                f.write("Output Files:\n")
+                f.write(f"  Delay Distribution Plot: {os.path.basename(plot_path)}\n")
+                f.write(f"  Comprehensive Analysis: {os.path.basename(comprehensive_plot_path)}\n")
+                f.write(f"  Statistics JSON: {os.path.basename(json_path)}\n")
+            
+            print(f"    target_feature_analysis: Saved summary report: {os.path.basename(summary_path)}")
+            
+            # Prepare results
+            results = {
+                "success": True,
+                "processed_files": 1,
+                "target_file": target_file_path,
+                "target_feature": DEFAULT_TARGET_FEATURE,
+                "delay_threshold": TRAIN_DELAY_MINUTES,
+                "total_rows": total_rows,
+                "valid_target_rows": target_rows,
+                "output_directory": analysis_output_dir,
+                "plots_created": 2,
+                "statistics": statistics_data,
+                "output_files": {
+                    "delay_distribution_plot": plot_path,
+                    "comprehensive_analysis_plot": comprehensive_plot_path,
+                    "statistics_json": json_path,
+                    "summary_report": summary_path
+                }
+            }
+            
+            print(f"    target_feature_analysis: Analysis completed successfully!")
+            print(f"    target_feature_analysis: Output directory: {analysis_output_dir}")
+            print(f"    target_feature_analysis: Plots created: 2")
+            print(f"    target_feature_analysis: Statistics saved to JSON and summary report")
+            
+            return results
+            
+        except Exception as e:
+            error_msg = f"Error in target feature analysis: {str(e)}"
+            print(f"    target_feature_analysis: {error_msg}")
             import traceback
             traceback.print_exc()
             

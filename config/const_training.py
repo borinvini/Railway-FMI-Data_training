@@ -8,6 +8,7 @@ TRAINING_STATE_MACHINE = {
     "scale_weather_features": True,
     "numeric_correlation_analysis": True,
     "data_distribution_analysis": True,
+    "target_feature_analysis": True,
     "train_xgboost_with_randomized_search_cv": True,
 }
 
