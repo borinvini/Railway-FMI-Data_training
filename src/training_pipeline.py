@@ -8364,16 +8364,17 @@ class TrainingPipeline:
         
     def target_feature_analysis(self, target_file=None):
         """
-        Analyze the target feature 'differenceInMinutes_eachStation_offset' to understand delay patterns.
+        Analyze ALL target features in VALID_TARGET_FEATURES to understand patterns.
         
-        This pipeline stage creates comprehensive visualizations and analysis of the target feature:
-        1. Binary bar plot: Delayed (>=0) vs Non-delayed (<0) trains
-        2. Binary bar plot: Delayed (>=TRAIN_DELAY_MINUTES) vs Non-delayed (<TRAIN_DELAY_MINUTES) trains
+        This pipeline stage creates comprehensive visualizations and analysis for each target feature:
+        1. Binary bar plot: Delayed (>=0) vs Non-delayed (<0) trains (for continuous features)
+        2. Binary bar plot: Delayed (>=TRAIN_DELAY_MINUTES) vs Non-delayed (<TRAIN_DELAY_MINUTES) trains (for continuous features)
+        3. Distribution plots for categorical features
         
         Both plots include percentages for better understanding of class distribution.
         
         This stage helps understand:
-        - Overall delay distribution in the dataset
+        - Overall distribution patterns for each target feature
         - Impact of different delay thresholds
         - Class balance for classification problems
         
@@ -8385,11 +8386,11 @@ class TrainingPipeline:
         Returns:
         --------
         dict
-            Results of the target feature analysis including plots and statistics
+            Results of the target feature analysis including plots and statistics for all features
         """
         try:
             print(f"    target_feature_analysis: Starting comprehensive target feature analysis...")
-            print(f"    target_feature_analysis: Target feature: {DEFAULT_TARGET_FEATURE}")
+            print(f"    target_feature_analysis: Analyzing {len(VALID_TARGET_FEATURES)} target features: {VALID_TARGET_FEATURES}")
             print(f"    target_feature_analysis: Delay threshold: {TRAIN_DELAY_MINUTES} minutes")
             
             # Create output directories
@@ -8418,7 +8419,7 @@ class TrainingPipeline:
             # Check if target file exists
             if not target_file_path or not os.path.exists(target_file_path):
                 error_msg = f"No valid merged data file found for target feature analysis."
-                error_msg += f"\nPattern searched: {os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, 'merged_data_*_train.csv')}"
+                error_msg += f"\nPattern searched: {os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER, 'merged_data_*.csv')}"
                 print(f"    target_feature_analysis: {error_msg}")
                 return {
                     "success": False,
@@ -8440,140 +8441,442 @@ class TrainingPipeline:
                     "processed_files": 0
                 }
             
-            # Check if target feature exists
-            if DEFAULT_TARGET_FEATURE not in df.columns:
-                error_msg = f"Target feature '{DEFAULT_TARGET_FEATURE}' not found in dataset"
-                error_msg += f"\nAvailable columns: {list(df.columns)}"
-                print(f"    target_feature_analysis: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
-            
             total_rows = len(df)
             print(f"    target_feature_analysis: Dataset shape: {total_rows:,} rows")
-            print(f"    target_feature_analysis: Analyzing target feature: {DEFAULT_TARGET_FEATURE}")
             
-            # Extract target feature data
-            target_data = df[DEFAULT_TARGET_FEATURE].dropna()
-            target_rows = len(target_data)
+            # Initialize results tracking
+            all_feature_results = {}
+            total_plots_created = 0
+            successful_analyses = 0
             
-            if target_rows == 0:
-                error_msg = f"No valid target data found (all values are NaN)"
-                print(f"    target_feature_analysis: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "processed_files": 0
-                }
+            # Process each target feature
+            for feature_idx, target_feature in enumerate(VALID_TARGET_FEATURES, 1):
+                print(f"\n    target_feature_analysis: [{feature_idx}/{len(VALID_TARGET_FEATURES)}] Analyzing target feature: {target_feature}")
+                
+                # Check if target feature exists
+                if target_feature not in df.columns:
+                    print(f"    target_feature_analysis: Warning - Target feature '{target_feature}' not found in dataset. Skipping.")
+                    all_feature_results[target_feature] = {
+                        "success": False,
+                        "error": f"Feature '{target_feature}' not found in dataset",
+                        "available_columns": list(df.columns)
+                    }
+                    continue
+                
+                # Extract target feature data
+                target_data = df[target_feature].dropna()
+                target_rows = len(target_data)
+                
+                if target_rows == 0:
+                    print(f"    target_feature_analysis: Warning - No valid target data found for '{target_feature}' (all values are NaN). Skipping.")
+                    all_feature_results[target_feature] = {
+                        "success": False,
+                        "error": f"No valid data found for '{target_feature}' (all values are NaN)",
+                        "total_rows": total_rows,
+                        "valid_rows": 0
+                    }
+                    continue
+                
+                print(f"    target_feature_analysis: Valid target data for '{target_feature}': {target_rows:,} rows")
+                
+                # Determine if this is a regression or classification problem
+                is_regression = target_feature in REGRESSION_PROBLEM
+                is_classification = target_feature in CLASSIFICATION_PROBLEM
+                
+                # Set up the plotting style
+                plt.style.use('default')
+                sns.set_palette("husl")
+                
+                if is_regression:
+                    # For continuous/regression target features - create delay analysis plots
+                    print(f"    target_feature_analysis: Creating regression analysis plots for '{target_feature}'...")
+                    
+                    # Calculate statistics for different delay definitions
+                    # Definition 1: Delayed if >= 0 (any positive delay)
+                    delayed_zero_threshold = target_data > 0
+                    delayed_zero_count = delayed_zero_threshold.sum()
+                    non_delayed_zero_count = target_rows - delayed_zero_count
+                    delayed_zero_percentage = (delayed_zero_count / target_rows) * 100
+                    non_delayed_zero_percentage = (non_delayed_zero_count / target_rows) * 100
+                    
+                    # Definition 2: Delayed if >= TRAIN_DELAY_MINUTES
+                    delayed_threshold = target_data >= TRAIN_DELAY_MINUTES
+                    delayed_threshold_count = delayed_threshold.sum()
+                    non_delayed_threshold_count = target_rows - delayed_threshold_count
+                    delayed_threshold_percentage = (delayed_threshold_count / target_rows) * 100
+                    non_delayed_threshold_percentage = (non_delayed_threshold_count / target_rows) * 100
+                    
+                    print(f"    target_feature_analysis: Statistics for '{target_feature}':")
+                    print(f"      Zero threshold (>=0): {delayed_zero_count:,} delayed ({delayed_zero_percentage:.1f}%)")
+                    print(f"      {TRAIN_DELAY_MINUTES}min threshold (>={TRAIN_DELAY_MINUTES}): {delayed_threshold_count:,} delayed ({delayed_threshold_percentage:.1f}%)")
+                    
+                    # Create figure with two subplots
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+                    
+                    # Plot 1: Binary classification with zero threshold (>0)
+                    categories_zero = ['Non-delayed\n(<=0 min)', 'Delayed\n(>0 min)']
+                    counts_zero = [non_delayed_zero_count, delayed_zero_count]
+                    percentages_zero = [non_delayed_zero_percentage, delayed_zero_percentage]
+                    colors_zero = ['#2E8B57', '#DC143C']  # SeaGreen, Crimson
+                    
+                    bars1 = ax1.bar(categories_zero, counts_zero, color=colors_zero, alpha=0.8, edgecolor='black', linewidth=1)
+                    ax1.set_title(f'Train Delay Distribution\n(Zero Threshold: >=0 minutes)', fontsize=14, fontweight='bold', pad=20)
+                    ax1.set_ylabel('Number of Trains', fontsize=12)
+                    ax1.set_xlabel('Train Status', fontsize=12)
+                    
+                    # Add percentage labels on bars
+                    for bar, count, percentage in zip(bars1, counts_zero, percentages_zero):
+                        height = bar.get_height()
+                        ax1.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                                f'{count:,}\n({percentage:.1f}%)',
+                                ha='center', va='bottom', fontweight='bold', fontsize=11)
+                    
+                    # Add grid for better readability
+                    ax1.grid(True, alpha=0.3, axis='y')
+                    ax1.set_ylim(0, max(counts_zero) * 1.15)
+                    
+                    # Plot 2: Binary classification with TRAIN_DELAY_MINUTES threshold
+                    categories_threshold = [f'Non-delayed\n(<{TRAIN_DELAY_MINUTES} min)', f'Delayed\n(>={TRAIN_DELAY_MINUTES} min)']
+                    counts_threshold = [non_delayed_threshold_count, delayed_threshold_count]
+                    percentages_threshold = [non_delayed_threshold_percentage, delayed_threshold_percentage]
+                    colors_threshold = ['#4682B4', '#FF6347']  # SteelBlue, Tomato
+                    
+                    bars2 = ax2.bar(categories_threshold, counts_threshold, color=colors_threshold, alpha=0.8, edgecolor='black', linewidth=1)
+                    ax2.set_title(f'Train Delay Distribution\n({TRAIN_DELAY_MINUTES}-Minute Threshold: >={TRAIN_DELAY_MINUTES} minutes)', fontsize=14, fontweight='bold', pad=20)
+                    ax2.set_ylabel('Number of Trains', fontsize=12)
+                    ax2.set_xlabel('Train Status', fontsize=12)
+                    
+                    # Add percentage labels on bars
+                    for bar, count, percentage in zip(bars2, counts_threshold, percentages_threshold):
+                        height = bar.get_height()
+                        ax2.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                                f'{count:,}\n({percentage:.1f}%)',
+                                ha='center', va='bottom', fontweight='bold', fontsize=11)
+                    
+                    # Add grid for better readability
+                    ax2.grid(True, alpha=0.3, axis='y')
+                    ax2.set_ylim(0, max(counts_threshold) * 1.15)
+                    
+                    # Add overall title and adjust layout
+                    fig.suptitle(target_feature, fontsize=16, fontweight='bold', y=0.95)
+                    
+                    plt.tight_layout()
+                    plt.subplots_adjust(top=0.85)
+                    
+                    # Save the combined plot
+                    safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
+                    plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_delay_distribution.png")
+                    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                    plt.close()
+                    
+                    print(f"    target_feature_analysis: Saved delay distribution plot: {os.path.basename(plot_path)}")
+                    
+                    # Store results for this feature
+                    all_feature_results[target_feature] = {
+                        "success": True,
+                        "feature_type": "regression",
+                        "total_rows": total_rows,
+                        "valid_rows": target_rows,
+                        "statistics": {
+                            "zero_threshold": {
+                                "delayed_count": int(delayed_zero_count),
+                                "non_delayed_count": int(non_delayed_zero_count),
+                                "delayed_percentage": delayed_zero_percentage,
+                                "non_delayed_percentage": non_delayed_zero_percentage
+                            },
+                            "train_delay_threshold": {
+                                "delayed_count": int(delayed_threshold_count),
+                                "non_delayed_count": int(non_delayed_threshold_count),
+                                "delayed_percentage": delayed_threshold_percentage,
+                                "non_delayed_percentage": non_delayed_threshold_percentage,
+                                "threshold_minutes": TRAIN_DELAY_MINUTES
+                            },
+                            "basic_stats": {
+                                "mean": float(target_data.mean()),
+                                "median": float(target_data.median()),
+                                "std": float(target_data.std()),
+                                "min": float(target_data.min()),
+                                "max": float(target_data.max())
+                            }
+                        },
+                        "plots_created": 1,
+                        "plot_path": plot_path
+                    }
+                    total_plots_created += 1
+                    
+                elif is_classification:
+                    # For categorical/classification target features - create distribution plots
+                    print(f"    target_feature_analysis: Creating classification analysis plots for '{target_feature}'...")
+                    
+                    # Get value counts and proportions
+                    value_counts = target_data.value_counts()
+                    value_proportions = target_data.value_counts(normalize=True) * 100
+                    
+                    print(f"    target_feature_analysis: Value distribution for '{target_feature}':")
+                    for value, count in value_counts.items():
+                        percentage = value_proportions[value]
+                        print(f"      {value}: {count:,} ({percentage:.1f}%)")
+                    
+                    # Create single plot for categorical data
+                    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                    
+                    # Create bar plot
+                    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'][:len(value_counts)]
+                    bars = ax.bar(range(len(value_counts)), value_counts.values, 
+                                color=colors, alpha=0.8, edgecolor='black', linewidth=1)
+                    
+                    # Set labels and title
+                    ax.set_title(f'{target_feature} Distribution\nTotal samples: {target_rows:,}', 
+                            fontsize=16, fontweight='bold', pad=20)
+                    ax.set_ylabel('Count', fontsize=12)
+                    ax.set_xlabel('Categories', fontsize=12)
+                    ax.set_xticks(range(len(value_counts)))
+                    ax.set_xticklabels([str(x) for x in value_counts.index], rotation=45 if len(value_counts) > 3 else 0)
+                    
+                    # Add percentage labels on bars
+                    for bar, count, percentage in zip(bars, value_counts.values, value_proportions.values):
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                            f'{count:,}\n({percentage:.1f}%)',
+                            ha='center', va='bottom', fontweight='bold', fontsize=11)
+                    
+                    # Add grid for better readability
+                    ax.grid(True, alpha=0.3, axis='y')
+                    ax.set_ylim(0, max(value_counts.values) * 1.15)
+                    
+                    plt.tight_layout()
+                    
+                    # Save the plot
+                    safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
+                    plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_distribution.png")
+                    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                    plt.close()
+                    
+                    print(f"    target_feature_analysis: Saved distribution plot: {os.path.basename(plot_path)}")
+                    
+                    # Store results for this feature
+                    all_feature_results[target_feature] = {
+                        "success": True,
+                        "feature_type": "classification",
+                        "total_rows": total_rows,
+                        "valid_rows": target_rows,
+                        "statistics": {
+                            "value_counts": {str(k): int(v) for k, v in value_counts.items()},
+                            "value_percentages": {str(k): float(v) for k, v in value_proportions.items()},
+                            "unique_values": len(value_counts),
+                            "most_frequent": str(value_counts.index[0]),
+                            "most_frequent_count": int(value_counts.iloc[0]),
+                            "most_frequent_percentage": float(value_proportions.iloc[0])
+                        },
+                        "plots_created": 1,
+                        "plot_path": plot_path
+                    }
+                    total_plots_created += 1
+                    
+                else:
+                    # Handle unknown feature type
+                    print(f"    target_feature_analysis: Warning - '{target_feature}' not found in REGRESSION_PROBLEM or CLASSIFICATION_PROBLEM lists.")
+                    print(f"    target_feature_analysis: Creating basic distribution analysis...")
+                    
+                    # Determine if numeric or categorical based on data type
+                    is_numeric = pd.api.types.is_numeric_dtype(target_data)
+                    
+                    if is_numeric:
+                        # Treat as regression-like
+                        print(f"    target_feature_analysis: Treating '{target_feature}' as numeric/continuous...")
+                        
+                        # Basic statistics
+                        mean_val = target_data.mean()
+                        median_val = target_data.median()
+                        std_val = target_data.std()
+                        min_val = target_data.min()
+                        max_val = target_data.max()
+                        
+                        print(f"    target_feature_analysis: Basic statistics for '{target_feature}':")
+                        print(f"      Mean: {mean_val:.4f}, Median: {median_val:.4f}, Std: {std_val:.4f}")
+                        print(f"      Range: [{min_val:.4f}, {max_val:.4f}]")
+                        
+                        # Create histogram
+                        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                        
+                        ax.hist(target_data, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
+                        ax.set_title(f'{target_feature} Distribution\nTotal samples: {target_rows:,}', 
+                                fontsize=16, fontweight='bold', pad=20)
+                        ax.set_xlabel(target_feature, fontsize=12)
+                        ax.set_ylabel('Frequency', fontsize=12)
+                        ax.grid(True, alpha=0.3)
+                        
+                        # Add statistics text box
+                        stats_text = f'Mean: {mean_val:.3f}\nMedian: {median_val:.3f}\nStd: {std_val:.3f}\nRange: [{min_val:.3f}, {max_val:.3f}]'
+                        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
+                            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                        
+                        plt.tight_layout()
+                        
+                        # Save the plot
+                        safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
+                        plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_histogram.png")
+                        plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                        plt.close()
+                        
+                        print(f"    target_feature_analysis: Saved histogram plot: {os.path.basename(plot_path)}")
+                        
+                        # Store results
+                        all_feature_results[target_feature] = {
+                            "success": True,
+                            "feature_type": "numeric_unknown",
+                            "total_rows": total_rows,
+                            "valid_rows": target_rows,
+                            "statistics": {
+                                "basic_stats": {
+                                    "mean": float(mean_val),
+                                    "median": float(median_val),
+                                    "std": float(std_val),
+                                    "min": float(min_val),
+                                    "max": float(max_val)
+                                }
+                            },
+                            "plots_created": 1,
+                            "plot_path": plot_path
+                        }
+                        total_plots_created += 1
+                        
+                    else:
+                        # Treat as categorical
+                        print(f"    target_feature_analysis: Treating '{target_feature}' as categorical...")
+                        
+                        # Get value counts
+                        value_counts = target_data.value_counts()
+                        value_proportions = target_data.value_counts(normalize=True) * 100
+                        
+                        print(f"    target_feature_analysis: Value distribution for '{target_feature}':")
+                        for value, count in value_counts.head(10).items():  # Show top 10
+                            percentage = value_proportions[value]
+                            print(f"      {value}: {count:,} ({percentage:.1f}%)")
+                        if len(value_counts) > 10:
+                            print(f"      ... and {len(value_counts) - 10} more categories")
+                        
+                        # Create bar plot (show top 20 categories)
+                        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+                        
+                        top_categories = value_counts.head(20)
+                        top_proportions = value_proportions.head(20)
+                        
+                        bars = ax.bar(range(len(top_categories)), top_categories.values, 
+                                    alpha=0.7, color='lightcoral', edgecolor='black', linewidth=1)
+                        
+                        ax.set_title(f'{target_feature} Distribution (Top 20 Categories)\nTotal samples: {target_rows:,}', 
+                                fontsize=16, fontweight='bold', pad=20)
+                        ax.set_ylabel('Count', fontsize=12)
+                        ax.set_xlabel('Categories', fontsize=12)
+                        ax.set_xticks(range(len(top_categories)))
+                        ax.set_xticklabels([str(x)[:15] + '...' if len(str(x)) > 15 else str(x) 
+                                        for x in top_categories.index], rotation=45, ha='right')
+                        
+                        # Add percentage labels on top bars only
+                        for i, (bar, count, percentage) in enumerate(zip(bars[:10], top_categories.values[:10], top_proportions.values[:10])):
+                            height = bar.get_height()
+                            ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                                f'{count:,}\n({percentage:.1f}%)',
+                                ha='center', va='bottom', fontweight='bold', fontsize=9)
+                        
+                        ax.grid(True, alpha=0.3, axis='y')
+                        ax.set_ylim(0, max(top_categories.values) * 1.15)
+                        
+                        plt.tight_layout()
+                        
+                        # Save the plot
+                        safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
+                        plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_categories.png")
+                        plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                        plt.close()
+                        
+                        print(f"    target_feature_analysis: Saved categories plot: {os.path.basename(plot_path)}")
+                        
+                        # Store results
+                        all_feature_results[target_feature] = {
+                            "success": True,
+                            "feature_type": "categorical_unknown",
+                            "total_rows": total_rows,
+                            "valid_rows": target_rows,
+                            "statistics": {
+                                "value_counts": {str(k): int(v) for k, v in value_counts.head(50).items()},  # Top 50
+                                "value_percentages": {str(k): float(v) for k, v in value_proportions.head(50).items()},
+                                "unique_values": len(value_counts),
+                                "most_frequent": str(value_counts.index[0]),
+                                "most_frequent_count": int(value_counts.iloc[0]),
+                                "most_frequent_percentage": float(value_proportions.iloc[0])
+                            },
+                            "plots_created": 1,
+                            "plot_path": plot_path
+                        }
+                        total_plots_created += 1
+                
+                successful_analyses += 1
+                print(f"    target_feature_analysis: ✓ Successfully analyzed '{target_feature}'")
             
-            print(f"    target_feature_analysis: Valid target data: {target_rows:,} rows")
+            # Create summary report
+            print(f"\n    target_feature_analysis: Creating summary analysis...")
             
-            # Calculate statistics for different delay definitions
+            # Save detailed results to JSON
+            results_json_path = os.path.join(analysis_output_dir, "target_features_analysis_results.json")
+            with open(results_json_path, 'w') as f:
+                json.dump(all_feature_results, f, indent=2, default=str)
             
-            # Definition 1: Delayed if >= 0 (any positive delay)
-            delayed_zero_threshold = target_data > 0
-            delayed_zero_count = delayed_zero_threshold.sum()
-            non_delayed_zero_count = target_rows - delayed_zero_count
-            delayed_zero_percentage = (delayed_zero_count / target_rows) * 100
-            non_delayed_zero_percentage = (non_delayed_zero_count / target_rows) * 100
+            # Create summary text report
+            summary_report_path = os.path.join(analysis_output_dir, "target_features_summary_report.txt")
+            with open(summary_report_path, 'w') as f:
+                f.write("TARGET FEATURES ANALYSIS SUMMARY REPORT\n")
+                f.write("="*60 + "\n\n")
+                f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Dataset: {os.path.basename(target_file_path)}\n")
+                f.write(f"Total Dataset Rows: {total_rows:,}\n\n")
+                f.write(f"Target Features Analyzed: {len(VALID_TARGET_FEATURES)}\n")
+                f.write(f"Successful Analyses: {successful_analyses}\n")
+                f.write(f"Failed Analyses: {len(VALID_TARGET_FEATURES) - successful_analyses}\n")
+                f.write(f"Total Plots Created: {total_plots_created}\n\n")
+                
+                f.write("INDIVIDUAL FEATURE RESULTS:\n")
+                f.write("-" * 40 + "\n\n")
+                
+                for feature, result in all_feature_results.items():
+                    f.write(f"Feature: {feature}\n")
+                    if result["success"]:
+                        f.write(f"  Status: SUCCESS\n")
+                        f.write(f"  Type: {result['feature_type']}\n")
+                        f.write(f"  Valid Rows: {result['valid_rows']:,}\n")
+                        f.write(f"  Plots Created: {result['plots_created']}\n")
+                        if 'statistics' in result:
+                            f.write(f"  Statistics: Available\n")
+                        f.write(f"  Plot Path: {result['plot_path']}\n")
+                    else:
+                        f.write(f"  Status: FAILED\n")
+                        f.write(f"  Error: {result['error']}\n")
+                    f.write("\n")
             
-            # Definition 2: Delayed if >= TRAIN_DELAY_MINUTES
-            delayed_threshold = target_data >= TRAIN_DELAY_MINUTES
-            delayed_threshold_count = delayed_threshold.sum()
-            non_delayed_threshold_count = target_rows - delayed_threshold_count
-            delayed_threshold_percentage = (delayed_threshold_count / target_rows) * 100
-            non_delayed_threshold_percentage = (non_delayed_threshold_count / target_rows) * 100
-            
-            print(f"    target_feature_analysis: Statistics calculated:")
-            print(f"      Zero threshold (>=0): {delayed_zero_count:,} delayed ({delayed_zero_percentage:.1f}%)")
-            print(f"      {TRAIN_DELAY_MINUTES}min threshold (>={TRAIN_DELAY_MINUTES}): {delayed_threshold_count:,} delayed ({delayed_threshold_percentage:.1f}%)")
-            
-            # Create visualizations
-            print(f"    target_feature_analysis: Creating visualizations...")
-            
-            # Set up the plotting style
-            plt.style.use('default')
-            sns.set_palette("husl")
-            
-            # Create figure with two subplots
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
-            
-            # Plot 1: Binary classification with zero threshold (>0)
-            categories_zero = ['Non-delayed\n(<=0 min)', 'Delayed\n(>0 min)']
-            counts_zero = [non_delayed_zero_count, delayed_zero_count]
-            percentages_zero = [non_delayed_zero_percentage, delayed_zero_percentage]
-            colors_zero = ['#2E8B57', '#DC143C']  # SeaGreen, Crimson
-            
-            bars1 = ax1.bar(categories_zero, counts_zero, color=colors_zero, alpha=0.8, edgecolor='black', linewidth=1)
-            ax1.set_title(f'Train Delay Distribution\n(Zero Threshold: >=0 minutes)', fontsize=14, fontweight='bold', pad=20)
-            ax1.set_ylabel('Number of Trains', fontsize=12)
-            ax1.set_xlabel('Train Status', fontsize=12)
-            
-            # Add percentage labels on bars
-            for bar, count, percentage in zip(bars1, counts_zero, percentages_zero):
-                height = bar.get_height()
-                ax1.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                        f'{count:,}\n({percentage:.1f}%)',
-                        ha='center', va='bottom', fontweight='bold', fontsize=11)
-            
-            # Add grid for better readability
-            ax1.grid(True, alpha=0.3, axis='y')
-            ax1.set_ylim(0, max(counts_zero) * 1.15)
-            
-            # Plot 2: Binary classification with TRAIN_DELAY_MINUTES threshold
-            categories_threshold = [f'Non-delayed\n(<{TRAIN_DELAY_MINUTES} min)', f'Delayed\n(>={TRAIN_DELAY_MINUTES} min)']
-            counts_threshold = [non_delayed_threshold_count, delayed_threshold_count]
-            percentages_threshold = [non_delayed_threshold_percentage, delayed_threshold_percentage]
-            colors_threshold = ['#4682B4', '#FF6347']  # SteelBlue, Tomato
-            
-            bars2 = ax2.bar(categories_threshold, counts_threshold, color=colors_threshold, alpha=0.8, edgecolor='black', linewidth=1)
-            ax2.set_title(f'Train Delay Distribution\n({TRAIN_DELAY_MINUTES}-Minute Threshold: >={TRAIN_DELAY_MINUTES} minutes)', fontsize=14, fontweight='bold', pad=20)
-            ax2.set_ylabel('Number of Trains', fontsize=12)
-            ax2.set_xlabel('Train Status', fontsize=12)
-            
-            # Add percentage labels on bars
-            for bar, count, percentage in zip(bars2, counts_threshold, percentages_threshold):
-                height = bar.get_height()
-                ax2.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                        f'{count:,}\n({percentage:.1f}%)',
-                        ha='center', va='bottom', fontweight='bold', fontsize=11)
-            
-            # Add grid for better readability
-            ax2.grid(True, alpha=0.3, axis='y')
-            ax2.set_ylim(0, max(counts_threshold) * 1.15)
-            
-            # Add overall title and adjust layout
-            fig.suptitle(DEFAULT_TARGET_FEATURE, fontsize=16, fontweight='bold', y=0.95)
-            
-            plt.tight_layout()
-            plt.subplots_adjust(top=0.85)
-            
-            # Save the combined plot
-            plot_path = os.path.join(plots_dir, "target_feature_delay_distribution.png")
-            plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
-            plt.close()
-            
-            print(f"    target_feature_analysis: Saved delay distribution plot: {os.path.basename(plot_path)}")
-            
-            # Prepare results
+            # Prepare final results
             results = {
                 "success": True,
                 "processed_files": 1,
                 "target_file": target_file_path,
-                "target_feature": DEFAULT_TARGET_FEATURE,
+                "target_features_analyzed": VALID_TARGET_FEATURES,
+                "successful_analyses": successful_analyses,
+                "failed_analyses": len(VALID_TARGET_FEATURES) - successful_analyses,
                 "delay_threshold": TRAIN_DELAY_MINUTES,
                 "total_rows": total_rows,
-                "valid_target_rows": target_rows,
                 "output_directory": analysis_output_dir,
-                "plots_created": 1,
+                "plots_created": total_plots_created,
+                "results_json": results_json_path,
+                "summary_report": summary_report_path,
+                "feature_results": all_feature_results
             }
             
-            print(f"    target_feature_analysis: Analysis completed successfully!")
+            print(f"\n    target_feature_analysis: Analysis completed successfully!")
+            print(f"    target_feature_analysis: Successfully analyzed: {successful_analyses}/{len(VALID_TARGET_FEATURES)} target features")
+            print(f"    target_feature_analysis: Total plots created: {total_plots_created}")
             print(f"    target_feature_analysis: Output directory: {analysis_output_dir}")
-            print(f"    target_feature_analysis: Plots created: 2")
-            print(f"    target_feature_analysis: Statistics saved to JSON and summary report")
+            print(f"    target_feature_analysis: Results saved to JSON: {os.path.basename(results_json_path)}")
+            print(f"    target_feature_analysis: Summary report saved: {os.path.basename(summary_report_path)}")
             
             return results
             
@@ -8586,5 +8889,8 @@ class TrainingPipeline:
             return {
                 "success": False,
                 "error": error_msg,
-                "processed_files": 0
+                "processed_files": 0,
+                "target_features_analyzed": VALID_TARGET_FEATURES,
+                "successful_analyses": 0,
+                "failed_analyses": len(VALID_TARGET_FEATURES)
             }
