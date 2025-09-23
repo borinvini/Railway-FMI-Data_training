@@ -7,6 +7,7 @@ TRAINING_STATE_MACHINE = {
     "split_dataset": True,
     "scale_weather_features": True,
     "numeric_correlation_analysis": True,
+    "data_distribution_analysis": True,
     "train_xgboost_with_randomized_search_cv": True,
 }
 

@@ -492,6 +492,39 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ numeric_correlation_analysis (Comprehensive Numeric Correlation Analysis) (disabled)")
     
+        if state_machine.get("data_distribution_analysis", False):
+            try:
+                print(f"    → data_distribution_analysis (Comprehensive Data Distribution Analysis)")
+                distribution_result = self.data_distribution_analysis(csv_files)
+                
+                if distribution_result and distribution_result.get("success", False):
+                    result["steps_executed"].append("data_distribution_analysis")
+                    result["file_info"]["distribution_processed_files"] = distribution_result.get("processed_files", 0)
+                    print(f"      ✓ Successfully completed data distribution analysis")
+                    print(f"      ✓ Files analyzed: {distribution_result.get('processed_files', 0)}")
+                    print(f"      ✓ Columns analyzed: {distribution_result.get('total_columns', 0)}")
+                    print(f"      ✓ Histograms generated: {distribution_result.get('plots_generated', 0)}")
+                    print(f"      ✓ Results saved to: {distribution_result.get('output_path', 'N/A')}")
+                    
+                    # Display summary statistics if available
+                    if distribution_result.get('total_rows'):
+                        total_records = distribution_result['total_rows']
+                        print(f"      ✓ Total records analyzed: {total_records:,}")
+                    
+                    result["success"] = True
+                else:
+                    error_msg = distribution_result.get("error", "data_distribution_analysis returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+                    
+            except Exception as e:
+                result["errors"].append(f"data_distribution_analysis failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ data_distribution_analysis (Comprehensive Data Distribution Analysis) (disabled)")
+
         if state_machine.get("train_decision_tree", False):
             try:
                 print(f"    → train_decision_tree")
@@ -7986,6 +8019,302 @@ class TrainingPipeline:
             print(f"    numeric_correlation_analysis: {error_msg}")
             import traceback
             traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg,
+                "processed_files": 0
+            }
+        
+    def data_distribution_analysis(self, csv_files=None, target_file=None):
+        """
+        Data Distribution Analysis Pipeline Stage
+        
+        Analyzes the distribution of each feature in the training dataset by creating
+        histogram plots for all columns. This stage helps understand data distributions
+        and identify potential data quality issues or patterns.
+        
+        Key Analyses Performed:
+        1. Histogram distribution plots for each column
+        2. Basic distribution statistics (mean, median, std, etc.)
+        3. Data quality assessment (missing values, outliers)
+        4. Distribution summary report
+        
+        Parameters:
+        -----------
+        csv_files : list, optional
+            List of CSV file paths (deprecated - use target_file instead)
+        target_file : str, optional
+            Specific file path to analyze. If None, will look for the first available merged file.
+            
+        Returns:
+        --------
+        dict
+            Results of the data distribution analysis including plots and statistics
+        """
+        try:
+            print(f"    data_distribution_analysis: Starting comprehensive data distribution analysis...")
+            
+            # Create output directories
+            analysis_output_dir = os.path.join(self.project_root, "data/output/data_distribution_analysis")
+            histograms_dir = os.path.join(analysis_output_dir, "histograms")
+            statistics_dir = os.path.join(analysis_output_dir, "statistics")
+            
+            os.makedirs(analysis_output_dir, exist_ok=True)
+            os.makedirs(histograms_dir, exist_ok=True)
+            os.makedirs(statistics_dir, exist_ok=True)
+            
+            # Determine target file to analyze
+            target_file_path = None
+            
+            if target_file and os.path.exists(target_file):
+                target_file_path = target_file
+                print(f"    data_distribution_analysis: Using specified target file: {os.path.basename(target_file)}")
+            else:
+                # Look for merged data in the specified folder pattern
+                merged_data_pattern = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER, "merged*data**_train.csv")
+                merged_data_files = glob.glob(merged_data_pattern)
+                
+                if merged_data_files:
+                    target_file_path = merged_data_files[0]  # Use first available file
+                    print(f"    data_distribution_analysis: Using first available file: {os.path.basename(target_file_path)}")
+                    print(f"    data_distribution_analysis: Found {len(merged_data_files)} matching files")
+                
+            # Check if target file exists
+            if not target_file_path or not os.path.exists(target_file_path):
+                error_msg = f"No valid merged data file found for distribution analysis. Pattern: {merged_data_pattern}"
+                print(f"    data_distribution_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            print(f"    data_distribution_analysis: Loading dataset from {os.path.basename(target_file_path)}...")
+            
+            # Read the dataset
+            df = pd.read_csv(target_file_path)
+            
+            if df.empty:
+                error_msg = f"Dataset is empty: {target_file_path}"
+                print(f"    data_distribution_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0
+                }
+            
+            total_rows, total_columns = df.shape
+            print(f"    data_distribution_analysis: Dataset shape: {total_rows:,} rows × {total_columns} columns")
+            
+            # Get all columns for distribution analysis
+            all_columns = df.columns.tolist()
+            
+            # Exclude index columns
+            columns_to_exclude = ['Unnamed: 0', 'index']
+            analysis_columns = [col for col in all_columns if col not in columns_to_exclude]
+            
+            print(f"    data_distribution_analysis: Analyzing {len(analysis_columns)} columns")
+            
+            # Initialize results storage
+            distribution_results = {
+                "success": True,
+                "processed_files": 1,
+                "target_file": target_file_path,
+                "total_rows": total_rows,
+                "total_columns": len(analysis_columns),
+                "analysis_columns": analysis_columns,
+                "output_path": analysis_output_dir,
+                "plots_generated": 0,
+                "column_statistics": {}
+            }
+            
+            # Create histogram for each column
+            for i, column in enumerate(analysis_columns, 1):
+                try:
+                    print(f"    data_distribution_analysis: Processing column {i}/{len(analysis_columns)}: {column}")
+                    
+                    # Get column data
+                    column_data = df[column].dropna()  # Remove NaN values for histogram
+                    
+                    if len(column_data) == 0:
+                        print(f"      Warning: Column {column} contains only NaN values, skipping...")
+                        continue
+                    
+                    # Calculate basic statistics
+                    stats = {
+                        "count": len(column_data),
+                        "missing_values": df[column].isnull().sum(),
+                        "missing_percentage": (df[column].isnull().sum() / len(df)) * 100,
+                        "data_type": str(df[column].dtype),
+                        "unique_values": df[column].nunique()
+                    }
+                    
+                    # Add numeric statistics if column is numeric
+                    if df[column].dtype in ['int64', 'float64', 'int32', 'float32']:
+                        stats.update({
+                            "mean": column_data.mean(),
+                            "median": column_data.median(),
+                            "std": column_data.std(),
+                            "min": column_data.min(),
+                            "max": column_data.max(),
+                            "q25": column_data.quantile(0.25),
+                            "q75": column_data.quantile(0.75)
+                        })
+                    
+                    distribution_results["column_statistics"][column] = stats
+                    
+                    # Create histogram
+                    plt.figure(figsize=(10, 6))
+                    
+                    # Handle different data types
+                    if df[column].dtype in ['int64', 'float64', 'int32', 'float32']:
+                        # Special handling for differenceInMinutes_eachStation_offset
+                        if column == 'differenceInMinutes_eachStation_offset':
+                            # Create bins with 1-minute intervals from -10 to 100
+                            bins = np.arange(-10, 101, 1)  # Creates bins: -10, -9, -8, ..., 99, 100
+                            plt.hist(column_data, bins=bins, alpha=0.7, color='steelblue', edgecolor='black', linewidth=0.5)
+                            plt.xlim(-10, 50)
+                            
+                            # Set x-axis ticks to show every minute (step = 1)
+                            plt.xticks(np.arange(-10, 51, 2))
+                            
+                            print(f"      Applied x-axis range [-10, 100] with 1-minute bins and 1-minute tick intervals for {column}")
+                            
+                            # Add info about data outside the range
+                            data_below = (column_data < -10).sum()
+                            data_above = (column_data > 100).sum()
+                            data_in_range = len(column_data) - data_below - data_above
+                            
+                            if data_below > 0 or data_above > 0:
+                                range_info = f"\nData outside range: {data_below + data_above:,} ({((data_below + data_above)/len(column_data)*100):.1f}%)"
+                                range_info += f"\n  < -10: {data_below:,}, > 100: {data_above:,}"
+                                print(f"      {column}: {data_in_range:,} values in range [-10,100], {data_below + data_above:,} outside range")
+                            else:
+                                range_info = ""
+                        else:
+                            # Standard numeric data - create histogram with automatic bins
+                            n_bins = min(50, max(10, int(np.sqrt(len(column_data)))))  # Adaptive bins
+                            plt.hist(column_data, bins=n_bins, alpha=0.7, color='steelblue', edgecolor='black', linewidth=0.5)
+                            range_info = ""
+                        
+                        plt.xlabel('Value')
+                        
+                        # Add statistics text box
+                        stats_text = f'Count: {stats["count"]:,}\nMean: {stats["mean"]:.3f}\nStd: {stats["std"]:.3f}\nMissing: {stats["missing_values"]} ({stats["missing_percentage"]:.1f}%){range_info}'
+                        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, fontsize=9,
+                                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                        
+                    elif df[column].dtype == 'bool' or df[column].nunique() <= 10:
+                        # Boolean or categorical data with few unique values
+                        value_counts = df[column].value_counts()
+                        plt.bar(range(len(value_counts)), value_counts.values, alpha=0.7, color='steelblue', edgecolor='black', linewidth=0.5)
+                        plt.xticks(range(len(value_counts)), [str(x) for x in value_counts.index], rotation=45)
+                        plt.xlabel('Category')
+                        
+                        # Add statistics text box
+                        stats_text = f'Count: {stats["count"]:,}\nUnique: {stats["unique_values"]}\nMissing: {stats["missing_values"]} ({stats["missing_percentage"]:.1f}%)'
+                        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, fontsize=9,
+                                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                        
+                    else:
+                        # Categorical data with many unique values - show top 20
+                        value_counts = df[column].value_counts().head(20)
+                        plt.bar(range(len(value_counts)), value_counts.values, alpha=0.7, color='steelblue', edgecolor='black', linewidth=0.5)
+                        plt.xticks(range(len(value_counts)), [str(x)[:10] + '...' if len(str(x)) > 10 else str(x) for x in value_counts.index], rotation=45)
+                        plt.xlabel('Category (Top 20)')
+                        
+                        # Add statistics text box
+                        stats_text = f'Count: {stats["count"]:,}\nUnique: {stats["unique_values"]}\nMissing: {stats["missing_values"]} ({stats["missing_percentage"]:.1f}%)\nShowing: Top 20'
+                        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, fontsize=9,
+                                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                    
+                    plt.ylabel('Frequency')
+                    plt.title(f'Distribution of {column}')
+                    plt.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    
+                    # Save histogram plot
+                    safe_column_name = "".join(c for c in column if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                    plot_filename = f"histogram_{safe_column_name.replace(' ', '_')}.png"
+                    plot_path = os.path.join(histograms_dir, plot_filename)
+                    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                    plt.close()
+                    
+                    distribution_results["plots_generated"] += 1
+                    
+                except Exception as e:
+                    print(f"      Error processing column {column}: {str(e)}")
+                    continue
+            
+            print(f"    data_distribution_analysis: Generated {distribution_results['plots_generated']} histogram plots")
+            
+            # Save distribution statistics summary
+            stats_summary_path = os.path.join(statistics_dir, "distribution_statistics_summary.csv")
+            
+            # Create summary dataframe
+            summary_data = []
+            for column, stats in distribution_results["column_statistics"].items():
+                row = {"column": column}
+                row.update(stats)
+                summary_data.append(row)
+            
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_csv(stats_summary_path, index=False)
+            print(f"    data_distribution_analysis: Saved statistics summary to {os.path.basename(stats_summary_path)}")
+            
+            # Create comprehensive analysis report
+            report_path = os.path.join(analysis_output_dir, "distribution_analysis_report.txt")
+            with open(report_path, 'w') as f:
+                f.write("DATA DISTRIBUTION ANALYSIS REPORT\n")
+                f.write("=" * 50 + "\n\n")
+                f.write(f"Analysis Date: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Dataset: {os.path.basename(target_file_path)}\n")
+                f.write(f"Total Rows: {total_rows:,}\n")
+                f.write(f"Total Columns Analyzed: {len(analysis_columns)}\n")
+                f.write(f"Histograms Generated: {distribution_results['plots_generated']}\n\n")
+                
+                # Data Quality Summary
+                f.write("DATA QUALITY SUMMARY\n")
+                f.write("-" * 30 + "\n")
+                
+                columns_with_missing = sum(1 for stats in distribution_results["column_statistics"].values() if stats["missing_values"] > 0)
+                f.write(f"Columns with missing values: {columns_with_missing}/{len(analysis_columns)}\n")
+                
+                # Find columns with high missing percentage
+                high_missing_cols = [(col, stats) for col, stats in distribution_results["column_statistics"].items() 
+                                if stats["missing_percentage"] > 50]
+                
+                if high_missing_cols:
+                    f.write(f"\nColumns with >50% missing data:\n")
+                    for col, stats in high_missing_cols:
+                        f.write(f"  - {col}: {stats['missing_percentage']:.1f}% missing\n")
+                
+                # Data type distribution
+                f.write(f"\nDATA TYPE DISTRIBUTION\n")
+                f.write("-" * 30 + "\n")
+                type_counts = {}
+                for stats in distribution_results["column_statistics"].values():
+                    dtype = stats["data_type"]
+                    type_counts[dtype] = type_counts.get(dtype, 0) + 1
+                
+                for dtype, count in sorted(type_counts.items()):
+                    f.write(f"{dtype}: {count} columns\n")
+            
+            print(f"    data_distribution_analysis: Saved comprehensive report to {os.path.basename(report_path)}")
+            print(f"    data_distribution_analysis: Analysis completed successfully!")
+            print(f"      ✓ Files processed: 1")
+            print(f"      ✓ Columns analyzed: {len(analysis_columns)}")
+            print(f"      ✓ Histograms generated: {distribution_results['plots_generated']}")
+            print(f"      ✓ Output saved to: {analysis_output_dir}")
+            
+            return distribution_results
+            
+        except Exception as e:
+            error_msg = f"data_distribution_analysis failed: {str(e)}"
+            print(f"    data_distribution_analysis: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            
             return {
                 "success": False,
                 "error": error_msg,
