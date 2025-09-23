@@ -8409,7 +8409,7 @@ class TrainingPipeline:
                 print(f"    target_feature_analysis: Using specified target file: {os.path.basename(target_file)}")
             else:
                 # Look for merged data in the specified folder pattern
-                merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train.csv")
+                merged_data_pattern = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*.csv")
                 merged_data_files = glob.glob(merged_data_pattern)
                 
                 if merged_data_files:
