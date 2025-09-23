@@ -12,6 +12,7 @@ import ast
 import logging
 import numpy as np
 import psutil
+from scipy.stats import pearsonr, spearmanr
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.preprocessing import RobustScaler
 
@@ -2608,7 +2609,7 @@ class TrainingPipeline:
             os.makedirs(correlation_output_dir, exist_ok=True)
             
             # Find all merged scaled training data files using glob pattern
-            merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
+            merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train.csv")
             merged_data_files = glob.glob(merged_data_pattern)
             
             if not merged_data_files:
@@ -5739,7 +5740,7 @@ class TrainingPipeline:
             os.makedirs(scatter_plots_dir, exist_ok=True)
             
             # Find all merged scaled training data files
-            merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
+            merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train.csv")
             merged_data_files = glob.glob(merged_data_pattern)
             
             # Fallback pattern
@@ -7415,14 +7416,13 @@ class TrainingPipeline:
                 'max_delay': 0.0
             }
 
-    def numeric_correlation_analysis(self, csv_files=None):
+    def numeric_correlation_analysis(self, csv_files=None, target_file=None):
         """
-        Comprehensive Numeric Correlation Analysis against differenceInMinutes_eachStation_offset
+        Performs comprehensive numeric correlation analysis on a single merged data file.
         
-        This pipeline stage analyzes the correlations between differenceInMinutes_eachStation_offset 
-        (target variable) and all other numeric features in the dataset, focusing only on delayed trains
-        (differenceInMinutes_eachStation_offset > 5). It provides comprehensive statistical analysis 
-        and visualizations including correlation matrices, scatter plots, and feature importance ranking.
+        This method provides comprehensive statistical analysis and visualizations including 
+        correlation matrices, scatter plots, and feature importance ranking for a single file
+        instead of processing multiple files in a loop.
         
         Key Analyses Performed:
         1. Correlation matrix heatmap for all numeric features vs target (delayed trains only)
@@ -7430,12 +7430,13 @@ class TrainingPipeline:
         3. Statistical correlation analysis (Pearson and Spearman)
         4. Feature correlation ranking and importance
         5. Distribution analysis of correlations
-        6. Combined analysis across all files
         
         Parameters:
         -----------
         csv_files : list, optional
-            List of CSV file paths (currently not used - method discovers files automatically)
+            List of CSV file paths (deprecated - use target_file instead)
+        target_file : str, optional
+            Specific file path to analyze. If None, will look for the first available merged file.
             
         Returns:
         --------
@@ -7458,505 +7459,298 @@ class TrainingPipeline:
             os.makedirs(statistical_analysis_dir, exist_ok=True)
             os.makedirs(feature_ranking_dir, exist_ok=True)
             
-            # Find all merged scaled training data files
-            merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train_scaled.csv")
-            merged_data_files = glob.glob(merged_data_pattern)
+            # Determine target file to analyze
+            target_file_path = None
             
-            # Fallback to non-scaled data if scaled not available
-            if not merged_data_files:
-                merged_data_pattern = os.path.join(self.project_root, "data/output/3-merged_training_ready", "merged_data_*_train.csv")
+            if target_file and os.path.exists(target_file):
+                target_file_path = target_file
+                print(f"    numeric_correlation_analysis: Using specified target file: {os.path.basename(target_file)}")
+            else:
+                # Look for scaled data first, then fallback to non-scaled
+                merged_data_pattern = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, "merged_data_*_train.csv")
                 merged_data_files = glob.glob(merged_data_pattern)
-                print(f"    numeric_correlation_analysis: Using non-scaled data files")
-            
-            if not merged_data_files:
-                error_msg = "No merged data files found for numeric correlation analysis"
+                
+                if not merged_data_files:
+                    merged_data_pattern = os.path.join(self.project_root, "data/output/3-merged_training_ready", "merged_data_*_train.csv")
+                    merged_data_files = glob.glob(merged_data_pattern)
+                    print(f"    numeric_correlation_analysis: Using non-scaled data files")
+                
+                if merged_data_files:
+                    target_file_path = merged_data_files[0]  # Use first available file
+                    print(f"    numeric_correlation_analysis: Using first available file: {os.path.basename(target_file_path)}")
+                
+            # Check if target file exists
+            if not target_file_path or not os.path.exists(target_file_path):
+                error_msg = f"No valid merged data file found for numeric correlation analysis. Searched patterns: {merged_data_pattern}"
                 print(f"    numeric_correlation_analysis: {error_msg}")
                 return {
                     "success": False,
                     "error": error_msg,
-                    "processed_files": 0
+                    "processed_files": 0,
+                    "target_file": target_file_path
                 }
             
-            print(f"    numeric_correlation_analysis: Found {len(merged_data_files)} data files to process")
-            
-            analysis_results = []
-            total_files_processed = 0
-            combined_data = []
-            all_correlation_results = {}
             target_column = 'differenceInMinutes_eachStation_offset'
+            filename = os.path.basename(target_file_path)
             
-            # Import required libraries
-            import matplotlib.pyplot as plt
-            import seaborn as sns
-            from scipy.stats import pearsonr, spearmanr
-            import numpy as np
-            import json
+            print(f"    numeric_correlation_analysis: Processing single file: {filename}")
             
-            # Process each file
-            for file_path in merged_data_files:
-                filename = os.path.basename(file_path)
-                print(f"      Processing {filename}...")
+            try:
+                # Load data
+                df = pd.read_csv(target_file_path)
                 
-                try:
-                    # Load data
-                    df = pd.read_csv(file_path)
-                    
-                    # Check if target column exists
-                    if target_column not in df.columns:
-                        print(f"        Warning: Target column '{target_column}' not found in {filename}, skipping...")
-                        continue
-                    
-                    # Extract all numeric columns (excluding target)
-                    numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
-                    
-                    # Remove target column and any index columns from features
-                    feature_columns = [col for col in numeric_columns 
-                                    if col != target_column 
-                                    and not col.startswith('Unnamed') 
-                                    and col != 'index']
-                    
-                    if not feature_columns:
-                        print(f"        Warning: No numeric features found in {filename}, skipping...")
-                        continue
-                    
-                    print(f"        Found {len(feature_columns)} numeric features to analyze")
-                    print(f"        Features: {feature_columns}")
-                    
-                    # Clean data - remove NaN values
-                    analysis_df = df[[target_column] + feature_columns].dropna()
-                    
-                    # Filter for delayed trains only (differenceInMinutes_eachStation_offset > 5)
-                    analysis_df = analysis_df[analysis_df[target_column] > 5]
-                    
-                    if len(analysis_df) == 0:
-                        print(f"        Warning: No valid data after cleaning and filtering for delays > 5 min in {filename}, skipping...")
-                        continue
-                    
-                    print(f"        Valid records for analysis (delayed trains > 5 min): {len(analysis_df):,}")
-                    
-                    # Calculate correlations for this file
-                    file_correlations = {}
-                    pearson_correlations = {}
-                    spearman_correlations = {}
-                    
-                    target_data = analysis_df[target_column]
-                    
-                    # Calculate correlations with each feature
-                    for feature in feature_columns:
-                        feature_data = analysis_df[feature]
+                if df.empty:
+                    error_msg = f"Target file {filename} is empty"
+                    print(f"    numeric_correlation_analysis: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "processed_files": 0,
+                        "target_file": target_file_path
+                    }
+                
+                print(f"      Dataset shape: {df.shape}")
+                print(f"      Total rows: {len(df):,}")
+                
+                # Check if target column exists
+                if target_column not in df.columns:
+                    error_msg = f"Target column '{target_column}' not found in {filename}"
+                    print(f"    numeric_correlation_analysis: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "processed_files": 0,
+                        "target_file": target_file_path,
+                        "available_columns": list(df.columns)
+                    }
+                
+                # Extract all numeric columns (excluding target)
+                numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+                
+                # Remove target column and any index columns from features
+                features_to_exclude = [target_column, 'Unnamed: 0', 'index']
+                numeric_features = [col for col in numeric_columns if col not in features_to_exclude]
+                
+                if not numeric_features:
+                    error_msg = f"No numeric features found for correlation analysis in {filename}"
+                    print(f"    numeric_correlation_analysis: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "processed_files": 0,
+                        "target_file": target_file_path,
+                        "available_columns": list(df.columns)
+                    }
+                
+                print(f"      Found {len(numeric_features)} numeric features for analysis")
+                
+                # Create analysis dataframe
+                analysis_df = df[numeric_features + [target_column]].copy()
+                
+                # Remove rows with missing target values
+                initial_rows = len(analysis_df)
+                analysis_df = analysis_df.dropna(subset=[target_column])
+                final_rows = len(analysis_df)
+                
+                if initial_rows != final_rows:
+                    print(f"      Removed {initial_rows - final_rows} rows with missing target values")
+                
+                if analysis_df.empty:
+                    error_msg = f"No valid data remaining after removing missing values in {filename}"
+                    print(f"    numeric_correlation_analysis: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "processed_files": 0,
+                        "target_file": target_file_path
+                    }
+                
+                # Calculate correlations
+                print(f"      Calculating correlations for {len(numeric_features)} features...")
+                correlations = {}
+                
+                for feature in numeric_features:
+                    if feature in analysis_df.columns:
+                        # Remove missing values for this feature
+                        feature_data = analysis_df[[feature, target_column]].dropna()
                         
-                        # Skip if feature has no variance
-                        if feature_data.std() == 0:
-                            continue
-                        
-                        try:
-                            # Pearson correlation
-                            pearson_corr, pearson_p = pearsonr(target_data, feature_data)
-                            pearson_correlations[feature] = {
-                                'correlation': pearson_corr,
-                                'p_value': pearson_p
-                            }
-                            
-                            # Spearman correlation
-                            spearman_corr, spearman_p = spearmanr(target_data, feature_data)
-                            spearman_correlations[feature] = {
-                                'correlation': spearman_corr,
-                                'p_value': spearman_p
-                            }
-                            
-                            file_correlations[feature] = {
-                                'pearson': pearson_corr,
-                                'spearman': spearman_corr,
-                                'pearson_p_value': pearson_p,
-                                'spearman_p_value': spearman_p
-                            }
-                            
-                        except Exception as e:
-                            print(f"          Warning: Could not calculate correlation for {feature}: {e}")
-                            continue
-                    
-                    # Sort features by absolute Pearson correlation
-                    sorted_features = sorted(file_correlations.items(), 
-                                        key=lambda x: abs(x[1]['pearson']), 
-                                        reverse=True)
-                    
-                    print(f"        Top 5 correlated features (Pearson):")
-                    for i, (feature, corr_data) in enumerate(sorted_features[:5]):
-                        print(f"          {i+1}. {feature}: {corr_data['pearson']:.4f}")
-                    
-                    # Create correlation matrix heatmap for this file
-                    correlation_matrix_data = []
-                    feature_names = []
-                    
-                    for feature in feature_columns:
-                        if feature in file_correlations:
-                            correlation_matrix_data.append(file_correlations[feature]['pearson'])
-                            feature_names.append(feature)
-                    
-                    if correlation_matrix_data:
-                        # Create correlation heatmap
-                        plt.figure(figsize=(12, 8))
-                        
-                        # Create data for heatmap (single row showing correlations with target)
-                        heatmap_data = np.array(correlation_matrix_data).reshape(1, -1)
-                        
-                        # Create heatmap
-                        sns.heatmap(heatmap_data, 
-                                annot=True, 
-                                fmt='.3f',
-                                cmap='RdBu_r', 
-                                center=0,
-                                xticklabels=feature_names,
-                                yticklabels=[f'{target_column}'],
-                                cbar_kws={'label': 'Pearson Correlation'})
-                        
-                        plt.title(f'Numeric Features Correlation with {target_column} (Delayed Trains > 5min)\n{filename}', 
-                                fontsize=14, fontweight='bold')
-                        plt.xlabel('Features', fontsize=12)
-                        plt.ylabel('Target Variable', fontsize=12)
-                        plt.xticks(rotation=45, ha='right')
-                        plt.tight_layout()
-                        
-                        # Save heatmap
-                        heatmap_path = os.path.join(correlation_plots_dir, f"correlation_heatmap_{filename.replace('.csv', '.png')}")
-                        plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
-                        plt.close()
-                        
-                        print(f"        Saved correlation heatmap to {os.path.basename(heatmap_path)}")
-                    
-                    # Create scatter plots for top 6 correlated features
-                    top_features = [item[0] for item in sorted_features[:6]]
-                    
-                    if top_features:
-                        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-                        fig.suptitle(f'Top Correlated Features vs {target_column} (Delayed Trains > 5min)\n{filename}', 
-                                fontsize=16, fontweight='bold')
-                        
-                        axes = axes.ravel()
-                        
-                        for i, feature in enumerate(top_features):
-                            if i >= 6:
-                                break
+                        if len(feature_data) > 1:  # Need at least 2 points for correlation
+                            try:
+                                # Pearson correlation
+                                pearson_corr, pearson_p = pearsonr(feature_data[feature], feature_data[target_column])
                                 
-                            ax = axes[i]
-                            
-                            # Create scatter plot with sample if data is large
-                            plot_df = analysis_df
-                            if len(analysis_df) > 5000:
-                                plot_df = analysis_df.sample(n=5000, random_state=42)
-                            
-                            ax.scatter(plot_df[feature], plot_df[target_column], 
-                                    alpha=0.6, s=20, c='darkblue', edgecolors='none')
-                            
-                            # Add trend line
-                            z = np.polyfit(plot_df[feature], plot_df[target_column], 1)
-                            p = np.poly1d(z)
-                            ax.plot(plot_df[feature], p(plot_df[feature]), "r--", alpha=0.8, linewidth=2)
-                            
-                            correlation_value = file_correlations[feature]['pearson']
-                            ax.set_xlabel(feature, fontsize=10)
-                            ax.set_ylabel(target_column, fontsize=10)
-                            ax.set_title(f'{feature}\nPearson: {correlation_value:.4f}', 
-                                    fontsize=11, fontweight='bold')
-                            ax.grid(True, alpha=0.3)
-                        
-                        # Hide empty subplots
-                        for i in range(len(top_features), 6):
-                            axes[i].set_visible(False)
-                        
-                        plt.tight_layout()
-                        
-                        # Save scatter plots
-                        scatter_path = os.path.join(scatter_plots_dir, f"top_correlations_scatter_{filename.replace('.csv', '.png')}")
-                        plt.savefig(scatter_path, dpi=300, bbox_inches='tight')
-                        plt.close()
-                        
-                        print(f"        Saved scatter plots to {os.path.basename(scatter_path)}")
-                    
-                    # Create feature ranking visualization
-                    if sorted_features:
-                        plt.figure(figsize=(12, 8))
-                        
-                        features_list = [item[0] for item in sorted_features[:15]]  # Top 15
-                        correlations_list = [item[1]['pearson'] for item in sorted_features[:15]]
-                        
-                        # Create horizontal bar plot
-                        bars = plt.barh(range(len(features_list)), correlations_list, 
-                                    color=['red' if x < 0 else 'blue' for x in correlations_list])
-                        
-                        plt.yticks(range(len(features_list)), features_list)
-                        plt.xlabel('Pearson Correlation Coefficient', fontsize=12)
-                        plt.title(f'Feature Correlation Ranking vs {target_column} (Delayed Trains > 5min)\n{filename}', 
-                                fontsize=14, fontweight='bold')
-                        plt.axvline(x=0, color='black', linestyle='-', alpha=0.5)
-                        plt.grid(True, axis='x', alpha=0.3)
-                        
-                        # Add correlation values as text on bars
-                        for i, (bar, corr) in enumerate(zip(bars, correlations_list)):
-                            plt.text(corr + (0.01 if corr >= 0 else -0.01), i, 
-                                    f'{corr:.3f}', va='center', 
-                                    ha='left' if corr >= 0 else 'right', fontsize=9)
-                        
-                        plt.tight_layout()
-                        
-                        # Save ranking plot
-                        ranking_path = os.path.join(feature_ranking_dir, f"feature_ranking_{filename.replace('.csv', '.png')}")
-                        plt.savefig(ranking_path, dpi=300, bbox_inches='tight')
-                        plt.close()
-                        
-                        print(f"        Saved feature ranking to {os.path.basename(ranking_path)}")
-                    
-                    # Save statistical analysis to JSON
-                    file_analysis_stats = {
-                        'filename': filename,
-                        'total_records': len(analysis_df),
-                        'total_features_analyzed': len(feature_columns),
-                        'target_variable': target_column,
-                        'target_statistics': {
-                            'mean': float(target_data.mean()),
-                            'std': float(target_data.std()),
-                            'min': float(target_data.min()),
-                            'max': float(target_data.max()),
-                            'median': float(target_data.median())
-                        },
-                        'correlation_analysis': {
-                            'pearson_correlations': {k: {
-                                'correlation': float(v['correlation']),
-                                'p_value': float(v['p_value'])
-                            } for k, v in pearson_correlations.items()},
-                            'spearman_correlations': {k: {
-                                'correlation': float(v['correlation']),
-                                'p_value': float(v['p_value'])
-                            } for k, v in spearman_correlations.items()}
-                        },
-                        'top_correlated_features': [
-                            {
-                                'feature': feature,
-                                'pearson_correlation': float(corr_data['pearson']),
-                                'spearman_correlation': float(corr_data['spearman']),
-                                'pearson_p_value': float(corr_data['pearson_p_value']),
-                                'spearman_p_value': float(corr_data['spearman_p_value'])
-                            }
-                            for feature, corr_data in sorted_features[:10]
-                        ]
-                    }
-                    
-                    # Save individual file statistics
-                    stats_path = os.path.join(statistical_analysis_dir, f"stats_{filename.replace('.csv', '.json')}")
-                    with open(stats_path, 'w') as f:
-                        json.dump(file_analysis_stats, f, indent=2)
-                    
-                    print(f"        Saved statistical analysis to {os.path.basename(stats_path)}")
-                    
-                    # Store results for combined analysis
-                    analysis_results.append(file_analysis_stats)
-                    combined_data.append(analysis_df)
-                    all_correlation_results[filename] = file_correlations
-                    total_files_processed += 1
-                    
-                except Exception as e:
-                    print(f"        Error processing {filename}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-            
-            # Create combined analysis if we have data from multiple files
-            if len(combined_data) > 1 and total_files_processed > 0:
-                print(f"      Creating combined analysis across {total_files_processed} files...")
+                                # Spearman correlation
+                                spearman_corr, spearman_p = spearmanr(feature_data[feature], feature_data[target_column])
+                                
+                                correlations[feature] = {
+                                    'pearson': pearson_corr,
+                                    'spearman': spearman_corr,
+                                    'pearson_p_value': pearson_p,
+                                    'spearman_p_value': spearman_p,
+                                    'sample_size': len(feature_data)
+                                }
+                            except Exception as e:
+                                print(f"        Warning: Could not calculate correlation for {feature}: {e}")
+                                continue
                 
-                try:
-                    # Combine all data
-                    combined_df = pd.concat(combined_data, ignore_index=True)
-                    print(f"      Combined dataset shape: {combined_df.shape}")
+                if not correlations:
+                    error_msg = f"Could not calculate any correlations in {filename}"
+                    print(f"    numeric_correlation_analysis: {error_msg}")
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "processed_files": 0,
+                        "target_file": target_file_path
+                    }
+                
+                # Sort features by absolute Pearson correlation
+                sorted_features = sorted(
+                    correlations.items(),
+                    key=lambda x: abs(x[1]['pearson']) if not np.isnan(x[1]['pearson']) else 0,
+                    reverse=True
+                )
+                
+                print(f"      Successfully calculated correlations for {len(correlations)} features")
+                print(f"      Top 5 correlated features:")
+                for i, (feature, corr_data) in enumerate(sorted_features[:5]):
+                    print(f"        {i+1}. {feature}: r={corr_data['pearson']:.4f}, p={corr_data['pearson_p_value']:.4f}")
+                
+                # Create correlation heatmap
+                correlation_matrix = analysis_df[numeric_features + [target_column]].corr()
+                
+                plt.figure(figsize=(12, 10))
+                mask = np.triu(np.ones_like(correlation_matrix, dtype=bool), k=1)
+                sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0,
+                        mask=mask, square=True, fmt='.3f', cbar_kws={'shrink': 0.8})
+                plt.title(f'Correlation Matrix - {filename}', fontsize=16, pad=20)
+                plt.tight_layout()
+                
+                heatmap_path = os.path.join(correlation_plots_dir, f"correlation_heatmap_{filename.replace('.csv', '.png')}")
+                plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                print(f"        Saved correlation heatmap: {os.path.basename(heatmap_path)}")
+                
+                # Create scatter plots for top correlated features
+                top_features_for_plots = min(5, len(sorted_features))
+                for i, (feature, corr_data) in enumerate(sorted_features[:top_features_for_plots]):
+                    plt.figure(figsize=(10, 6))
                     
-                    # Get all numeric features
-                    all_numeric_features = combined_df.select_dtypes(include=[np.number]).columns.tolist()
-                    feature_columns = [col for col in all_numeric_features 
-                                    if col != target_column 
-                                    and not col.startswith('Unnamed') 
-                                    and col != 'index']
+                    feature_data = analysis_df[[feature, target_column]].dropna()
+                    plt.scatter(feature_data[feature], feature_data[target_column], alpha=0.5, s=10)
+                    plt.xlabel(feature)
+                    plt.ylabel(target_column)
+                    plt.title(f'{feature} vs {target_column}\nPearson r = {corr_data["pearson"]:.4f}, p = {corr_data["pearson_p_value"]:.4f}')
+                    plt.grid(True, alpha=0.3)
                     
-                    # Calculate combined correlations
-                    combined_correlations = {}
-                    target_data = combined_df[target_column]
+                    scatter_path = os.path.join(scatter_plots_dir, f"scatter_{feature}_{filename.replace('.csv', '.png')}")
+                    plt.savefig(scatter_path, dpi=300, bbox_inches='tight')
+                    plt.close()
                     
-                    for feature in feature_columns:
-                        if feature in combined_df.columns:
-                            feature_data = combined_df[feature]
-                            
-                            if feature_data.std() > 0:  # Skip zero variance features
-                                try:
-                                    pearson_corr, pearson_p = pearsonr(target_data, feature_data)
-                                    spearman_corr, spearman_p = spearmanr(target_data, feature_data)
-                                    
-                                    combined_correlations[feature] = {
-                                        'pearson': pearson_corr,
-                                        'spearman': spearman_corr,
-                                        'pearson_p_value': pearson_p,
-                                        'spearman_p_value': spearman_p
-                                    }
-                                except:
-                                    continue
-                    
-                    # Sort by absolute correlation
-                    sorted_combined_features = sorted(combined_correlations.items(), 
-                                                key=lambda x: abs(x[1]['pearson']), 
-                                                reverse=True)
-                    
-                    print(f"      Top 10 correlated features (Combined Analysis):")
-                    for i, (feature, corr_data) in enumerate(sorted_combined_features[:10]):
-                        print(f"        {i+1}. {feature}: {corr_data['pearson']:.4f}")
-                    
-                    # Create combined correlation heatmap
-                    if combined_correlations:
-                        plt.figure(figsize=(16, 10))
-                        
-                        # Prepare data for comprehensive heatmap
-                        feature_names = list(combined_correlations.keys())
-                        correlation_values = [combined_correlations[f]['pearson'] for f in feature_names]
-                        
-                        # Create correlation matrix (features vs target)
-                        heatmap_data = np.array(correlation_values).reshape(1, -1)
-                        
-                        sns.heatmap(heatmap_data, 
-                                annot=True, 
-                                fmt='.3f',
-                                cmap='RdBu_r', 
-                                center=0,
-                                xticklabels=feature_names,
-                                yticklabels=[f'{target_column}'],
-                                cbar_kws={'label': 'Pearson Correlation'})
-                        
-                        plt.title(f'Combined Numeric Features Correlation Analysis (Delayed Trains > 5min)\nTarget: {target_column} (N={len(combined_df):,})', 
-                                fontsize=16, fontweight='bold')
-                        plt.xlabel('Features', fontsize=12)
-                        plt.ylabel('Target Variable', fontsize=12)
-                        plt.xticks(rotation=45, ha='right')
-                        plt.tight_layout()
-                        
-                        # Save combined heatmap
-                        combined_heatmap_path = os.path.join(correlation_plots_dir, "combined_correlation_heatmap.png")
-                        plt.savefig(combined_heatmap_path, dpi=300, bbox_inches='tight')
-                        plt.close()
-                        
-                        print(f"      Saved combined correlation heatmap")
-                    
-                    # Create combined feature ranking
-                    if sorted_combined_features:
-                        plt.figure(figsize=(14, 10))
-                        
-                        top_features = sorted_combined_features[:20]  # Top 20
-                        features_list = [item[0] for item in top_features]
-                        correlations_list = [item[1]['pearson'] for item in top_features]
-                        
-                        bars = plt.barh(range(len(features_list)), correlations_list, 
-                                    color=['red' if x < 0 else 'darkblue' for x in correlations_list])
-                        
-                        plt.yticks(range(len(features_list)), features_list)
-                        plt.xlabel('Pearson Correlation Coefficient', fontsize=12)
-                        plt.title(f'Combined Feature Correlation Ranking (Delayed Trains > 5min)\nTarget: {target_column} (N={len(combined_df):,})', 
-                                fontsize=14, fontweight='bold')
-                        plt.axvline(x=0, color='black', linestyle='-', alpha=0.5)
-                        plt.grid(True, axis='x', alpha=0.3)
-                        
-                        # Add correlation values
-                        for i, (bar, corr) in enumerate(zip(bars, correlations_list)):
-                            plt.text(corr + (0.01 if corr >= 0 else -0.01), i, 
-                                    f'{corr:.3f}', va='center', 
-                                    ha='left' if corr >= 0 else 'right', fontsize=9)
-                        
-                        plt.tight_layout()
-                        
-                        combined_ranking_path = os.path.join(feature_ranking_dir, "combined_feature_ranking.png")
-                        plt.savefig(combined_ranking_path, dpi=300, bbox_inches='tight')
-                        plt.close()
-                        
-                        print(f"      Saved combined feature ranking")
-                    
-                    # Save combined statistical analysis
-                    combined_stats = {
-                        'analysis_type': 'combined_numeric_correlation_analysis_delayed_trains',
-                        'data_filter': 'differenceInMinutes_eachStation_offset > 5',
-                        'files_analyzed': total_files_processed,
-                        'total_combined_records': len(combined_df),
-                        'target_variable': target_column,
-                        'total_features_analyzed': len(feature_columns),
-                        'target_statistics': {
-                            'mean': float(target_data.mean()),
-                            'std': float(target_data.std()),
-                            'min': float(target_data.min()),
-                            'max': float(target_data.max()),
-                            'median': float(target_data.median())
-                        },
-                        'correlation_summary': {
-                            'strongest_positive_correlation': {
-                                'feature': sorted_combined_features[0][0],
-                                'correlation': float(sorted_combined_features[0][1]['pearson'])
-                            } if sorted_combined_features and sorted_combined_features[0][1]['pearson'] > 0 else None,
-                            'strongest_negative_correlation': {
-                                'feature': min(sorted_combined_features, key=lambda x: x[1]['pearson'])[0],
-                                'correlation': float(min(sorted_combined_features, key=lambda x: x[1]['pearson'])[1]['pearson'])
-                            } if sorted_combined_features else None,
-                            'features_with_strong_correlation': len([f for f, c in combined_correlations.items() if abs(c['pearson']) > 0.5]),
-                            'features_with_moderate_correlation': len([f for f, c in combined_correlations.items() if 0.3 < abs(c['pearson']) <= 0.5]),
-                            'features_with_weak_correlation': len([f for f, c in combined_correlations.items() if abs(c['pearson']) <= 0.3])
-                        },
-                        'detailed_correlations': {
-                            feature: {
-                                'pearson_correlation': float(corr_data['pearson']),
-                                'spearman_correlation': float(corr_data['spearman']),
-                                'pearson_p_value': float(corr_data['pearson_p_value']),
-                                'spearman_p_value': float(corr_data['spearman_p_value'])
-                            }
-                            for feature, corr_data in combined_correlations.items()
+                    print(f"        Saved scatter plot: {os.path.basename(scatter_path)}")
+                
+                # Create feature ranking analysis
+                feature_ranking_stats = {
+                    'filename': filename,
+                    'total_features_analyzed': len(correlations),
+                    'dataset_shape': list(df.shape),
+                    'analysis_dataset_shape': list(analysis_df.shape),
+                    'target_column': target_column,
+                    'top_10_features': [
+                        {
+                            'rank': i + 1,
+                            'feature': feature,
+                            'pearson_correlation': float(corr_data['pearson']),
+                            'spearman_correlation': float(corr_data['spearman']),
+                            'pearson_p_value': float(corr_data['pearson_p_value']),
+                            'spearman_p_value': float(corr_data['spearman_p_value']),
+                            'sample_size': int(corr_data['sample_size'])
                         }
-                    }
-                    
-                    combined_stats_path = os.path.join(statistical_analysis_dir, "combined_correlation_analysis.json")
-                    with open(combined_stats_path, 'w') as f:
-                        json.dump(combined_stats, f, indent=2)
-                    
-                    print(f"      Saved combined statistical analysis")
-                    
-                except Exception as e:
-                    print(f"      Error in combined analysis: {e}")
-                    import traceback
-                    traceback.print_exc()
-            
-            # Create summary report
-            summary_stats = {
-                'success': True,
-                'processed_files': total_files_processed,
-                'total_files_found': len(merged_data_files),
-                'analysis_types': [
-                    'correlation_heatmaps',
-                    'scatter_plots',
-                    'feature_ranking',
-                    'statistical_analysis'
-                ],
-                'output_path': analysis_output_dir,
-                'target_variable': target_column
-            }
-            
-            if analysis_results:
-                summary_stats['individual_file_results'] = len(analysis_results)
+                        for i, (feature, corr_data) in enumerate(sorted_features[:10])
+                    ]
+                }
                 
-            if len(combined_data) > 1:
-                summary_stats['combined_analysis'] = True
-                summary_stats['total_combined_records'] = len(pd.concat(combined_data, ignore_index=True))
-            
-            print(f"    numeric_correlation_analysis: Successfully completed analysis")
-            print(f"      Files processed: {total_files_processed}/{len(merged_data_files)}")
-            print(f"      Analysis outputs saved to: {analysis_output_dir}")
-            
-            return summary_stats
+                # Save feature ranking
+                ranking_path = os.path.join(feature_ranking_dir, f"feature_ranking_{filename.replace('.csv', '.json')}")
+                with open(ranking_path, 'w') as f:
+                    json.dump(feature_ranking_stats, f, indent=2)
+                
+                print(f"        Saved feature ranking: {os.path.basename(ranking_path)}")
+                
+                # Save statistical analysis
+                statistical_stats = {
+                    'filename': filename,
+                    'target_column': target_column,
+                    'total_correlations_calculated': len(correlations),
+                    'analysis_timestamp': pd.Timestamp.now().isoformat(),
+                    'correlations': {
+                        feature: {
+                            'pearson_correlation': float(corr_data['pearson']),
+                            'spearman_correlation': float(corr_data['spearman']),
+                            'pearson_p_value': float(corr_data['pearson_p_value']),
+                            'spearman_p_value': float(corr_data['spearman_p_value']),
+                            'sample_size': int(corr_data['sample_size'])
+                        }
+                        for feature, corr_data in correlations.items()
+                    }
+                }
+                
+                stats_path = os.path.join(statistical_analysis_dir, f"stats_{filename.replace('.csv', '.json')}")
+                with open(stats_path, 'w') as f:
+                    json.dump(statistical_stats, f, indent=2)
+                
+                print(f"        Saved statistical analysis: {os.path.basename(stats_path)}")
+                
+                # Create summary report
+                summary_stats = {
+                    'success': True,
+                    'processed_files': 1,
+                    'target_file': target_file_path,
+                    'filename': filename,
+                    'dataset_shape': list(df.shape),
+                    'analysis_dataset_shape': list(analysis_df.shape),
+                    'features_analyzed': len(correlations),
+                    'analysis_types': [
+                        'correlation_heatmap',
+                        'scatter_plots',
+                        'feature_ranking',
+                        'statistical_analysis'
+                    ],
+                    'output_path': analysis_output_dir,
+                    'target_variable': target_column,
+                    'top_correlation': {
+                        'feature': sorted_features[0][0],
+                        'pearson_correlation': float(sorted_features[0][1]['pearson']),
+                        'p_value': float(sorted_features[0][1]['pearson_p_value'])
+                    } if sorted_features else None
+                }
+                
+                print(f"    numeric_correlation_analysis: Successfully completed analysis")
+                print(f"      File processed: {filename}")
+                print(f"      Features analyzed: {len(correlations)}")
+                print(f"      Analysis outputs saved to: {analysis_output_dir}")
+                
+                return summary_stats
+                
+            except Exception as e:
+                error_msg = f"Error processing file {filename}: {str(e)}"
+                print(f"    numeric_correlation_analysis: {error_msg}")
+                import traceback
+                traceback.print_exc()
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "processed_files": 0,
+                    "target_file": target_file_path
+                }
             
         except Exception as e:
-            print(f"    numeric_correlation_analysis: Error - {e}")
+            error_msg = f"Error in numeric_correlation_analysis: {str(e)}"
+            print(f"    numeric_correlation_analysis: {error_msg}")
             import traceback
             traceback.print_exc()
             return {
                 "success": False,
-                "error": str(e),
+                "error": error_msg,
                 "processed_files": 0
             }

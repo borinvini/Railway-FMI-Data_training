@@ -6,6 +6,7 @@ TRAINING_STATE_MACHINE = {
     "select_training_cols": True,
     "split_dataset": True,
     "scale_weather_features": True,
+    "numeric_correlation_analysis": True,
     "train_xgboost_with_randomized_search_cv": True,
 }
 
