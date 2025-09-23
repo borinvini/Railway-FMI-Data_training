@@ -7425,8 +7425,8 @@ class TrainingPipeline:
         instead of processing multiple files in a loop.
         
         Key Analyses Performed:
-        1. Correlation matrix heatmap for all numeric features vs target (delayed trains only)
-        2. Individual scatter plots for top correlated features
+        1. Correlation matrix heatmap for feature-to-feature correlations (excluding target and self-correlations)
+        2. Individual scatter plots for top correlated features vs target
         3. Statistical correlation analysis (Pearson and Spearman)
         4. Feature correlation ranking and importance
         5. Distribution analysis of correlations
@@ -7481,48 +7481,37 @@ class TrainingPipeline:
                 
             # Check if target file exists
             if not target_file_path or not os.path.exists(target_file_path):
-                error_msg = f"No valid merged data file found for numeric correlation analysis. Searched patterns: {merged_data_pattern}"
+                error_msg = f"No valid merged data file found for numeric correlation analysis."
                 print(f"    numeric_correlation_analysis: {error_msg}")
                 return {
                     "success": False,
                     "error": error_msg,
-                    "processed_files": 0,
-                    "target_file": target_file_path
+                    "processed_files": 0
                 }
-            
-            target_column = 'differenceInMinutes_eachStation_offset'
-            filename = os.path.basename(target_file_path)
-            
-            print(f"    numeric_correlation_analysis: Processing single file: {filename}")
             
             try:
                 # Load data
+                filename = os.path.basename(target_file_path)
+                print(f"      Loading data from {filename}...")
                 df = pd.read_csv(target_file_path)
                 
-                if df.empty:
-                    error_msg = f"Target file {filename} is empty"
-                    print(f"    numeric_correlation_analysis: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg,
-                        "processed_files": 0,
-                        "target_file": target_file_path
-                    }
-                
-                print(f"      Dataset shape: {df.shape}")
-                print(f"      Total rows: {len(df):,}")
-                
-                # Check if target column exists
+                # Identify target column
+                target_column = DEFAULT_TARGET_FEATURE
                 if target_column not in df.columns:
-                    error_msg = f"Target column '{target_column}' not found in {filename}"
-                    print(f"    numeric_correlation_analysis: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg,
-                        "processed_files": 0,
-                        "target_file": target_file_path,
-                        "available_columns": list(df.columns)
-                    }
+                    available_targets = [col for col in VALID_TARGET_FEATURES if col in df.columns]
+                    if available_targets:
+                        target_column = available_targets[0]
+                        print(f"      Using target column: {target_column}")
+                    else:
+                        error_msg = f"No valid target column found in {filename}"
+                        print(f"    numeric_correlation_analysis: {error_msg}")
+                        return {
+                            "success": False,
+                            "error": error_msg,
+                            "processed_files": 0,
+                            "target_file": target_file_path,
+                            "available_columns": list(df.columns)
+                        }
                 
                 # Extract all numeric columns (excluding target)
                 numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
@@ -7565,7 +7554,7 @@ class TrainingPipeline:
                         "target_file": target_file_path
                     }
                 
-                # Calculate correlations
+                # Calculate correlations between features and target
                 print(f"      Calculating correlations for {len(numeric_features)} features...")
                 correlations = {}
                 
@@ -7603,7 +7592,7 @@ class TrainingPipeline:
                         "target_file": target_file_path
                     }
                 
-                # Sort features by absolute Pearson correlation
+                # Sort features by absolute Pearson correlation with target
                 sorted_features = sorted(
                     correlations.items(),
                     key=lambda x: abs(x[1]['pearson']) if not np.isnan(x[1]['pearson']) else 0,
@@ -7615,14 +7604,20 @@ class TrainingPipeline:
                 for i, (feature, corr_data) in enumerate(sorted_features[:5]):
                     print(f"        {i+1}. {feature}: r={corr_data['pearson']:.4f}, p={corr_data['pearson_p_value']:.4f}")
                 
-                # Create correlation heatmap
-                correlation_matrix = analysis_df[numeric_features + [target_column]].corr()
+                # CREATE MODIFIED CORRELATION HEATMAP (EXCLUDING TARGET & SELF-CORRELATIONS)
+                # Only use numeric features, excluding the target column
+                correlation_matrix = analysis_df[numeric_features].corr()
                 
                 plt.figure(figsize=(12, 10))
-                mask = np.triu(np.ones_like(correlation_matrix, dtype=bool), k=1)
+                
+                # Create mask to hide both upper triangle AND diagonal (self-correlations)
+                mask_upper = np.triu(np.ones_like(correlation_matrix, dtype=bool), k=1)
+                mask_diagonal = np.eye(correlation_matrix.shape[0], dtype=bool)
+                mask = mask_upper | mask_diagonal  # Combine both masks
+                
                 sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0,
                         mask=mask, square=True, fmt='.3f', cbar_kws={'shrink': 0.8})
-                plt.title(f'Correlation Matrix - {filename}', fontsize=16, pad=20)
+                plt.title(f'Feature-to-Feature Correlations (Excluding Target & Self-Correlations) - {filename}', fontsize=16, pad=20)
                 plt.tight_layout()
                 
                 heatmap_path = os.path.join(correlation_plots_dir, f"correlation_heatmap_{filename.replace('.csv', '.png')}")
@@ -7631,23 +7626,257 @@ class TrainingPipeline:
                 
                 print(f"        Saved correlation heatmap: {os.path.basename(heatmap_path)}")
                 
-                # Create scatter plots for top correlated features
-                top_features_for_plots = min(5, len(sorted_features))
-                for i, (feature, corr_data) in enumerate(sorted_features[:top_features_for_plots]):
-                    plt.figure(figsize=(10, 6))
+                # Optional: Create a separate heatmap showing only strong correlations
+                correlation_threshold = 0.3  # Adjust as needed
+                strong_corr_matrix = correlation_matrix.copy()
+                strong_corr_matrix[abs(strong_corr_matrix) < correlation_threshold] = np.nan
+                
+                plt.figure(figsize=(12, 10))
+                sns.heatmap(strong_corr_matrix, annot=True, cmap='coolwarm', center=0,
+                        mask=mask, square=True, fmt='.3f', cbar_kws={'shrink': 0.8})
+                plt.title(f'Strong Feature Correlations (|r| ≥ {correlation_threshold}) - {filename}', fontsize=16, pad=20)
+                plt.tight_layout()
+                
+                strong_heatmap_path = os.path.join(correlation_plots_dir, f"strong_correlation_heatmap_{filename.replace('.csv', '.png')}")
+                plt.savefig(strong_heatmap_path, dpi=300, bbox_inches='tight')
+                plt.close()
+                
+                print(f"        Saved strong correlations heatmap: {os.path.basename(strong_heatmap_path)}")
+                
+                # Create scatter plots for ALL features vs target
+                print(f"      Creating scatter plots for all {len(sorted_features)} features...")
+                for i, (feature, corr_data) in enumerate(sorted_features):
+                    try:
+                        plt.figure(figsize=(10, 6))
+                        
+                        feature_data = analysis_df[[feature, target_column]].dropna()
+                        
+                        # Skip if insufficient data
+                        if len(feature_data) < 2:
+                            print(f"        Warning: Insufficient data for {feature}, skipping scatter plot")
+                            plt.close()
+                            continue
+                        
+                        plt.scatter(feature_data[feature], feature_data[target_column], alpha=0.6, s=15)
+                        plt.xlabel(feature, fontsize=12)
+                        plt.ylabel(target_column, fontsize=12)
+                        
+                        # Add correlation info and rank to title
+                        plt.title(f'#{i+1}: {feature} vs {target_column}\n'
+                                f'Pearson r = {corr_data["pearson"]:.4f} (p = {corr_data["pearson_p_value"]:.4f})\n'
+                                f'Spearman ρ = {corr_data["spearman"]:.4f} (p = {corr_data["spearman_p_value"]:.4f})', 
+                                fontsize=11)
+                        
+                        plt.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        
+                        # Clean feature name for filename
+                        clean_feature_name = re.sub(r'[^\w\s-]', '', feature).strip().replace(' ', '_')
+                        scatter_path = os.path.join(scatter_plots_dir, f"scatter_{i+1:02d}_{clean_feature_name}_{filename.replace('.csv', '.png')}")
+                        plt.savefig(scatter_path, dpi=300, bbox_inches='tight')
+                        plt.close()
+                        
+                        if i < 10:  # Only print first 10 to avoid spam
+                            print(f"        Saved scatter plot: {os.path.basename(scatter_path)}")
+                        elif i == 10:
+                            print(f"        ... (continuing to save scatter plots for remaining {len(sorted_features) - 10} features)")
+                            
+                    except Exception as e:
+                        print(f"        Warning: Could not create scatter plot for {feature}: {e}")
+                        plt.close()
+                        continue
+                
+                print(f"      ✓ Successfully created {len(sorted_features)} scatter plots")
+                
+                # CREATE COMBINED WEATHER FEATURES SCATTER PLOT
+                print(f"      Creating combined weather features scatter plot...")
+                weather_features_in_data = [feature for feature in ALL_WEATHER_FEATURES if feature in [f[0] for f in sorted_features]]
+                
+                if weather_features_in_data:
+                    # Calculate optimal subplot grid
+                    n_weather_features = len(weather_features_in_data)
+                    n_cols = min(4, n_weather_features)  # Maximum 4 columns
+                    n_rows = (n_weather_features + n_cols - 1) // n_cols  # Ceiling division
                     
-                    feature_data = analysis_df[[feature, target_column]].dropna()
-                    plt.scatter(feature_data[feature], feature_data[target_column], alpha=0.5, s=10)
-                    plt.xlabel(feature)
-                    plt.ylabel(target_column)
-                    plt.title(f'{feature} vs {target_column}\nPearson r = {corr_data["pearson"]:.4f}, p = {corr_data["pearson_p_value"]:.4f}')
-                    plt.grid(True, alpha=0.3)
+                    # Create figure with subplots
+                    fig_width = n_cols * 5
+                    fig_height = n_rows * 4
+                    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
                     
-                    scatter_path = os.path.join(scatter_plots_dir, f"scatter_{feature}_{filename.replace('.csv', '.png')}")
-                    plt.savefig(scatter_path, dpi=300, bbox_inches='tight')
+                    # Handle single subplot case
+                    if n_weather_features == 1:
+                        axes = [axes]
+                    elif n_rows == 1:
+                        axes = axes.reshape(1, -1)
+                    elif n_cols == 1:
+                        axes = axes.reshape(-1, 1)
+                    
+                    # Flatten axes array for easier indexing
+                    axes_flat = axes.flatten() if hasattr(axes, 'flatten') else [axes]
+                    
+                    # Plot each weather feature
+                    for idx, weather_feature in enumerate(weather_features_in_data):
+                        try:
+                            ax = axes_flat[idx]
+                            
+                            # Find the correlation data for this weather feature
+                            weather_corr_data = None
+                            for feature, corr_data in sorted_features:
+                                if feature == weather_feature:
+                                    weather_corr_data = corr_data
+                                    break
+                            
+                            if weather_corr_data is None:
+                                ax.text(0.5, 0.5, f'No data for\n{weather_feature}', 
+                                    ha='center', va='center', transform=ax.transAxes)
+                                ax.set_title(weather_feature, fontsize=10)
+                                continue
+                            
+                            # Get clean data for this feature
+                            feature_data = analysis_df[[weather_feature, target_column]].dropna()
+                            
+                            if len(feature_data) < 2:
+                                ax.text(0.5, 0.5, f'Insufficient data\nfor {weather_feature}', 
+                                    ha='center', va='center', transform=ax.transAxes)
+                                ax.set_title(weather_feature, fontsize=10)
+                                continue
+                            
+                            # Create scatter plot
+                            ax.scatter(feature_data[weather_feature], feature_data[target_column], 
+                                    alpha=0.6, s=12, c='steelblue')
+                            
+                            # Set labels and title
+                            ax.set_xlabel(weather_feature, fontsize=9)
+                            ax.set_ylabel(target_column if idx % n_cols == 0 else '', fontsize=9)  # Only leftmost plots get y-label
+                            ax.set_title(f'{weather_feature}\nr = {weather_corr_data["pearson"]:.3f}', fontsize=10)
+                            ax.grid(True, alpha=0.3)
+                            
+                            # Rotate x-axis labels if needed
+                            ax.tick_params(axis='x', labelsize=8)
+                            ax.tick_params(axis='y', labelsize=8)
+                            
+                        except Exception as e:
+                            print(f"        Warning: Could not plot weather feature {weather_feature}: {e}")
+                            axes_flat[idx].text(0.5, 0.5, f'Error plotting\n{weather_feature}', 
+                                            ha='center', va='center', transform=axes_flat[idx].transAxes)
+                            axes_flat[idx].set_title(weather_feature, fontsize=10)
+                    
+                    # Hide empty subplots
+                    for idx in range(n_weather_features, len(axes_flat)):
+                        axes_flat[idx].set_visible(False)
+                    
+                    # Add overall title
+                    fig.suptitle(f'Weather Features vs {target_column}\n'
+                            f'Dataset: {filename} | Total Weather Features: {n_weather_features}', 
+                            fontsize=14, y=0.98)
+                    
+                    # Adjust layout
+                    plt.tight_layout()
+                    plt.subplots_adjust(top=0.92)
+                    
+                    # Save combined weather plot
+                    weather_plot_path = os.path.join(scatter_plots_dir, f"combined_weather_features_{filename.replace('.csv', '.png')}")
+                    plt.savefig(weather_plot_path, dpi=300, bbox_inches='tight')
                     plt.close()
                     
-                    print(f"        Saved scatter plot: {os.path.basename(scatter_path)}")
+                    print(f"        ✓ Saved combined weather scatter plot with {n_weather_features} features: {os.path.basename(weather_plot_path)}")
+                else:
+                    print(f"        ⚠ No weather features found in data to create combined plot")
+                
+                # CREATE COMBINED NON-WEATHER FEATURES SCATTER PLOT
+                print(f"      Creating combined non-weather features scatter plot...")
+                non_weather_features_in_data = [feature for feature in [f[0] for f in sorted_features] if feature not in ALL_WEATHER_FEATURES]
+                
+                if non_weather_features_in_data:
+                    # Calculate optimal subplot grid
+                    n_non_weather_features = len(non_weather_features_in_data)
+                    n_cols = min(4, n_non_weather_features)  # Maximum 4 columns
+                    n_rows = (n_non_weather_features + n_cols - 1) // n_cols  # Ceiling division
+                    
+                    # Create figure with subplots
+                    fig_width = n_cols * 5
+                    fig_height = n_rows * 4
+                    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
+                    
+                    # Handle single subplot case
+                    if n_non_weather_features == 1:
+                        axes = [axes]
+                    elif n_rows == 1:
+                        axes = axes.reshape(1, -1)
+                    elif n_cols == 1:
+                        axes = axes.reshape(-1, 1)
+                    
+                    # Flatten axes array for easier indexing
+                    axes_flat = axes.flatten() if hasattr(axes, 'flatten') else [axes]
+                    
+                    # Plot each non-weather feature
+                    for idx, non_weather_feature in enumerate(non_weather_features_in_data):
+                        try:
+                            ax = axes_flat[idx]
+                            
+                            # Find the correlation data for this non-weather feature
+                            non_weather_corr_data = None
+                            for feature, corr_data in sorted_features:
+                                if feature == non_weather_feature:
+                                    non_weather_corr_data = corr_data
+                                    break
+                            
+                            if non_weather_corr_data is None:
+                                ax.text(0.5, 0.5, f'No data for\n{non_weather_feature}', 
+                                    ha='center', va='center', transform=ax.transAxes)
+                                ax.set_title(non_weather_feature, fontsize=10)
+                                continue
+                            
+                            # Get clean data for this feature
+                            feature_data = analysis_df[[non_weather_feature, target_column]].dropna()
+                            
+                            if len(feature_data) < 2:
+                                ax.text(0.5, 0.5, f'Insufficient data\nfor {non_weather_feature}', 
+                                    ha='center', va='center', transform=ax.transAxes)
+                                ax.set_title(non_weather_feature, fontsize=10)
+                                continue
+                            
+                            # Create scatter plot with different color scheme for non-weather
+                            ax.scatter(feature_data[non_weather_feature], feature_data[target_column], 
+                                    alpha=0.6, s=12, c='darkorange')
+                            
+                            # Set labels and title
+                            ax.set_xlabel(non_weather_feature, fontsize=9)
+                            ax.set_ylabel(target_column if idx % n_cols == 0 else '', fontsize=9)  # Only leftmost plots get y-label
+                            ax.set_title(f'{non_weather_feature}\nr = {non_weather_corr_data["pearson"]:.3f}', fontsize=10)
+                            ax.grid(True, alpha=0.3)
+                            
+                            # Rotate x-axis labels if needed
+                            ax.tick_params(axis='x', labelsize=8)
+                            ax.tick_params(axis='y', labelsize=8)
+                            
+                        except Exception as e:
+                            print(f"        Warning: Could not plot non-weather feature {non_weather_feature}: {e}")
+                            axes_flat[idx].text(0.5, 0.5, f'Error plotting\n{non_weather_feature}', 
+                                            ha='center', va='center', transform=axes_flat[idx].transAxes)
+                            axes_flat[idx].set_title(non_weather_feature, fontsize=10)
+                    
+                    # Hide empty subplots
+                    for idx in range(n_non_weather_features, len(axes_flat)):
+                        axes_flat[idx].set_visible(False)
+                    
+                    # Add overall title
+                    fig.suptitle(f'Non-Weather Features vs {target_column}\n'
+                            f'Dataset: {filename} | Total Non-Weather Features: {n_non_weather_features}', 
+                            fontsize=14, y=0.98)
+                    
+                    # Adjust layout
+                    plt.tight_layout()
+                    plt.subplots_adjust(top=0.92)
+                    
+                    # Save combined non-weather plot
+                    non_weather_plot_path = os.path.join(scatter_plots_dir, f"combined_non_weather_features_{filename.replace('.csv', '.png')}")
+                    plt.savefig(non_weather_plot_path, dpi=300, bbox_inches='tight')
+                    plt.close()
+                    
+                    print(f"        ✓ Saved combined non-weather scatter plot with {n_non_weather_features} features: {os.path.basename(non_weather_plot_path)}")
+                else:
+                    print(f"        ⚠ No non-weather features found in data to create combined plot")
                 
                 # Create feature ranking analysis
                 feature_ranking_stats = {
@@ -7712,7 +7941,10 @@ class TrainingPipeline:
                     'features_analyzed': len(correlations),
                     'analysis_types': [
                         'correlation_heatmap',
+                        'strong_correlation_heatmap',
                         'scatter_plots',
+                        'combined_weather_scatter_plot',
+                        'combined_non_weather_scatter_plot',
                         'feature_ranking',
                         'statistical_analysis'
                     ],
@@ -7722,12 +7954,17 @@ class TrainingPipeline:
                         'feature': sorted_features[0][0],
                         'pearson_correlation': float(sorted_features[0][1]['pearson']),
                         'p_value': float(sorted_features[0][1]['pearson_p_value'])
-                    } if sorted_features else None
+                    } if sorted_features else None,
+                    'weather_features_analyzed': len([f for f in ALL_WEATHER_FEATURES if f in [feat[0] for feat in sorted_features]]),
+                    'total_weather_features_available': len(ALL_WEATHER_FEATURES),
+                    'non_weather_features_analyzed': len([f for f in [feat[0] for feat in sorted_features] if f not in ALL_WEATHER_FEATURES])
                 }
                 
                 print(f"    numeric_correlation_analysis: Successfully completed analysis")
                 print(f"      File processed: {filename}")
                 print(f"      Features analyzed: {len(correlations)}")
+                print(f"      Weather features found: {len([f for f in ALL_WEATHER_FEATURES if f in [feat[0] for feat in sorted_features]])}/{len(ALL_WEATHER_FEATURES)}")
+                print(f"      Non-weather features found: {len([f for f in [feat[0] for feat in sorted_features] if f not in ALL_WEATHER_FEATURES])}")
                 print(f"      Analysis outputs saved to: {analysis_output_dir}")
                 
                 return summary_stats
