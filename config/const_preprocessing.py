@@ -7,6 +7,7 @@ PREPROCESSING_STATE_MACHINE = {
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
+    "add_weather_scenarios_col": True,
     "process_actual_time_column": True,
     "filter_columns": True,
     "convert_boolean_to_numeric": True,
@@ -27,18 +28,19 @@ FOLDER_FILTER_BY_TARGET_STATION = "data/output/2-filter_by_target_station"
 FOLDER_PROCESS_CAUSES_COLUMN = "data/output/3-process_causes_column"
 FOLDER_ADD_TRAIN_DELAYED_FEATURE = "data/output/4-add_train_delayed_feature"
 FOLDER_MERGE_WEATHER_COLUMNS = "data/output/5-merge_weather_columns"
+FOLDER_ADD_WEATHER_SCENARIOS_COL = "data/output/6-add_weather_scenarios_col"
 
-FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/6-process_actual_time_column"
-FOLDER_FILTER_COLUMNS = "data/output/7-filter_columns"
-FOLDER_CONVERT_BOOLEAN_TO_NUMERIC = "data/output/8-convert_boolean_to_numeric"
-FOLDER_HANDLE_MISSING_VALUES = "data/output/9-handle_missing_values"
-FOLDER_CONVERT_HOUR_TO_SINCOS = "data/output/10-convert_hour_to_sincos"
-FOLDER_CONVERT_MONTH_TO_SINCOS = "data/output/11-convert_month_to_sincos"
-FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS = "data/output/12-convert_dayofweek_to_sincos"
-FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS = "data/output/13-drop_original_temporal_columns"
-FOLDER_SELECT_TARGET = "data/output/14-select_target"
-FOLDER_FILTER_STRONG_WEATHER_CAUSES = "data/output/15-filter_strong_weather_causes"
-FOLDER_REMOVE_DUPLICATES = "data/output/16-remove_duplicates"
+FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/7-process_actual_time_column"
+FOLDER_FILTER_COLUMNS = "data/output/8-filter_columns"
+FOLDER_CONVERT_BOOLEAN_TO_NUMERIC = "data/output/9-convert_boolean_to_numeric"
+FOLDER_HANDLE_MISSING_VALUES = "data/output/10-handle_missing_values"
+FOLDER_CONVERT_HOUR_TO_SINCOS = "data/output/11-convert_hour_to_sincos"
+FOLDER_CONVERT_MONTH_TO_SINCOS = "data/output/12-convert_month_to_sincos"
+FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS = "data/output/13-convert_dayofweek_to_sincos"
+FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS = "data/output/14-drop_original_temporal_columns"
+FOLDER_SELECT_TARGET = "data/output/15-select_target"
+FOLDER_FILTER_STRONG_WEATHER_CAUSES = "data/output/16-filter_strong_weather_causes"
+FOLDER_REMOVE_DUPLICATES = "data/output/17-remove_duplicates"
 
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/100-preprocessed"

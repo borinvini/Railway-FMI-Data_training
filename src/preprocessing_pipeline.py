@@ -12,6 +12,7 @@ from src.file_utils import generate_output_path, save_dataframe_to_csv
 
 from config.const_preprocessing import (
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
+    FOLDER_ADD_WEATHER_SCENARIOS_COL,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
     FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS,
     FOLDER_CONVERT_HOUR_TO_SINCOS,
@@ -466,6 +467,33 @@ class PreprocessingPipeline:
                 result["errors"].append("merge_weather_columns skipped - no data available")
         else:
             print(f"    ⊝ merge_weather_columns (disabled)")
+
+        if state_machine.get("add_weather_scenarios_col", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → add_weather_scenarios_col")
+                    weather_scenarios_df = self.add_weather_scenarios_col(dataframe=result["data"], month_id=file_id)
+                    
+                    if weather_scenarios_df is not None:
+                        result["data"] = weather_scenarios_df
+                        result["steps_executed"].append("add_weather_scenarios_col")
+                        result["file_info"]["rows"] = len(weather_scenarios_df)
+                        result["file_info"]["columns"] = len(weather_scenarios_df.columns)
+                        print(f"      ✓ Added weather scenarios column for {len(weather_scenarios_df)} rows")
+                    else:
+                        result["errors"].append("add_weather_scenarios_col failed")
+                        print(f"      ✗ Failed to add weather scenarios column")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"add_weather_scenarios_col failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ add_weather_scenarios_col (no data available)")
+                result["errors"].append("add_weather_scenarios_col skipped - no data available")
+        else:
+            print(f"    ⊝ add_weather_scenarios_col (disabled)")
 
 
         if state_machine.get("process_actual_time_column", False):
@@ -1545,6 +1573,64 @@ class PreprocessingPipeline:
                 print(f"Error merging weather columns: {e}")
                 logger.error(f"Error merging weather columns: {str(e)}")
                 return dataframe  # Return original dataframe on error
+
+    def add_weather_scenarios_col(self, dataframe=None, month_id=None):
+        """
+        Placeholder stage to add weather scenarios column to the dataframe.
+        Currently just passes through the dataframe and saves it to a new folder.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process.
+        month_id : str, optional
+            Month identifier for logging purposes.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe (unchanged for now).
+        """
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"\n{'='*60}")
+        print(f"STAGE: add_weather_scenarios_col")
+        print(f"{'='*60}")
+        print(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        try:
+            # TODO: Add your weather scenarios logic here
+            # For now, we just pass through the dataframe
+            
+            print(f"Dataframe shape: {df.shape}")
+            print(f"Columns: {list(df.columns)}")
+            
+            # Save the dataframe to the new folder
+            print(f"\n--- SAVING add_weather_scenarios_col DATA ---")
+            
+            saved_file_path = save_dataframe_to_csv(
+                folder_path=FOLDER_ADD_WEATHER_SCENARIOS_COL,
+                month_id=self.current_file_id,
+                df=df,
+                file_prefix="add_weather_scenarios_col"
+            )
+            
+            print(f"✓ Successfully saved data to: {saved_file_path}")
+            print(f"{'='*60}\n")
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error in add_weather_scenarios_col stage: {e}")
+            raise
 
     def process_actual_time_column(self, dataframe=None, month_id=None):
         """
