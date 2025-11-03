@@ -37,6 +37,7 @@ from config.const_preprocessing import (
     TARGET_STATION_CODE,
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAIN_DELAY_MINUTES,
+    VALID_WEATHER_SCENARIO_FEATURES,
     WEATHER_COLS_TO_MERGE,
     VALID_TARGET_FEATURES,
     VALID_TRAIN_PREDICTION_FEATURES,
@@ -2190,6 +2191,13 @@ class PreprocessingPipeline:
                 columns_to_keep.extend(weather_cols_found)
                 print(f"Weather columns found: {weather_cols_found}")
                 logger.info(f"Weather columns found: {weather_cols_found}")
+                
+
+                # Add weather scenario features that exist in the dataframe
+                weather_scenario_cols_found = [col for col in VALID_WEATHER_SCENARIO_FEATURES if col in df.columns]
+                columns_to_keep.extend(weather_scenario_cols_found)
+                print(f"Weather scenario columns found: {weather_scenario_cols_found}")
+                logger.info(f"Weather scenario columns found: {weather_scenario_cols_found}")
                 
                 # Add utility columns if they exist
                 #utility_columns = ['data_year', 'train_id', 'causes']
