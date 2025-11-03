@@ -1574,63 +1574,169 @@ class PreprocessingPipeline:
                 logger.error(f"Error merging weather columns: {str(e)}")
                 return dataframe  # Return original dataframe on error
 
-    def add_weather_scenarios_col(self, dataframe=None, month_id=None):
+    def add_weather_scenarios_col(self, dataframe, output_file=None, month_id=None):
         """
-        Placeholder stage to add weather scenarios column to the dataframe.
-        Currently just passes through the dataframe and saves it to a new folder.
+        Add a categorical weather scenario column based on comprehensive weather conditions.
+        
+        This method categorizes weather into scenarios ranging from severe conditions 
+        (blizzards, heavy snow) to moderate conditions (fog, rain) to extreme temperature events.
         
         Parameters:
         -----------
         dataframe : pandas.DataFrame
-            The dataframe to process.
+            Input dataframe containing weather data with required columns:
+            - Air temperature, Wind speed, Gust speed, Relative humidity,
+            - Dew-point temperature, Precipitation amount, Precipitation intensity,
+            - Snow depth, Horizontal visibility
+        output_file : str, optional
+            Path to save the output CSV file with weather scenarios
         month_id : str, optional
-            Month identifier for logging purposes.
+            Identifier for the month being processed (e.g., '2024_01')
             
         Returns:
         --------
         pandas.DataFrame
-            The dataframe (unchanged for now).
+            Dataframe with added 'weather_scenario' column
         """
-        # Check if dataframe is provided
-        if dataframe is None:
-            print("Error: Dataframe must be provided")
-            return None
-            
+
+        # Create a copy to avoid modifying the original dataframe
         df = dataframe.copy()
+        
+        # Convert weather columns to numeric, handling any non-numeric values
+        weather_cols = [
+            'Air temperature', 'Wind speed', 'Gust speed', 'Relative humidity',
+            'Dew-point temperature', 'Precipitation amount', 'Precipitation intensity',
+            'Snow depth', 'Horizontal visibility'
+        ]
+        
+        for col in weather_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Initialize the weather_scenario column with default value
+        df['weather_scenario'] = 'Normal/Clear'
+        
+        # Apply weather scenario logic in priority order (most severe conditions first)
+        # This ensures that overlapping conditions are properly categorized
+        
+        # 1. BLIZZARD/WINTER STORM - Most severe winter condition
+        blizzard_mask = (
+            ((df['Precipitation intensity'] > 1) | (df['Precipitation amount'] > 3)) &
+            (df['Air temperature'] < 0) &
+            ((df['Wind speed'] > 10) | (df['Gust speed'] > 15)) &
+            (df['Horizontal visibility'] < 1000)
+        )
+        df.loc[blizzard_mask, 'weather_scenario'] = 'Blizzard/Winter Storm'
+        
+        # 2. HEAVY SNOW - Severe snowfall without blizzard conditions
+        heavy_snow_mask = (
+            ((df['Precipitation intensity'] > 2) | (df['Precipitation amount'] > 5)) &
+            (df['Air temperature'] < 0) &
+            (df['Snow depth'] > 0) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[heavy_snow_mask, 'weather_scenario'] = 'Heavy Snow'
+        
+        # 3. EXTREME COLD - Dangerous cold temperatures
+        extreme_cold_mask = (
+            (df['Air temperature'] < -20) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[extreme_cold_mask, 'weather_scenario'] = 'Extreme Cold'
+        
+        # 4. HEAVY RAIN - Intense rainfall events
+        heavy_rain_mask = (
+            ((df['Precipitation intensity'] > 4) | (df['Precipitation amount'] > 10)) &
+            (df['Air temperature'] > 2) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[heavy_rain_mask, 'weather_scenario'] = 'Heavy Rain'
+        
+        # 5. SLEET/FREEZING RAIN - Dangerous mixed precipitation
+        sleet_mask = (
+            ((df['Precipitation amount'] > 0) | (df['Precipitation intensity'] > 0)) &
+            (df['Air temperature'] >= -2) &
+            (df['Air temperature'] <= 2) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[sleet_mask, 'weather_scenario'] = 'Sleet/Freezing Rain'
+        
+        # 6. BLACK ICE CONDITIONS - Extremely hazardous road conditions
+        black_ice_mask = (
+            (df['Air temperature'] >= -2) &
+            (df['Air temperature'] <= 2) &
+            (df['Relative humidity'] > 80) &
+            (abs(df['Dew-point temperature'] - df['Air temperature']) < 2) &
+            (df['Precipitation amount'] > 0) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[black_ice_mask, 'weather_scenario'] = 'Black Ice Conditions'
+        
+        # 7. DENSE FOG - Low visibility conditions
+        dense_fog_mask = (
+            (df['Horizontal visibility'] < 1000) &
+            (df['Precipitation amount'] <= 0.1) &  # No or very light precipitation
+            (df['Relative humidity'] > 95) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[dense_fog_mask, 'weather_scenario'] = 'Dense Fog'
+        
+        # 8. HIGH WINDS/STORM - Strong wind events
+        high_winds_mask = (
+            ((df['Wind speed'] > 15) | (df['Gust speed'] > 20)) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[high_winds_mask, 'weather_scenario'] = 'High Winds/Storm'
+        
+        # 9. EXTREME HEAT - Dangerous high temperatures
+        extreme_heat_mask = (
+            (df['Air temperature'] > 30) &
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[extreme_heat_mask, 'weather_scenario'] = 'Extreme Heat'
+        
+        # Print summary statistics
+        month_str = f" for {month_id}" if month_id else ""
+        print(f"✓ Total records processed{month_str}: {len(df):,}")
         print(f"\n{'='*60}")
-        print(f"STAGE: add_weather_scenarios_col")
+        print(f"WEATHER SCENARIO DISTRIBUTION{month_str.upper()}:")
         print(f"{'='*60}")
-        print(f"Processing dataframe with {len(df)} rows and {len(df.columns)} columns")
         
-        if df.empty:
-            print("Warning: Empty dataframe")
-            return df
+        scenario_counts = df['weather_scenario'].value_counts()
+        scenario_percentages = (df['weather_scenario'].value_counts(normalize=True) * 100).round(2)
         
-        try:
-            # TODO: Add your weather scenarios logic here
-            # For now, we just pass through the dataframe
-            
-            print(f"Dataframe shape: {df.shape}")
-            print(f"Columns: {list(df.columns)}")
-            
-            # Save the dataframe to the new folder
-            print(f"\n--- SAVING add_weather_scenarios_col DATA ---")
-            
-            saved_file_path = save_dataframe_to_csv(
-                folder_path=FOLDER_ADD_WEATHER_SCENARIOS_COL,
-                month_id=self.current_file_id,
-                df=df,
-                file_prefix="add_weather_scenarios_col"
-            )
-            
-            print(f"✓ Successfully saved data to: {saved_file_path}")
-            print(f"{'='*60}\n")
-            
-            return df
-            
-        except Exception as e:
-            print(f"Error in add_weather_scenarios_col stage: {e}")
-            raise
+        for scenario in scenario_counts.index:
+            count = scenario_counts[scenario]
+            percentage = scenario_percentages[scenario]
+            print(f"{scenario:<25} : {count:>8,} ({percentage:>6.2f}%)")
+        
+        print(f"{'='*60}\n")
+        
+        # Additional statistics for data quality check
+        null_weather_data = df[weather_cols].isnull().sum().sum()
+        if null_weather_data > 0:
+            print(f"⚠ Warning: {null_weather_data} missing weather data points detected")
+        
+        # Ensure output folder exists
+        os.makedirs(FOLDER_ADD_WEATHER_SCENARIOS_COL, exist_ok=True)
+        
+        # Determine output file path
+        if output_file:
+            # If output_file is provided, use it
+            save_path = output_file
+        else:
+            # Generate filename based on month_id if available
+            if month_id:
+                filename = f"add_weather_scenarios_col_{month_id}.csv"
+            else:
+                filename = "add_weather_scenarios_col.csv"
+            save_path = os.path.join(FOLDER_ADD_WEATHER_SCENARIOS_COL, filename)
+        
+        # Save to CSV
+        df.to_csv(save_path, index=False)
+        print(f"✓ Data with weather scenarios saved to: {save_path}")
+        
+        return df
 
     def process_actual_time_column(self, dataframe=None, month_id=None):
         """
