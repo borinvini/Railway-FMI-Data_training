@@ -28,6 +28,7 @@ from config.const_preprocessing import (
     FOLDER_PROCESS_CAUSES_COLUMN,
     FOLDER_REMOVE_DUPLICATES,
     FOLDER_SELECT_TARGET,
+    FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
     PREPROCESSED_OUTPUT_FOLDER,
     TRAINING_READY_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
@@ -495,6 +496,32 @@ class PreprocessingPipeline:
         else:
             print(f"    ⊝ add_weather_scenarios_col (disabled)")
 
+        if state_machine.get("weather_scenario_one_hot_encoder", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → weather_scenario_one_hot_encoder")
+                    one_hot_df = self.weather_scenario_one_hot_encoder(dataframe=result["data"], month_id=file_id)
+                            
+                    if one_hot_df is not None:
+                        result["data"] = one_hot_df
+                        result["steps_executed"].append("weather_scenario_one_hot_encoder")
+                        result["file_info"]["rows"] = len(one_hot_df)
+                        result["file_info"]["columns"] = len(one_hot_df.columns)
+                        print(f"      ✓ Processed weather scenario encoding for {len(one_hot_df)} rows")
+                    else:
+                        result["errors"].append("weather_scenario_one_hot_encoder failed")
+                        print(f"      ✗ Failed to process weather scenario encoding")
+                        return result
+                                
+                except Exception as e:
+                    result["errors"].append(f"weather_scenario_one_hot_encoder failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ weather_scenario_one_hot_encoder (no data available)")
+                result["errors"].append("weather_scenario_one_hot_encoder skipped - no data available")
+        else:
+            print(f"    ⊝ weather_scenario_one_hot_encoder (disabled)")
 
         if state_machine.get("process_actual_time_column", False):
             if result["data"] is not None:
@@ -1626,7 +1653,7 @@ class PreprocessingPipeline:
             ((df['Wind speed'] > 10) | (df['Gust speed'] > 15)) &
             (df['Horizontal visibility'] < 1000)
         )
-        df.loc[blizzard_mask, 'weather_scenario'] = 'Blizzard/Winter Storm'
+        df.loc[blizzard_mask, 'weather_scenario'] = 'Blizzard'
         
         # 2. HEAVY SNOW - Severe snowfall without blizzard conditions
         heavy_snow_mask = (
@@ -1659,7 +1686,7 @@ class PreprocessingPipeline:
             (df['Air temperature'] <= 2) &
             (df['weather_scenario'] == 'Normal/Clear')
         )
-        df.loc[sleet_mask, 'weather_scenario'] = 'Sleet/Freezing Rain'
+        df.loc[sleet_mask, 'weather_scenario'] = 'Freezing Rain'
         
         # 6. BLACK ICE CONDITIONS - Extremely hazardous road conditions
         black_ice_mask = (
@@ -1686,7 +1713,7 @@ class PreprocessingPipeline:
             ((df['Wind speed'] > 15) | (df['Gust speed'] > 20)) &
             (df['weather_scenario'] == 'Normal/Clear')
         )
-        df.loc[high_winds_mask, 'weather_scenario'] = 'High Winds/Storm'
+        df.loc[high_winds_mask, 'weather_scenario'] = 'High Winds'
         
         # 9. EXTREME HEAT - Dangerous high temperatures
         extreme_heat_mask = (
@@ -1737,6 +1764,51 @@ class PreprocessingPipeline:
         print(f"✓ Data with weather scenarios saved to: {save_path}")
         
         return df
+
+    def weather_scenario_one_hot_encoder(self, dataframe, month_id=None):
+        """
+        Placeholder stage for future one-hot encoding of weather scenarios.
+        
+        Currently, this method simply passes through the dataframe and saves it
+        to the designated folder for tracking pipeline progress.
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            Input dataframe containing the 'weather_scenario' column from previous stage
+        month_id : str, optional
+            Identifier for the month being processed (e.g., '2024_01')
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The same dataframe passed through (no modifications)
+        """
+        try:
+            # Create a copy to maintain consistency with other pipeline methods
+            df = dataframe.copy()
+            
+            # Log the operation
+            print(f"\n--- SAVING weather_scenario_one_hot_encoder DATA ---")
+            print(f"✓ Processing {len(df):,} rows")
+            
+            # Save the dataframe to the designated folder
+            saved_file_path = save_dataframe_to_csv(
+                folder_path=FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
+                month_id=month_id if month_id else self.current_file_id,
+                df=df,
+                file_prefix="weather_scenario_one_hot_encoder"
+            )
+            
+            print(f"✓ Successfully saved data to: {saved_file_path}")
+            print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+            
+            return df
+            
+        except Exception as e:
+            print(f"✗ Error in weather_scenario_one_hot_encoder: {e}")
+            return None
+
 
     def process_actual_time_column(self, dataframe=None, month_id=None):
         """
