@@ -7,6 +7,7 @@ import re
 
 import numpy as np
 import pandas as pd
+from sklearn.preprocessing import OneHotEncoder
 
 from src.file_utils import generate_output_path, save_dataframe_to_csv
 
@@ -1767,10 +1768,23 @@ class PreprocessingPipeline:
 
     def weather_scenario_one_hot_encoder(self, dataframe, month_id=None):
         """
-        Placeholder stage for future one-hot encoding of weather scenarios.
+        Apply one-hot encoding to the weather_scenario column using scikit-learn's OneHotEncoder.
         
-        Currently, this method simply passes through the dataframe and saves it
-        to the designated folder for tracking pipeline progress.
+        This method transforms the categorical weather_scenario column into multiple binary columns,
+        one for each weather scenario category. The original weather_scenario column is dropped
+        after encoding.
+        
+        Weather Scenario Categories (10 total):
+        1. Normal/Clear
+        2. Blizzard
+        3. Heavy Snow
+        4. Extreme Cold
+        5. Heavy Rain
+        6. Freezing Rain
+        7. Black Ice Conditions
+        8. Dense Fog
+        9. High Winds
+        10. Extreme Heat
         
         Parameters:
         -----------
@@ -1782,17 +1796,118 @@ class PreprocessingPipeline:
         Returns:
         --------
         pandas.DataFrame
-            The same dataframe passed through (no modifications)
+            Dataframe with one-hot encoded weather scenario columns and original column removed
         """
         try:
-            # Create a copy to maintain consistency with other pipeline methods
+            # Create a copy to avoid modifying the original dataframe
             df = dataframe.copy()
             
-            # Log the operation
-            print(f"\n--- SAVING weather_scenario_one_hot_encoder DATA ---")
-            print(f"✓ Processing {len(df):,} rows")
+            # Define all expected weather scenario categories (order matters for consistency)
+            WEATHER_CATEGORIES = [
+                'Normal/Clear',
+                'Blizzard',
+                'Heavy Snow',
+                'Extreme Cold',
+                'Heavy Rain',
+                'Freezing Rain',
+                'Black Ice Conditions',
+                'Dense Fog',
+                'High Winds',
+                'Extreme Heat'
+            ]
             
-            # Save the dataframe to the designated folder
+            print(f"\n{'='*60}")
+            print(f"WEATHER SCENARIO ONE-HOT ENCODING")
+            print(f"{'='*60}")
+            print(f"Processing {len(df):,} rows")
+            
+            # Verify weather_scenario column exists
+            if 'weather_scenario' not in df.columns:
+                error_msg = "Error: 'weather_scenario' column not found in dataframe"
+                print(f"✗ {error_msg}")
+                print(f"Available columns: {list(df.columns)}")
+                return None
+            
+            # Check for missing values in weather_scenario
+            missing_count = df['weather_scenario'].isnull().sum()
+            if missing_count > 0:
+                print(f"⚠ Warning: {missing_count} missing values in weather_scenario column")
+                print(f"  Filling missing values with 'Normal/Clear'")
+                df['weather_scenario'].fillna('Normal/Clear', inplace=True)
+            
+            # Display current weather scenario distribution
+            print(f"\nWeather Scenario Distribution (before encoding):")
+            scenario_counts = df['weather_scenario'].value_counts()
+            for scenario, count in scenario_counts.items():
+                percentage = (count / len(df)) * 100
+                print(f"  {scenario:<25} : {count:>8,} ({percentage:>6.2f}%)")
+            
+            # Check for any unexpected categories
+            unique_scenarios = set(df['weather_scenario'].unique())
+            expected_scenarios = set(WEATHER_CATEGORIES)
+            unexpected = unique_scenarios - expected_scenarios
+            
+            if unexpected:
+                print(f"\n⚠ Warning: Found unexpected weather scenarios: {unexpected}")
+                print(f"  These will be treated as unknown categories by the encoder")
+            
+            # Initialize OneHotEncoder with specified categories
+            # handle_unknown='ignore' will handle any unexpected categories gracefully
+            # sparse_output=False returns a dense array (easier to work with)
+            encoder = OneHotEncoder(
+                categories=[WEATHER_CATEGORIES],
+                sparse_output=False,
+                handle_unknown='ignore',
+                dtype=int
+            )
+            
+            # Fit and transform the weather_scenario column
+            print(f"\n✓ Applying OneHotEncoder...")
+            encoded_array = encoder.fit_transform(df[['weather_scenario']])
+            
+            # Create column names for encoded features
+            # Format: weather_scenario_CategoryName
+            encoded_column_names = [
+                f'weather_scenario_{category.replace("/", "_").replace(" ", "_")}'
+                for category in WEATHER_CATEGORIES
+            ]
+            
+            # Create a dataframe from the encoded array
+            encoded_df = pd.DataFrame(
+                encoded_array,
+                columns=encoded_column_names,
+                index=df.index
+            )
+            
+            # Get the position of the weather_scenario column
+            weather_scenario_position = df.columns.get_loc('weather_scenario')
+            
+            # Drop the original weather_scenario column
+            df = df.drop(columns=['weather_scenario'])
+            
+            # Insert the encoded columns at the original position
+            # This keeps the new columns in a logical place in the dataframe
+            for i, col in enumerate(encoded_column_names):
+                df.insert(weather_scenario_position + i, col, encoded_df[col])
+            
+            # Print encoding results
+            print(f"\n{'='*60}")
+            print(f"ENCODING RESULTS:")
+            print(f"{'='*60}")
+            print(f"✓ Original column 'weather_scenario' dropped")
+            print(f"✓ Created {len(encoded_column_names)} one-hot encoded columns:")
+            
+            for col in encoded_column_names:
+                count_ones = df[col].sum()
+                percentage = (count_ones / len(df)) * 100
+                print(f"  {col:<50} : {count_ones:>8,} ({percentage:>6.2f}%)")
+            
+            print(f"\n✓ Final dataframe shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+            print(f"{'='*60}\n")
+            
+            # Save the dataframe with one-hot encoded features
+            print(f"--- SAVING weather_scenario_one_hot_encoder DATA ---")
+            
             saved_file_path = save_dataframe_to_csv(
                 folder_path=FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
                 month_id=month_id if month_id else self.current_file_id,
@@ -1800,15 +1915,15 @@ class PreprocessingPipeline:
                 file_prefix="weather_scenario_one_hot_encoder"
             )
             
-            print(f"✓ Successfully saved data to: {saved_file_path}")
-            print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+            print(f"✓ Successfully saved one-hot encoded data to: {saved_file_path}")
             
             return df
             
         except Exception as e:
             print(f"✗ Error in weather_scenario_one_hot_encoder: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-
 
     def process_actual_time_column(self, dataframe=None, month_id=None):
         """

@@ -91,7 +91,38 @@ CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
 BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']
 
 # Multi category features
-CATEGORICAL_FEATURES = ["month","hour","day_of_week","causes", "causes_related_to_weather"]
+CATEGORICAL_FEATURES = [
+    "month",
+    "hour",
+    "day_of_week",
+    "causes",
+    "causes_related_to_weather",
+    # Weather scenario one-hot encoded features
+    "weather_scenario_Normal_Clear",
+    "weather_scenario_Blizzard",
+    "weather_scenario_Heavy_Snow",
+    "weather_scenario_Extreme_Cold",
+    "weather_scenario_Heavy_Rain",
+    "weather_scenario_Freezing_Rain",
+    "weather_scenario_Black_Ice_Conditions",
+    "weather_scenario_Dense_Fog",
+    "weather_scenario_High_Winds",
+    "weather_scenario_Extreme_Heat"
+]
+
+# Define weather scenario feature columns
+VALID_WEATHER_SCENARIO_FEATURES = [
+    'weather_scenario_Normal_Clear',
+    'weather_scenario_Blizzard',
+    'weather_scenario_Heavy_Snow',
+    'weather_scenario_Extreme_Cold',
+    'weather_scenario_Heavy_Rain',
+    'weather_scenario_Freezing_Rain',
+    'weather_scenario_Black_Ice_Conditions',
+    'weather_scenario_Dense_Fog',
+    'weather_scenario_High_Winds',
+    'weather_scenario_Extreme_Heat'
+]
 
 # Set to True to drop trainStopping and commercialStop from training
 DROP_TRAIN_FEATURES = True
