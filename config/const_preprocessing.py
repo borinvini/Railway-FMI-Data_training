@@ -52,7 +52,7 @@ TRAINING_READY_OUTPUT_FOLDER = "data/output/101-preprocessed_training_ready"
 WEATHER_MISSING_THRESHOLD = 30.0
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes_eachStation_offset'  
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 
@@ -104,7 +104,7 @@ CATEGORICAL_FEATURES = [
     "weather_scenario_Extreme_Cold",
     "weather_scenario_Heavy_Rain",
     "weather_scenario_Freezing_Rain",
-    "weather_scenario_Black_Ice_Conditions",
+    "weather_scenario_Black_Ice",
     "weather_scenario_Dense_Fog",
     "weather_scenario_High_Winds",
     "weather_scenario_Extreme_Heat"
@@ -118,7 +118,7 @@ VALID_WEATHER_SCENARIO_FEATURES = [
     'weather_scenario_Extreme_Cold',
     'weather_scenario_Heavy_Rain',
     'weather_scenario_Freezing_Rain',
-    'weather_scenario_Black_Ice_Conditions',
+    'weather_scenario_Black_Ice',
     'weather_scenario_Dense_Fog',
     'weather_scenario_High_Winds',
     'weather_scenario_Extreme_Heat'

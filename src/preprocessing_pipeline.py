@@ -1699,7 +1699,7 @@ class PreprocessingPipeline:
             (df['Precipitation amount'] > 0) &
             (df['weather_scenario'] == 'Normal/Clear')
         )
-        df.loc[black_ice_mask, 'weather_scenario'] = 'Black Ice Conditions'
+        df.loc[black_ice_mask, 'weather_scenario'] = 'Black Ice'
         
         # 7. DENSE FOG - Low visibility conditions
         dense_fog_mask = (
@@ -1782,7 +1782,7 @@ class PreprocessingPipeline:
         4. Extreme Cold
         5. Heavy Rain
         6. Freezing Rain
-        7. Black Ice Conditions
+        7. Black Ice
         8. Dense Fog
         9. High Winds
         10. Extreme Heat
@@ -1811,7 +1811,7 @@ class PreprocessingPipeline:
                 'Extreme Cold',
                 'Heavy Rain',
                 'Freezing Rain',
-                'Black Ice Conditions',
+                'Black Ice',
                 'Dense Fog',
                 'High Winds',
                 'Extreme Heat'
@@ -2198,7 +2198,7 @@ class PreprocessingPipeline:
                 columns_to_keep.extend(weather_scenario_cols_found)
                 print(f"Weather scenario columns found: {weather_scenario_cols_found}")
                 logger.info(f"Weather scenario columns found: {weather_scenario_cols_found}")
-                
+
                 # Add utility columns if they exist
                 #utility_columns = ['data_year', 'train_id', 'causes']
                 #utility_cols_found = [col for col in utility_columns if col in df.columns]

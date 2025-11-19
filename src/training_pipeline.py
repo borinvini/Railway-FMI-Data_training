@@ -7520,6 +7520,22 @@ class TrainingPipeline:
         try:
             print(f"    numeric_correlation_analysis: Starting comprehensive numeric correlation analysis...")
             
+            # ═══════════════════════════════════════════════════════════════════════
+            # IEEE-COMPLIANT MATPLOTLIB CONFIGURATION
+            # ═══════════════════════════════════════════════════════════════════════
+            import matplotlib as mpl
+            mpl.rcParams.update({
+                'font.family': 'serif',
+                'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
+                'font.size': 8,
+                'axes.linewidth': 1.0,
+                'xtick.major.width': 1.0,
+                'ytick.major.width': 1.0,
+                'pdf.fonttype': 42,
+                'ps.fonttype': 42
+            })
+            # ═══════════════════════════════════════════════════════════════════════
+            
             # Create output directories
             analysis_output_dir = os.path.join(self.project_root, "data/output/numeric_correlation_analysis")
             correlation_plots_dir = os.path.join(analysis_output_dir, "correlation_plots")
@@ -7678,44 +7694,87 @@ class TrainingPipeline:
                 for i, (feature, corr_data) in enumerate(sorted_features[:5]):
                     print(f"        {i+1}. {feature}: r={corr_data['pearson']:.4f}, p={corr_data['pearson_p_value']:.4f}")
                 
-                # CREATE MODIFIED CORRELATION HEATMAP (EXCLUDING TARGET & SELF-CORRELATIONS)
-                # Only use numeric features, excluding the target column
+                # ═══════════════════════════════════════════════════════════════════════
+                # CREATE IEEE-COMPLIANT CORRELATION HEATMAP
+                # ═══════════════════════════════════════════════════════════════════════
                 correlation_matrix = analysis_df[numeric_features].corr()
                 
-                plt.figure(figsize=(12, 10))
+                # IEEE figure size: 7.16" for two-column
+                fig_width = 7.16
+                fig_height = fig_width * 0.85
+                
+                plt.figure(figsize=(fig_width, fig_height))
                 
                 # Create mask to hide both upper triangle AND diagonal (self-correlations)
                 mask_upper = np.triu(np.ones_like(correlation_matrix, dtype=bool), k=1)
                 mask_diagonal = np.eye(correlation_matrix.shape[0], dtype=bool)
                 mask = mask_upper | mask_diagonal  # Combine both masks
                 
-                sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0,
-                        mask=mask, square=True, fmt='.3f', cbar_kws={'shrink': 0.8})
-                plt.title(f'Feature-to-Feature Correlations (Excluding Target & Self-Correlations) - {filename}', fontsize=16, pad=20)
+                # IEEE-compliant heatmap
+                sns.heatmap(correlation_matrix, 
+                        annot=True, 
+                        cmap='RdBu_r',
+                        center=0,
+                        mask=mask, 
+                        square=True, 
+                        fmt='.3f',
+                        annot_kws={'fontsize': 6},
+                        cbar_kws={'shrink': 0.8, 'label': 'Correlation Coefficient'},
+                        vmin=-1.0,
+                        vmax=1.0)
+                
+                # NO TITLE - IEEE uses captions below figures
                 plt.tight_layout()
                 
-                heatmap_path = os.path.join(correlation_plots_dir, f"correlation_heatmap_{filename.replace('.csv', '.png')}")
-                plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
+                # Save both PNG and PDF (PDF for IEEE submission)
+                heatmap_path_png = os.path.join(correlation_plots_dir, f"correlation_heatmap_{filename.replace('.csv', '.png')}")
+                heatmap_path_pdf = os.path.join(correlation_plots_dir, f"correlation_heatmap_{filename.replace('.csv', '.pdf')}")
+                
+                plt.savefig(heatmap_path_png, dpi=300, bbox_inches='tight', pad_inches=0.05)
+                plt.savefig(heatmap_path_pdf, bbox_inches='tight', pad_inches=0.05)
                 plt.close()
                 
-                print(f"        Saved correlation heatmap: {os.path.basename(heatmap_path)}")
+                print(f"        Saved IEEE-compliant correlation heatmap:")
+                print(f"          PNG: {os.path.basename(heatmap_path_png)}")
+                print(f"          PDF: {os.path.basename(heatmap_path_pdf)}")
                 
-                # Optional: Create a separate heatmap showing only strong correlations
+                # ═══════════════════════════════════════════════════════════════════════
+                # CREATE IEEE-COMPLIANT STRONG CORRELATIONS HEATMAP
+                # ═══════════════════════════════════════════════════════════════════════
                 correlation_threshold = 0.3  # Adjust as needed
                 strong_corr_matrix = correlation_matrix.copy()
                 strong_corr_matrix[abs(strong_corr_matrix) < correlation_threshold] = np.nan
                 
-                plt.figure(figsize=(12, 10))
-                sns.heatmap(strong_corr_matrix, annot=True, cmap='coolwarm', center=0,
-                        mask=mask, square=True, fmt='.3f', cbar_kws={'shrink': 0.8})
-                plt.title(f'Strong Feature Correlations (|r| ≥ {correlation_threshold}) - {filename}', fontsize=16, pad=20)
+                plt.figure(figsize=(fig_width, fig_height))
+                
+                sns.heatmap(strong_corr_matrix, 
+                        annot=True, 
+                        cmap='RdBu_r',
+                        center=0,
+                        mask=mask, 
+                        square=True, 
+                        fmt='.3f',
+                        annot_kws={'fontsize': 6},
+                        cbar_kws={'shrink': 0.8, 'label': 'Correlation Coefficient'},
+                        linewidths=0.2,
+                        linecolor='gray',
+                        vmin=-1.0,
+                        vmax=1.0)
+                
+                # NO TITLE for IEEE
                 plt.tight_layout()
                 
-                strong_heatmap_path = os.path.join(correlation_plots_dir, f"strong_correlation_heatmap_{filename.replace('.csv', '.png')}")
-                plt.savefig(strong_heatmap_path, dpi=300, bbox_inches='tight')
+                strong_heatmap_png = os.path.join(correlation_plots_dir, f"strong_correlation_heatmap_{filename.replace('.csv', '.png')}")
+                strong_heatmap_pdf = os.path.join(correlation_plots_dir, f"strong_correlation_heatmap_{filename.replace('.csv', '.pdf')}")
+                
+                plt.savefig(strong_heatmap_png, dpi=300, bbox_inches='tight', pad_inches=0.05)
+                plt.savefig(strong_heatmap_pdf, bbox_inches='tight', pad_inches=0.05)
                 plt.close()
                 
-                print(f"        Saved strong correlations heatmap: {os.path.basename(strong_heatmap_path)}")
+                print(f"        Saved IEEE-compliant strong correlations heatmap:")
+                print(f"          PNG: {os.path.basename(strong_heatmap_png)}")
+                print(f"          PDF: {os.path.basename(strong_heatmap_pdf)}")
+                # ═══════════════════════════════════════════════════════════════════════
                 
                 # Create scatter plots for ALL features vs target
                 print(f"      Creating scatter plots for all {len(sorted_features)} features...")
@@ -7758,199 +7817,6 @@ class TrainingPipeline:
                     except Exception as e:
                         print(f"        Warning: Could not create scatter plot for {feature}: {e}")
                         plt.close()
-                        continue
-                
-                print(f"      ✓ Successfully created {len(sorted_features)} scatter plots")
-                
-                # CREATE COMBINED WEATHER FEATURES SCATTER PLOT
-                print(f"      Creating combined weather features scatter plot...")
-                weather_features_in_data = [feature for feature in ALL_WEATHER_FEATURES if feature in [f[0] for f in sorted_features]]
-                
-                if weather_features_in_data:
-                    # Calculate optimal subplot grid
-                    n_weather_features = len(weather_features_in_data)
-                    n_cols = min(4, n_weather_features)  # Maximum 4 columns
-                    n_rows = (n_weather_features + n_cols - 1) // n_cols  # Ceiling division
-                    
-                    # Create figure with subplots
-                    fig_width = n_cols * 5
-                    fig_height = n_rows * 4
-                    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
-                    
-                    # Handle single subplot case
-                    if n_weather_features == 1:
-                        axes = [axes]
-                    elif n_rows == 1:
-                        axes = axes.reshape(1, -1)
-                    elif n_cols == 1:
-                        axes = axes.reshape(-1, 1)
-                    
-                    # Flatten axes array for easier indexing
-                    axes_flat = axes.flatten() if hasattr(axes, 'flatten') else [axes]
-                    
-                    # Plot each weather feature
-                    for idx, weather_feature in enumerate(weather_features_in_data):
-                        try:
-                            ax = axes_flat[idx]
-                            
-                            # Find the correlation data for this weather feature
-                            weather_corr_data = None
-                            for feature, corr_data in sorted_features:
-                                if feature == weather_feature:
-                                    weather_corr_data = corr_data
-                                    break
-                            
-                            if weather_corr_data is None:
-                                ax.text(0.5, 0.5, f'No data for\n{weather_feature}', 
-                                    ha='center', va='center', transform=ax.transAxes)
-                                ax.set_title(weather_feature, fontsize=10)
-                                continue
-                            
-                            # Get clean data for this feature
-                            feature_data = analysis_df[[weather_feature, target_column]].dropna()
-                            
-                            if len(feature_data) < 2:
-                                ax.text(0.5, 0.5, f'Insufficient data\nfor {weather_feature}', 
-                                    ha='center', va='center', transform=ax.transAxes)
-                                ax.set_title(weather_feature, fontsize=10)
-                                continue
-                            
-                            # Create scatter plot
-                            ax.scatter(feature_data[weather_feature], feature_data[target_column], 
-                                    alpha=0.6, s=12, c='steelblue')
-                            
-                            # Set labels and title
-                            ax.set_xlabel(weather_feature, fontsize=9)
-                            ax.set_ylabel(target_column if idx % n_cols == 0 else '', fontsize=9)  # Only leftmost plots get y-label
-                            ax.set_title(f'{weather_feature}\nr = {weather_corr_data["pearson"]:.3f}', fontsize=10)
-                            ax.grid(True, alpha=0.3)
-                            
-                            # Rotate x-axis labels if needed
-                            ax.tick_params(axis='x', labelsize=8)
-                            ax.tick_params(axis='y', labelsize=8)
-                            
-                        except Exception as e:
-                            print(f"        Warning: Could not plot weather feature {weather_feature}: {e}")
-                            axes_flat[idx].text(0.5, 0.5, f'Error plotting\n{weather_feature}', 
-                                            ha='center', va='center', transform=axes_flat[idx].transAxes)
-                            axes_flat[idx].set_title(weather_feature, fontsize=10)
-                    
-                    # Hide empty subplots
-                    for idx in range(n_weather_features, len(axes_flat)):
-                        axes_flat[idx].set_visible(False)
-                    
-                    # Add overall title
-                    fig.suptitle(f'Weather Features vs {target_column}\n'
-                            f'Dataset: {filename} | Total Weather Features: {n_weather_features}', 
-                            fontsize=14, y=0.98)
-                    
-                    # Adjust layout
-                    plt.tight_layout()
-                    plt.subplots_adjust(top=0.92)
-                    
-                    # Save combined weather plot
-                    weather_plot_path = os.path.join(scatter_plots_dir, f"combined_weather_features_{filename.replace('.csv', '.png')}")
-                    plt.savefig(weather_plot_path, dpi=300, bbox_inches='tight')
-                    plt.close()
-                    
-                    print(f"        ✓ Saved combined weather scatter plot with {n_weather_features} features: {os.path.basename(weather_plot_path)}")
-                else:
-                    print(f"        ⚠ No weather features found in data to create combined plot")
-                
-                # CREATE COMBINED NON-WEATHER FEATURES SCATTER PLOT
-                print(f"      Creating combined non-weather features scatter plot...")
-                non_weather_features_in_data = [feature for feature in [f[0] for f in sorted_features] if feature not in ALL_WEATHER_FEATURES]
-                
-                if non_weather_features_in_data:
-                    # Calculate optimal subplot grid
-                    n_non_weather_features = len(non_weather_features_in_data)
-                    n_cols = min(4, n_non_weather_features)  # Maximum 4 columns
-                    n_rows = (n_non_weather_features + n_cols - 1) // n_cols  # Ceiling division
-                    
-                    # Create figure with subplots
-                    fig_width = n_cols * 5
-                    fig_height = n_rows * 4
-                    fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
-                    
-                    # Handle single subplot case
-                    if n_non_weather_features == 1:
-                        axes = [axes]
-                    elif n_rows == 1:
-                        axes = axes.reshape(1, -1)
-                    elif n_cols == 1:
-                        axes = axes.reshape(-1, 1)
-                    
-                    # Flatten axes array for easier indexing
-                    axes_flat = axes.flatten() if hasattr(axes, 'flatten') else [axes]
-                    
-                    # Plot each non-weather feature
-                    for idx, non_weather_feature in enumerate(non_weather_features_in_data):
-                        try:
-                            ax = axes_flat[idx]
-                            
-                            # Find the correlation data for this non-weather feature
-                            non_weather_corr_data = None
-                            for feature, corr_data in sorted_features:
-                                if feature == non_weather_feature:
-                                    non_weather_corr_data = corr_data
-                                    break
-                            
-                            if non_weather_corr_data is None:
-                                ax.text(0.5, 0.5, f'No data for\n{non_weather_feature}', 
-                                    ha='center', va='center', transform=ax.transAxes)
-                                ax.set_title(non_weather_feature, fontsize=10)
-                                continue
-                            
-                            # Get clean data for this feature
-                            feature_data = analysis_df[[non_weather_feature, target_column]].dropna()
-                            
-                            if len(feature_data) < 2:
-                                ax.text(0.5, 0.5, f'Insufficient data\nfor {non_weather_feature}', 
-                                    ha='center', va='center', transform=ax.transAxes)
-                                ax.set_title(non_weather_feature, fontsize=10)
-                                continue
-                            
-                            # Create scatter plot with different color scheme for non-weather
-                            ax.scatter(feature_data[non_weather_feature], feature_data[target_column], 
-                                    alpha=0.6, s=12, c='darkorange')
-                            
-                            # Set labels and title
-                            ax.set_xlabel(non_weather_feature, fontsize=9)
-                            ax.set_ylabel(target_column if idx % n_cols == 0 else '', fontsize=9)  # Only leftmost plots get y-label
-                            ax.set_title(f'{non_weather_feature}\nr = {non_weather_corr_data["pearson"]:.3f}', fontsize=10)
-                            ax.grid(True, alpha=0.3)
-                            
-                            # Rotate x-axis labels if needed
-                            ax.tick_params(axis='x', labelsize=8)
-                            ax.tick_params(axis='y', labelsize=8)
-                            
-                        except Exception as e:
-                            print(f"        Warning: Could not plot non-weather feature {non_weather_feature}: {e}")
-                            axes_flat[idx].text(0.5, 0.5, f'Error plotting\n{non_weather_feature}', 
-                                            ha='center', va='center', transform=axes_flat[idx].transAxes)
-                            axes_flat[idx].set_title(non_weather_feature, fontsize=10)
-                    
-                    # Hide empty subplots
-                    for idx in range(n_non_weather_features, len(axes_flat)):
-                        axes_flat[idx].set_visible(False)
-                    
-                    # Add overall title
-                    fig.suptitle(f'Non-Weather Features vs {target_column}\n'
-                            f'Dataset: {filename} | Total Non-Weather Features: {n_non_weather_features}', 
-                            fontsize=14, y=0.98)
-                    
-                    # Adjust layout
-                    plt.tight_layout()
-                    plt.subplots_adjust(top=0.92)
-                    
-                    # Save combined non-weather plot
-                    non_weather_plot_path = os.path.join(scatter_plots_dir, f"combined_non_weather_features_{filename.replace('.csv', '.png')}")
-                    plt.savefig(non_weather_plot_path, dpi=300, bbox_inches='tight')
-                    plt.close()
-                    
-                    print(f"        ✓ Saved combined non-weather scatter plot with {n_non_weather_features} features: {os.path.basename(non_weather_plot_path)}")
-                else:
-                    print(f"        ⚠ No non-weather features found in data to create combined plot")
                 
                 # Create feature ranking analysis
                 feature_ranking_stats = {
@@ -7978,85 +7844,57 @@ class TrainingPipeline:
                 with open(ranking_path, 'w') as f:
                     json.dump(feature_ranking_stats, f, indent=2)
                 
-                print(f"        Saved feature ranking: {os.path.basename(ranking_path)}")
+                print(f"      Saved feature ranking: {os.path.basename(ranking_path)}")
                 
-                # Save statistical analysis
-                statistical_stats = {
-                    'filename': filename,
-                    'target_column': target_column,
-                    'total_correlations_calculated': len(correlations),
-                    'analysis_timestamp': pd.Timestamp.now().isoformat(),
-                    'correlations': {
-                        feature: {
-                            'pearson_correlation': float(corr_data['pearson']),
-                            'spearman_correlation': float(corr_data['spearman']),
-                            'pearson_p_value': float(corr_data['pearson_p_value']),
-                            'spearman_p_value': float(corr_data['spearman_p_value']),
-                            'sample_size': int(corr_data['sample_size'])
-                        }
-                        for feature, corr_data in correlations.items()
-                    }
+                # Save comprehensive results summary
+                results_summary_path = os.path.join(analysis_output_dir, f"analysis_summary_{filename.replace('.csv', '.txt')}")
+                with open(results_summary_path, 'w') as f:
+                    f.write(f"Comprehensive Numeric Correlation Analysis Summary\n")
+                    f.write(f"=" * 80 + "\n\n")
+                    f.write(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"Target File: {filename}\n")
+                    f.write(f"Target Column: {target_column}\n\n")
+                    f.write(f"Dataset Statistics:\n")
+                    f.write(f"  Original Shape: {df.shape}\n")
+                    f.write(f"  Analysis Shape: {analysis_df.shape}\n")
+                    f.write(f"  Features Analyzed: {len(correlations)}\n\n")
+                    f.write(f"Top 10 Correlated Features (by absolute Pearson correlation):\n")
+                    f.write(f"-" * 80 + "\n")
+                    for i, (feature, corr_data) in enumerate(sorted_features[:10], 1):
+                        f.write(f"{i:2d}. {feature:30s} | Pearson: {corr_data['pearson']:+.4f} | Spearman: {corr_data['spearman']:+.4f}\n")
+                    f.write(f"\n")
+                
+                print(f"      Saved analysis summary: {os.path.basename(results_summary_path)}")
+                
+                # Final success message
+                print(f"\n    numeric_correlation_analysis: Successfully completed analysis!")
+                print(f"      Output directory: {analysis_output_dir}")
+                
+                return {
+                    "success": True,
+                    "processed_files": 1,
+                    "target_file": target_file_path,
+                    "target_variable": target_column,
+                    "features_analyzed": len(correlations),
+                    "output_path": analysis_output_dir,
+                    "correlation_plots": correlation_plots_dir,
+                    "scatter_plots": scatter_plots_dir,
+                    "analysis_types": ["Feature-to-Feature Correlation Matrix", "Scatter Plots", "Statistical Analysis"]
                 }
-                
-                stats_path = os.path.join(statistical_analysis_dir, f"stats_{filename.replace('.csv', '.json')}")
-                with open(stats_path, 'w') as f:
-                    json.dump(statistical_stats, f, indent=2)
-                
-                print(f"        Saved statistical analysis: {os.path.basename(stats_path)}")
-                
-                # Create summary report
-                summary_stats = {
-                    'success': True,
-                    'processed_files': 1,
-                    'target_file': target_file_path,
-                    'filename': filename,
-                    'dataset_shape': list(df.shape),
-                    'analysis_dataset_shape': list(analysis_df.shape),
-                    'features_analyzed': len(correlations),
-                    'analysis_types': [
-                        'correlation_heatmap',
-                        'strong_correlation_heatmap',
-                        'scatter_plots',
-                        'combined_weather_scatter_plot',
-                        'combined_non_weather_scatter_plot',
-                        'feature_ranking',
-                        'statistical_analysis'
-                    ],
-                    'output_path': analysis_output_dir,
-                    'target_variable': target_column,
-                    'top_correlation': {
-                        'feature': sorted_features[0][0],
-                        'pearson_correlation': float(sorted_features[0][1]['pearson']),
-                        'p_value': float(sorted_features[0][1]['pearson_p_value'])
-                    } if sorted_features else None,
-                    'weather_features_analyzed': len([f for f in ALL_WEATHER_FEATURES if f in [feat[0] for feat in sorted_features]]),
-                    'total_weather_features_available': len(ALL_WEATHER_FEATURES),
-                    'non_weather_features_analyzed': len([f for f in [feat[0] for feat in sorted_features] if f not in ALL_WEATHER_FEATURES])
-                }
-                
-                print(f"    numeric_correlation_analysis: Successfully completed analysis")
-                print(f"      File processed: {filename}")
-                print(f"      Features analyzed: {len(correlations)}")
-                print(f"      Weather features found: {len([f for f in ALL_WEATHER_FEATURES if f in [feat[0] for feat in sorted_features]])}/{len(ALL_WEATHER_FEATURES)}")
-                print(f"      Non-weather features found: {len([f for f in [feat[0] for feat in sorted_features] if f not in ALL_WEATHER_FEATURES])}")
-                print(f"      Analysis outputs saved to: {analysis_output_dir}")
-                
-                return summary_stats
                 
             except Exception as e:
-                error_msg = f"Error processing file {filename}: {str(e)}"
+                error_msg = f"Error during numeric correlation analysis: {str(e)}"
                 print(f"    numeric_correlation_analysis: {error_msg}")
                 import traceback
                 traceback.print_exc()
                 return {
                     "success": False,
                     "error": error_msg,
-                    "processed_files": 0,
-                    "target_file": target_file_path
+                    "processed_files": 0
                 }
-            
+        
         except Exception as e:
-            error_msg = f"Error in numeric_correlation_analysis: {str(e)}"
+            error_msg = f"numeric_correlation_analysis failed: {str(e)}"
             print(f"    numeric_correlation_analysis: {error_msg}")
             import traceback
             traceback.print_exc()
@@ -8065,7 +7903,8 @@ class TrainingPipeline:
                 "error": error_msg,
                 "processed_files": 0
             }
-        
+
+
     def data_distribution_analysis(self, csv_files=None, target_file=None):
         """
         Data Distribution Analysis Pipeline Stage
@@ -8364,19 +8203,24 @@ class TrainingPipeline:
         
     def target_feature_analysis(self, target_file=None):
         """
-        Analyze ALL target features in VALID_TARGET_FEATURES to understand patterns.
+        Analyzes target features and creates IEEE-standard publication-ready visualizations.
         
-        This pipeline stage creates comprehensive visualizations and analysis for each target feature:
-        1. Binary bar plot: Delayed (>=0) vs Non-delayed (<0) trains (for continuous features)
-        2. Binary bar plot: Delayed (>=TRAIN_DELAY_MINUTES) vs Non-delayed (<TRAIN_DELAY_MINUTES) trains (for continuous features)
-        3. Distribution plots for categorical features
+        Creates comprehensive distribution and statistical analysis for each target feature:
+        - Regression features: Delay distribution with multiple thresholds
+        - Classification features: Category distribution plots
+        - Unknown features: Appropriate visualization based on data type
         
-        Both plots include percentages for better understanding of class distribution.
-        
-        This stage helps understand:
-        - Overall distribution patterns for each target feature
-        - Impact of different delay thresholds
-        - Class balance for classification problems
+        IEEE-compliant plot specifications:
+        - Font: Times New Roman 8pt
+        - Figure size: One-column width (3.5 inches)
+        - Line width: 1.0pt for main lines
+        - Marker size: 3pt
+        - Grid lines: 0.5pt
+        - Format: PDF (vector format)
+        - No titles (use figure captions instead)
+        - Y-axis: 30% headroom above maximum value
+        - Labels: Normal weight (non-bold)
+        - Side-by-side plots: Y-axis only on left plot, consistent scale
         
         Parameters:
         -----------
@@ -8389,6 +8233,27 @@ class TrainingPipeline:
             Results of the target feature analysis including plots and statistics for all features
         """
         try:
+            # IEEE-compliant plot settings
+            plt.rcParams.update({
+                'font.family': 'serif',
+                'font.serif': ['Times New Roman'],
+                'font.size': 8,
+                'axes.labelsize': 8,
+                'axes.titlesize': 8,
+                'xtick.labelsize': 8,
+                'ytick.labelsize': 8,
+                'legend.fontsize': 8,
+                'figure.titlesize': 8,
+                'lines.linewidth': 1.0,
+                'lines.markersize': 3,
+                'grid.linewidth': 0.5,
+                'axes.linewidth': 0.5,
+                'xtick.major.width': 0.5,
+                'ytick.major.width': 0.5,
+                'pdf.fonttype': 42,  # TrueType fonts
+                'ps.fonttype': 42
+            })
+            
             print(f"    target_feature_analysis: Starting comprehensive target feature analysis...")
             print(f"    target_feature_analysis: Analyzing {len(VALID_TARGET_FEATURES)} target features: {VALID_TARGET_FEATURES}")
             print(f"    target_feature_analysis: Delay threshold: {TRAIN_DELAY_MINUTES} minutes")
@@ -8489,7 +8354,7 @@ class TrainingPipeline:
                 
                 if is_regression:
                     # For continuous/regression target features - create delay analysis plots
-                    print(f"    target_feature_analysis: Creating regression analysis plots for '{target_feature}'...")
+                    print(f"    target_feature_analysis: Creating IEEE-compliant regression analysis plots for '{target_feature}'...")
                     
                     # Calculate statistics for different delay definitions
                     # Definition 1: Delayed if >= 0 (any positive delay)
@@ -8510,66 +8375,71 @@ class TrainingPipeline:
                     print(f"      Zero threshold (>=0): {delayed_zero_count:,} delayed ({delayed_zero_percentage:.1f}%)")
                     print(f"      {TRAIN_DELAY_MINUTES}min threshold (>={TRAIN_DELAY_MINUTES}): {delayed_threshold_count:,} delayed ({delayed_threshold_percentage:.1f}%)")
                     
-                    # Create figure with two subplots
-                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
+                    # Create IEEE-compliant figure with two subplots
+                    # One-column width: 3.5 inches
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 2.5))  # 2x one-column width for side-by-side
                     
-                    # Plot 1: Binary classification with zero threshold (>0)
-                    categories_zero = ['Non-delayed\n(<=0 min)', 'Delayed\n(>0 min)']
+                    # Prepare data for both plots
+                    categories_zero = ['Non-delayed\n(≤0 min)', 'Delayed\n(>0 min)']
                     counts_zero = [non_delayed_zero_count, delayed_zero_count]
                     percentages_zero = [non_delayed_zero_percentage, delayed_zero_percentage]
                     colors_zero = ['#2E8B57', '#DC143C']  # SeaGreen, Crimson
                     
-                    bars1 = ax1.bar(categories_zero, counts_zero, color=colors_zero, alpha=0.8, edgecolor='black', linewidth=1)
-                    ax1.set_title(f'Train Delay Distribution\n(Zero Threshold: >=0 minutes)', fontsize=14, fontweight='bold', pad=20)
-                    ax1.set_ylabel('Number of Trains', fontsize=12)
-                    ax1.set_xlabel('Train Status', fontsize=12)
+                    categories_threshold = [f'Non-delayed\n(<{TRAIN_DELAY_MINUTES} min)', 
+                                        f'Delayed\n(≥{TRAIN_DELAY_MINUTES} min)']
+                    counts_threshold = [non_delayed_threshold_count, delayed_threshold_count]
+                    percentages_threshold = [non_delayed_threshold_percentage, delayed_threshold_percentage]
+                    colors_threshold = ['#4682B4', '#FF6347']  # SteelBlue, Tomato
+                    
+                    # Calculate overall maximum for consistent scaling across both plots
+                    overall_max = max(max(counts_zero), max(counts_threshold))
+                    
+                    # Plot 1: Binary classification with zero threshold (>0)
+                    bars1 = ax1.bar(categories_zero, counts_zero, color=colors_zero, alpha=0.7, 
+                                edgecolor='black', linewidth=0.5)
+                    ax1.set_ylabel('Number of Trains')
+                    ax1.set_xlabel('Train Status')
                     
                     # Add percentage labels on bars
                     for bar, count, percentage in zip(bars1, counts_zero, percentages_zero):
                         height = bar.get_height()
                         ax1.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
                                 f'{count:,}\n({percentage:.1f}%)',
-                                ha='center', va='bottom', fontweight='bold', fontsize=11)
+                                ha='center', va='bottom', fontsize=7)
                     
                     # Add grid for better readability
-                    ax1.grid(True, alpha=0.3, axis='y')
-                    ax1.set_ylim(0, max(counts_zero) * 1.15)
+                    ax1.grid(True, alpha=0.2, axis='y', linewidth=0.5)
+                    ax1.set_ylim(0, overall_max * 1.3)  # Use overall max for consistent scale
                     
                     # Plot 2: Binary classification with TRAIN_DELAY_MINUTES threshold
-                    categories_threshold = [f'Non-delayed\n(<{TRAIN_DELAY_MINUTES} min)', f'Delayed\n(>={TRAIN_DELAY_MINUTES} min)']
-                    counts_threshold = [non_delayed_threshold_count, delayed_threshold_count]
-                    percentages_threshold = [non_delayed_threshold_percentage, delayed_threshold_percentage]
-                    colors_threshold = ['#4682B4', '#FF6347']  # SteelBlue, Tomato
+                    bars2 = ax2.bar(categories_threshold, counts_threshold, color=colors_threshold, alpha=0.7, 
+                                edgecolor='black', linewidth=0.5)
+                    ax2.set_xlabel('Train Status')
                     
-                    bars2 = ax2.bar(categories_threshold, counts_threshold, color=colors_threshold, alpha=0.8, edgecolor='black', linewidth=1)
-                    ax2.set_title(f'Train Delay Distribution\n({TRAIN_DELAY_MINUTES}-Minute Threshold: >={TRAIN_DELAY_MINUTES} minutes)', fontsize=14, fontweight='bold', pad=20)
-                    ax2.set_ylabel('Number of Trains', fontsize=12)
-                    ax2.set_xlabel('Train Status', fontsize=12)
+                    # Hide the entire y-axis (ticks, numbers, and label) on the right plot
+                    ax2.yaxis.set_visible(False)
                     
                     # Add percentage labels on bars
                     for bar, count, percentage in zip(bars2, counts_threshold, percentages_threshold):
                         height = bar.get_height()
                         ax2.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
                                 f'{count:,}\n({percentage:.1f}%)',
-                                ha='center', va='bottom', fontweight='bold', fontsize=11)
+                                ha='center', va='bottom', fontsize=7)
                     
                     # Add grid for better readability
-                    ax2.grid(True, alpha=0.3, axis='y')
-                    ax2.set_ylim(0, max(counts_threshold) * 1.15)
+                    ax2.grid(True, alpha=0.2, axis='y', linewidth=0.5)
+                    ax2.set_ylim(0, overall_max * 1.3)  # Use overall max for consistent scale
                     
-                    # Add overall title and adjust layout
-                    fig.suptitle(target_feature, fontsize=16, fontweight='bold', y=0.95)
-                    
+                    # IEEE standard: No title on figure, use caption instead
                     plt.tight_layout()
-                    plt.subplots_adjust(top=0.85)
                     
-                    # Save the combined plot
+                    # Save the combined plot in PDF format (IEEE preferred vector format)
                     safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
-                    plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_delay_distribution.png")
-                    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                    plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_delay_distribution.pdf")
+                    plt.savefig(plot_path, format='pdf', bbox_inches='tight')
                     plt.close()
                     
-                    print(f"    target_feature_analysis: Saved delay distribution plot: {os.path.basename(plot_path)}")
+                    print(f"    target_feature_analysis: Saved IEEE-compliant delay distribution plot: {os.path.basename(plot_path)}")
                     
                     # Store results for this feature
                     all_feature_results[target_feature] = {
@@ -8606,7 +8476,7 @@ class TrainingPipeline:
                     
                 elif is_classification:
                     # For categorical/classification target features - create distribution plots
-                    print(f"    target_feature_analysis: Creating classification analysis plots for '{target_feature}'...")
+                    print(f"    target_feature_analysis: Creating IEEE-compliant classification analysis plots for '{target_feature}'...")
                     
                     # Get value counts and proportions
                     value_counts = target_data.value_counts()
@@ -8617,42 +8487,42 @@ class TrainingPipeline:
                         percentage = value_proportions[value]
                         print(f"      {value}: {count:,} ({percentage:.1f}%)")
                     
-                    # Create single plot for categorical data
-                    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                    # Create IEEE-compliant single plot for categorical data
+                    # One-column width: 3.5 inches
+                    fig, ax = plt.subplots(1, 1, figsize=(3.5, 2.5))
                     
                     # Create bar plot
                     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd'][:len(value_counts)]
                     bars = ax.bar(range(len(value_counts)), value_counts.values, 
-                                color=colors, alpha=0.8, edgecolor='black', linewidth=1)
+                                color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
                     
-                    # Set labels and title
-                    ax.set_title(f'{target_feature} Distribution\nTotal samples: {target_rows:,}', 
-                            fontsize=16, fontweight='bold', pad=20)
-                    ax.set_ylabel('Count', fontsize=12)
-                    ax.set_xlabel('Categories', fontsize=12)
+                    # Set labels (IEEE standard: no title)
+                    ax.set_ylabel('Count')
+                    ax.set_xlabel('Categories')
                     ax.set_xticks(range(len(value_counts)))
-                    ax.set_xticklabels([str(x) for x in value_counts.index], rotation=45 if len(value_counts) > 3 else 0)
+                    ax.set_xticklabels([str(x) for x in value_counts.index], 
+                                    rotation=45 if len(value_counts) > 3 else 0)
                     
                     # Add percentage labels on bars
                     for bar, count, percentage in zip(bars, value_counts.values, value_proportions.values):
                         height = bar.get_height()
                         ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
                             f'{count:,}\n({percentage:.1f}%)',
-                            ha='center', va='bottom', fontweight='bold', fontsize=11)
+                            ha='center', va='bottom', fontsize=7)
                     
                     # Add grid for better readability
-                    ax.grid(True, alpha=0.3, axis='y')
-                    ax.set_ylim(0, max(value_counts.values) * 1.15)
+                    ax.grid(True, alpha=0.2, axis='y', linewidth=0.5)
+                    ax.set_ylim(0, max(value_counts.values) * 1.3)
                     
                     plt.tight_layout()
                     
-                    # Save the plot
+                    # Save the plot in PDF format
                     safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
-                    plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_distribution.png")
-                    plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                    plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_distribution.pdf")
+                    plt.savefig(plot_path, format='pdf', bbox_inches='tight')
                     plt.close()
                     
-                    print(f"    target_feature_analysis: Saved distribution plot: {os.path.basename(plot_path)}")
+                    print(f"    target_feature_analysis: Saved IEEE-compliant distribution plot: {os.path.basename(plot_path)}")
                     
                     # Store results for this feature
                     all_feature_results[target_feature] = {
@@ -8676,7 +8546,7 @@ class TrainingPipeline:
                 else:
                     # Handle unknown feature type
                     print(f"    target_feature_analysis: Warning - '{target_feature}' not found in REGRESSION_PROBLEM or CLASSIFICATION_PROBLEM lists.")
-                    print(f"    target_feature_analysis: Creating basic distribution analysis...")
+                    print(f"    target_feature_analysis: Creating basic IEEE-compliant distribution analysis...")
                     
                     # Determine if numeric or categorical based on data type
                     is_numeric = pd.api.types.is_numeric_dtype(target_data)
@@ -8696,30 +8566,32 @@ class TrainingPipeline:
                         print(f"      Mean: {mean_val:.4f}, Median: {median_val:.4f}, Std: {std_val:.4f}")
                         print(f"      Range: [{min_val:.4f}, {max_val:.4f}]")
                         
-                        # Create histogram
-                        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                        # Create IEEE-compliant histogram
+                        fig, ax = plt.subplots(1, 1, figsize=(3.5, 2.5))
                         
-                        ax.hist(target_data, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
-                        ax.set_title(f'{target_feature} Distribution\nTotal samples: {target_rows:,}', 
-                                fontsize=16, fontweight='bold', pad=20)
-                        ax.set_xlabel(target_feature, fontsize=12)
-                        ax.set_ylabel('Frequency', fontsize=12)
-                        ax.grid(True, alpha=0.3)
+                        ax.hist(target_data, bins=50, alpha=0.7, color='skyblue', 
+                            edgecolor='black', linewidth=0.5)
+                        ax.set_xlabel(target_feature)
+                        ax.set_ylabel('Frequency')
+                        ax.grid(True, alpha=0.2, linewidth=0.5)
                         
-                        # Add statistics text box
-                        stats_text = f'Mean: {mean_val:.3f}\nMedian: {median_val:.3f}\nStd: {std_val:.3f}\nRange: [{min_val:.3f}, {max_val:.3f}]'
-                        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
-                            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+                        # Add statistics text box (small, unobtrusive)
+                        stats_text = (f'μ={mean_val:.2f}, σ={std_val:.2f}\n'
+                                    f'Range: [{min_val:.2f}, {max_val:.2f}]')
+                        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=6,
+                            verticalalignment='top', 
+                            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5, 
+                                    linewidth=0.5))
                         
                         plt.tight_layout()
                         
                         # Save the plot
                         safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
-                        plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_histogram.png")
-                        plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                        plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_histogram.pdf")
+                        plt.savefig(plot_path, format='pdf', bbox_inches='tight')
                         plt.close()
                         
-                        print(f"    target_feature_analysis: Saved histogram plot: {os.path.basename(plot_path)}")
+                        print(f"    target_feature_analysis: Saved IEEE-compliant histogram plot: {os.path.basename(plot_path)}")
                         
                         # Store results
                         all_feature_results[target_feature] = {
@@ -8756,42 +8628,46 @@ class TrainingPipeline:
                         if len(value_counts) > 10:
                             print(f"      ... and {len(value_counts) - 10} more categories")
                         
-                        # Create bar plot (show top 20 categories)
-                        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+                        # Create IEEE-compliant bar plot (show top 20 categories)
+                        top_categories = min(20, len(value_counts))
+                        plot_value_counts = value_counts.head(top_categories)
+                        plot_value_proportions = value_proportions.head(top_categories)
                         
-                        top_categories = value_counts.head(20)
-                        top_proportions = value_proportions.head(20)
+                        fig, ax = plt.subplots(1, 1, figsize=(3.5, 3.5))  # Slightly taller for many categories
                         
-                        bars = ax.bar(range(len(top_categories)), top_categories.values, 
-                                    alpha=0.7, color='lightcoral', edgecolor='black', linewidth=1)
+                        # Create horizontal bar plot for better label readability
+                        colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(plot_value_counts)))
+                        bars = ax.barh(range(len(plot_value_counts))[::-1], plot_value_counts.values, 
+                                    color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
                         
-                        ax.set_title(f'{target_feature} Distribution (Top 20 Categories)\nTotal samples: {target_rows:,}', 
-                                fontsize=16, fontweight='bold', pad=20)
-                        ax.set_ylabel('Count', fontsize=12)
-                        ax.set_xlabel('Categories', fontsize=12)
-                        ax.set_xticks(range(len(top_categories)))
-                        ax.set_xticklabels([str(x)[:15] + '...' if len(str(x)) > 15 else str(x) 
-                                        for x in top_categories.index], rotation=45, ha='right')
+                        ax.set_xlabel('Count')
+                        ax.set_ylabel('Categories')
+                        ax.set_yticks(range(len(plot_value_counts))[::-1])
+                        ax.set_yticklabels([str(x)[:20] + '...' if len(str(x)) > 20 else str(x) 
+                                        for x in plot_value_counts.index], fontsize=6)
                         
-                        # Add percentage labels on top bars only
-                        for i, (bar, count, percentage) in enumerate(zip(bars[:10], top_categories.values[:10], top_proportions.values[:10])):
-                            height = bar.get_height()
-                            ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                                f'{count:,}\n({percentage:.1f}%)',
-                                ha='center', va='bottom', fontweight='bold', fontsize=9)
+                        # Add percentage labels on bars
+                        for i, (bar, count, percentage) in enumerate(zip(bars, 
+                                                                        plot_value_counts.values, 
+                                                                        plot_value_proportions.values)):
+                            width = bar.get_width()
+                            ax.text(width + width*0.01, bar.get_y() + bar.get_height()/2,
+                                f'{count:,} ({percentage:.1f}%)',
+                                ha='left', va='center', fontsize=6)
                         
-                        ax.grid(True, alpha=0.3, axis='y')
-                        ax.set_ylim(0, max(top_categories.values) * 1.15)
+                        # Add grid for better readability
+                        ax.grid(True, alpha=0.2, axis='x', linewidth=0.5)
+                        ax.set_xlim(0, max(plot_value_counts.values) * 1.3)
                         
                         plt.tight_layout()
                         
                         # Save the plot
                         safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
-                        plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_categories.png")
-                        plt.savefig(plot_path, dpi=300, bbox_inches='tight', facecolor='white')
+                        plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_categories.pdf")
+                        plt.savefig(plot_path, format='pdf', bbox_inches='tight')
                         plt.close()
                         
-                        print(f"    target_feature_analysis: Saved categories plot: {os.path.basename(plot_path)}")
+                        print(f"    target_feature_analysis: Saved IEEE-compliant categories plot: {os.path.basename(plot_path)}")
                         
                         # Store results
                         all_feature_results[target_feature] = {
@@ -8834,7 +8710,8 @@ class TrainingPipeline:
                 f.write(f"Target Features Analyzed: {len(VALID_TARGET_FEATURES)}\n")
                 f.write(f"Successful Analyses: {successful_analyses}\n")
                 f.write(f"Failed Analyses: {len(VALID_TARGET_FEATURES) - successful_analyses}\n")
-                f.write(f"Total Plots Created: {total_plots_created}\n\n")
+                f.write(f"Total Plots Created: {total_plots_created}\n")
+                f.write(f"Plot Format: IEEE-compliant PDF (vector format)\n\n")
                 
                 f.write("INDIVIDUAL FEATURE RESULTS:\n")
                 f.write("-" * 40 + "\n\n")
@@ -8854,6 +8731,9 @@ class TrainingPipeline:
                         f.write(f"  Error: {result['error']}\n")
                     f.write("\n")
             
+            # Reset matplotlib to default settings
+            plt.rcParams.update(plt.rcParamsDefault)
+            
             # Prepare final results
             results = {
                 "success": True,
@@ -8866,31 +8746,25 @@ class TrainingPipeline:
                 "total_rows": total_rows,
                 "output_directory": analysis_output_dir,
                 "plots_created": total_plots_created,
+                "plot_format": "IEEE-compliant PDF",
                 "results_json": results_json_path,
                 "summary_report": summary_report_path,
                 "feature_results": all_feature_results
             }
             
             print(f"\n    target_feature_analysis: Analysis completed successfully!")
-            print(f"    target_feature_analysis: Successfully analyzed: {successful_analyses}/{len(VALID_TARGET_FEATURES)} target features")
-            print(f"    target_feature_analysis: Total plots created: {total_plots_created}")
+            print(f"    target_feature_analysis: {total_plots_created} IEEE-compliant plots saved in PDF format")
             print(f"    target_feature_analysis: Output directory: {analysis_output_dir}")
-            print(f"    target_feature_analysis: Results saved to JSON: {os.path.basename(results_json_path)}")
-            print(f"    target_feature_analysis: Summary report saved: {os.path.basename(summary_report_path)}")
             
             return results
             
         except Exception as e:
-            error_msg = f"Error in target feature analysis: {str(e)}"
+            error_msg = f"Error in target_feature_analysis: {str(e)}"
             print(f"    target_feature_analysis: {error_msg}")
             import traceback
             traceback.print_exc()
-            
             return {
                 "success": False,
                 "error": error_msg,
-                "processed_files": 0,
-                "target_features_analyzed": VALID_TARGET_FEATURES,
-                "successful_analyses": 0,
-                "failed_analyses": len(VALID_TARGET_FEATURES)
+                "processed_files": 0
             }
