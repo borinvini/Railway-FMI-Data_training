@@ -8211,7 +8211,7 @@ class TrainingPipeline:
         - Unknown features: Appropriate visualization based on data type
         
         IEEE-compliant plot specifications:
-        - Font: Times New Roman 8pt
+        - Font: Serif 12pt
         - Figure size: One-column width (3.5 inches)
         - Line width: 1.0pt for main lines
         - Marker size: 3pt
@@ -8233,17 +8233,20 @@ class TrainingPipeline:
             Results of the target feature analysis including plots and statistics for all features
         """
         try:
-            # IEEE-compliant plot settings
+            # Set seaborn palette first
+            sns.set_palette("husl")
+            
+            # IEEE-compliant plot settings - ALL FONTS SET TO 12, SERIF FAMILY
+            # Applied AFTER style reset to ensure they take effect
             plt.rcParams.update({
                 'font.family': 'serif',
-                'font.serif': ['Times New Roman'],
-                'font.size': 8,
-                'axes.labelsize': 8,
-                'axes.titlesize': 8,
-                'xtick.labelsize': 8,
-                'ytick.labelsize': 8,
-                'legend.fontsize': 8,
-                'figure.titlesize': 8,
+                'font.size': 12,
+                'axes.labelsize': 12,
+                'axes.titlesize': 12,
+                'xtick.labelsize': 12,
+                'ytick.labelsize': 12,
+                'legend.fontsize': 12,
+                'figure.titlesize': 12,
                 'lines.linewidth': 1.0,
                 'lines.markersize': 3,
                 'grid.linewidth': 0.5,
@@ -8348,10 +8351,6 @@ class TrainingPipeline:
                 is_regression = target_feature in REGRESSION_PROBLEM
                 is_classification = target_feature in CLASSIFICATION_PROBLEM
                 
-                # Set up the plotting style
-                plt.style.use('default')
-                sns.set_palette("husl")
-                
                 if is_regression:
                     # For continuous/regression target features - create delay analysis plots
                     print(f"    target_feature_analysis: Creating IEEE-compliant regression analysis plots for '{target_feature}'...")
@@ -8377,7 +8376,7 @@ class TrainingPipeline:
                     
                     # Create IEEE-compliant figure with two subplots
                     # One-column width: 3.5 inches
-                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 2.5))  # 2x one-column width for side-by-side
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 2.5))
                     
                     # Prepare data for both plots
                     categories_zero = ['Non-delayed\n(≤0 min)', 'Delayed\n(>0 min)']
@@ -8397,43 +8396,42 @@ class TrainingPipeline:
                     # Plot 1: Binary classification with zero threshold (>0)
                     bars1 = ax1.bar(categories_zero, counts_zero, color=colors_zero, alpha=0.7, 
                                 edgecolor='black', linewidth=0.5)
-                    ax1.set_ylabel('Number of Trains')
-                    ax1.set_xlabel('Train Status')
+                    ax1.set_ylabel('Number of Trains', fontsize=12)
+                    ax1.set_xlabel('Train Status', fontsize=12)
+                    ax1.tick_params(axis='both', labelsize=12)
                     
-                    # Add percentage labels on bars
-                    for bar, count, percentage in zip(bars1, counts_zero, percentages_zero):
+                    # Add percentage labels on bars (percentage only)
+                    for bar, percentage in zip(bars1, percentages_zero):
                         height = bar.get_height()
                         ax1.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                                f'{count:,}\n({percentage:.1f}%)',
-                                ha='center', va='bottom', fontsize=7)
+                            f'{percentage:.1f}%',
+                            ha='center', va='bottom', fontsize=12)
                     
                     # Add grid for better readability
                     ax1.grid(True, alpha=0.2, axis='y', linewidth=0.5)
-                    ax1.set_ylim(0, overall_max * 1.3)  # Use overall max for consistent scale
+                    ax1.set_ylim(0, overall_max * 1.3)
                     
-                    # Plot 2: Binary classification with TRAIN_DELAY_MINUTES threshold
+                    # Plot 2: Binary classification with threshold (>=TRAIN_DELAY_MINUTES)
                     bars2 = ax2.bar(categories_threshold, counts_threshold, color=colors_threshold, alpha=0.7, 
                                 edgecolor='black', linewidth=0.5)
-                    ax2.set_xlabel('Train Status')
+                    ax2.set_xlabel('Train Status', fontsize=12)
+                    ax2.tick_params(axis='both', labelsize=12)
+                    ax2.set_yticklabels([])  # Remove y-axis labels for right plot
                     
-                    # Hide the entire y-axis (ticks, numbers, and label) on the right plot
-                    ax2.yaxis.set_visible(False)
-                    
-                    # Add percentage labels on bars
-                    for bar, count, percentage in zip(bars2, counts_threshold, percentages_threshold):
+                    # Add percentage labels on bars (percentage only)
+                    for bar, percentage in zip(bars2, percentages_threshold):
                         height = bar.get_height()
                         ax2.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                                f'{count:,}\n({percentage:.1f}%)',
-                                ha='center', va='bottom', fontsize=7)
+                            f'{percentage:.1f}%',
+                            ha='center', va='bottom', fontsize=12)
                     
                     # Add grid for better readability
                     ax2.grid(True, alpha=0.2, axis='y', linewidth=0.5)
-                    ax2.set_ylim(0, overall_max * 1.3)  # Use overall max for consistent scale
+                    ax2.set_ylim(0, overall_max * 1.3)
                     
-                    # IEEE standard: No title on figure, use caption instead
                     plt.tight_layout()
                     
-                    # Save the combined plot in PDF format (IEEE preferred vector format)
+                    # Save the plot in PDF format
                     safe_feature_name = target_feature.replace('/', '_').replace('\\', '_').replace(' ', '_')
                     plot_path = os.path.join(plots_dir, f"target_feature_{safe_feature_name}_delay_distribution.pdf")
                     plt.savefig(plot_path, format='pdf', bbox_inches='tight')
@@ -8473,7 +8471,7 @@ class TrainingPipeline:
                         "plot_path": plot_path
                     }
                     total_plots_created += 1
-                    
+                        
                 elif is_classification:
                     # For categorical/classification target features - create distribution plots
                     print(f"    target_feature_analysis: Creating IEEE-compliant classification analysis plots for '{target_feature}'...")
@@ -8497,18 +8495,19 @@ class TrainingPipeline:
                                 color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
                     
                     # Set labels (IEEE standard: no title)
-                    ax.set_ylabel('Count')
-                    ax.set_xlabel('Categories')
+                    ax.set_ylabel('Count', fontsize=12)
+                    ax.set_xlabel('Categories', fontsize=12)
                     ax.set_xticks(range(len(value_counts)))
                     ax.set_xticklabels([str(x) for x in value_counts.index], 
-                                    rotation=45 if len(value_counts) > 3 else 0)
+                                    rotation=45 if len(value_counts) > 3 else 0, fontsize=12)
+                    ax.tick_params(axis='both', labelsize=12)
                     
-                    # Add percentage labels on bars
-                    for bar, count, percentage in zip(bars, value_counts.values, value_proportions.values):
+                    # Add percentage labels on bars (percentage only)
+                    for bar, percentage in zip(bars, value_proportions.values):
                         height = bar.get_height()
                         ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                            f'{count:,}\n({percentage:.1f}%)',
-                            ha='center', va='bottom', fontsize=7)
+                            f'{percentage:.1f}%',
+                            ha='center', va='bottom', fontsize=12)
                     
                     # Add grid for better readability
                     ax.grid(True, alpha=0.2, axis='y', linewidth=0.5)
@@ -8571,14 +8570,15 @@ class TrainingPipeline:
                         
                         ax.hist(target_data, bins=50, alpha=0.7, color='skyblue', 
                             edgecolor='black', linewidth=0.5)
-                        ax.set_xlabel(target_feature)
-                        ax.set_ylabel('Frequency')
+                        ax.set_xlabel(target_feature, fontsize=12)
+                        ax.set_ylabel('Frequency', fontsize=12)
+                        ax.tick_params(axis='both', labelsize=12)
                         ax.grid(True, alpha=0.2, linewidth=0.5)
                         
-                        # Add statistics text box (small, unobtrusive)
+                        # Add statistics text box
                         stats_text = (f'μ={mean_val:.2f}, σ={std_val:.2f}\n'
                                     f'Range: [{min_val:.2f}, {max_val:.2f}]')
-                        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=6,
+                        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=12,
                             verticalalignment='top', 
                             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5, 
                                     linewidth=0.5))
@@ -8640,20 +8640,19 @@ class TrainingPipeline:
                         bars = ax.barh(range(len(plot_value_counts))[::-1], plot_value_counts.values, 
                                     color=colors, alpha=0.7, edgecolor='black', linewidth=0.5)
                         
-                        ax.set_xlabel('Count')
-                        ax.set_ylabel('Categories')
+                        ax.set_xlabel('Count', fontsize=12)
+                        ax.set_ylabel('Categories', fontsize=12)
                         ax.set_yticks(range(len(plot_value_counts))[::-1])
                         ax.set_yticklabels([str(x)[:20] + '...' if len(str(x)) > 20 else str(x) 
-                                        for x in plot_value_counts.index], fontsize=6)
+                                        for x in plot_value_counts.index], fontsize=12)
+                        ax.tick_params(axis='both', labelsize=12)
                         
-                        # Add percentage labels on bars
-                        for i, (bar, count, percentage) in enumerate(zip(bars, 
-                                                                        plot_value_counts.values, 
-                                                                        plot_value_proportions.values)):
+                        # Add percentage labels on bars (percentage only)
+                        for i, (bar, percentage) in enumerate(zip(bars, plot_value_proportions.values)):
                             width = bar.get_width()
                             ax.text(width + width*0.01, bar.get_y() + bar.get_height()/2,
-                                f'{count:,} ({percentage:.1f}%)',
-                                ha='left', va='center', fontsize=6)
+                                f'{percentage:.1f}%',
+                                ha='left', va='center', fontsize=12)
                         
                         # Add grid for better readability
                         ax.grid(True, alpha=0.2, axis='x', linewidth=0.5)
@@ -8711,58 +8710,78 @@ class TrainingPipeline:
                 f.write(f"Successful Analyses: {successful_analyses}\n")
                 f.write(f"Failed Analyses: {len(VALID_TARGET_FEATURES) - successful_analyses}\n")
                 f.write(f"Total Plots Created: {total_plots_created}\n")
-                f.write(f"Plot Format: IEEE-compliant PDF (vector format)\n\n")
+                f.write(f"Plot Format: IEEE-compliant PDF (vector)\n\n")
                 
-                f.write("INDIVIDUAL FEATURE RESULTS:\n")
-                f.write("-" * 40 + "\n\n")
+                f.write("="*60 + "\n")
+                f.write("FEATURE ANALYSIS DETAILS\n")
+                f.write("="*60 + "\n\n")
                 
                 for feature, result in all_feature_results.items():
                     f.write(f"Feature: {feature}\n")
-                    if result["success"]:
+                    f.write("-"*40 + "\n")
+                    
+                    if result.get("success"):
                         f.write(f"  Status: SUCCESS\n")
-                        f.write(f"  Type: {result['feature_type']}\n")
-                        f.write(f"  Valid Rows: {result['valid_rows']:,}\n")
-                        f.write(f"  Plots Created: {result['plots_created']}\n")
+                        f.write(f"  Feature Type: {result.get('feature_type', 'unknown')}\n")
+                        f.write(f"  Valid Rows: {result.get('valid_rows', 0):,}\n")
+                        
                         if 'statistics' in result:
-                            f.write(f"  Statistics: Available\n")
-                        f.write(f"  Plot Path: {result['plot_path']}\n")
+                            stats = result['statistics']
+                            
+                            if 'zero_threshold' in stats:
+                                f.write(f"  Zero Threshold Analysis:\n")
+                                f.write(f"    Delayed: {stats['zero_threshold']['delayed_count']:,} ({stats['zero_threshold']['delayed_percentage']:.1f}%)\n")
+                                f.write(f"    Non-delayed: {stats['zero_threshold']['non_delayed_count']:,} ({stats['zero_threshold']['non_delayed_percentage']:.1f}%)\n")
+                            
+                            if 'train_delay_threshold' in stats:
+                                f.write(f"  {stats['train_delay_threshold']['threshold_minutes']}-min Threshold Analysis:\n")
+                                f.write(f"    Delayed: {stats['train_delay_threshold']['delayed_count']:,} ({stats['train_delay_threshold']['delayed_percentage']:.1f}%)\n")
+                                f.write(f"    Non-delayed: {stats['train_delay_threshold']['non_delayed_count']:,} ({stats['train_delay_threshold']['non_delayed_percentage']:.1f}%)\n")
+                            
+                            if 'basic_stats' in stats:
+                                f.write(f"  Basic Statistics:\n")
+                                f.write(f"    Mean: {stats['basic_stats']['mean']:.4f}\n")
+                                f.write(f"    Median: {stats['basic_stats']['median']:.4f}\n")
+                                f.write(f"    Std Dev: {stats['basic_stats']['std']:.4f}\n")
+                                f.write(f"    Range: [{stats['basic_stats']['min']:.4f}, {stats['basic_stats']['max']:.4f}]\n")
+                            
+                            if 'value_counts' in stats:
+                                f.write(f"  Value Distribution (Top 10):\n")
+                                for i, (value, count) in enumerate(list(stats['value_counts'].items())[:10]):
+                                    percentage = stats['value_percentages'].get(value, 0)
+                                    f.write(f"    {value}: {count:,} ({percentage:.1f}%)\n")
                     else:
                         f.write(f"  Status: FAILED\n")
-                        f.write(f"  Error: {result['error']}\n")
+                        f.write(f"  Error: {result.get('error', 'Unknown error')}\n")
+                    
                     f.write("\n")
             
-            # Reset matplotlib to default settings
-            plt.rcParams.update(plt.rcParamsDefault)
+            print(f"    target_feature_analysis: Analysis completed successfully!")
+            print(f"    target_feature_analysis: Plots saved to: {plots_dir}")
+            print(f"    target_feature_analysis: Results saved to: {analysis_output_dir}")
             
-            # Prepare final results
-            results = {
+            return {
                 "success": True,
                 "processed_files": 1,
                 "target_file": target_file_path,
-                "target_features_analyzed": VALID_TARGET_FEATURES,
+                "total_rows": total_rows,
+                "target_features_analyzed": len(VALID_TARGET_FEATURES),
                 "successful_analyses": successful_analyses,
                 "failed_analyses": len(VALID_TARGET_FEATURES) - successful_analyses,
-                "delay_threshold": TRAIN_DELAY_MINUTES,
-                "total_rows": total_rows,
-                "output_directory": analysis_output_dir,
                 "plots_created": total_plots_created,
-                "plot_format": "IEEE-compliant PDF",
+                "output_directory": analysis_output_dir,
+                "plots_directory": plots_dir,
                 "results_json": results_json_path,
                 "summary_report": summary_report_path,
                 "feature_results": all_feature_results
             }
             
-            print(f"\n    target_feature_analysis: Analysis completed successfully!")
-            print(f"    target_feature_analysis: {total_plots_created} IEEE-compliant plots saved in PDF format")
-            print(f"    target_feature_analysis: Output directory: {analysis_output_dir}")
-            
-            return results
-            
         except Exception as e:
-            error_msg = f"Error in target_feature_analysis: {str(e)}"
+            error_msg = f"target_feature_analysis failed: {str(e)}"
             print(f"    target_feature_analysis: {error_msg}")
             import traceback
             traceback.print_exc()
+            
             return {
                 "success": False,
                 "error": error_msg,
