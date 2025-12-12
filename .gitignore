@@ -133,6 +133,8 @@ dist
 *.csv
 *.json
 
+*.pdf
+
 # Python
 __pycache__/
 *.py[cod]
