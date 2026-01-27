@@ -1,4 +1,4 @@
-from src.file_utils import check_csv_files, extract_date_range, ensure_folder_structure
+from src.file_utils import check_csv_files, extract_date_range, ensure_folder_structure, find_closest_ems_stations
 from src.training_pipeline import TrainingPipeline
 from src.preprocessing_pipeline import PreprocessingPipeline  
 
@@ -36,6 +36,24 @@ def main():
         print(f"\n✗ Failed to initialize folder structure: {e}")
         print("Cannot proceed without proper folder structure. Please check permissions and try again.")
         return
+    
+    # STEP 1.5: Find closest EMS stations for each train station
+    # This creates a mapping file used for weather data assignment
+    print("\n" + "-" * 60)
+    print("METADATA PROCESSING: Train Station to EMS Station Mapping")
+    print("-" * 60)
+    try:
+        closest_ems_df = find_closest_ems_stations(n_closest=5)
+        print("✓ Closest EMS stations mapping created successfully!")
+    except FileNotFoundError as e:
+        print(f"⚠️  Skipping EMS station mapping (metadata files not found):")
+        print(f"   {e}")
+        print("   Please ensure the following files exist:")
+        print("   - data/input/metadata/metadata_train_stations.csv")
+        print("   - data/input/metadata/metadata_fmi_ems_stations.csv")
+    except Exception as e:
+        print(f"✗ Error creating EMS station mapping: {e}")
+
     
     # STEP 2: Display configuration information
     print("\n" + "="*60)

@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 import joblib
+from haversine import haversine, Unit
 
 import numpy as np
 import pandas as pd
@@ -2115,3 +2116,232 @@ def plot_feature_importance(sorted_features, output_dir):
         
     except Exception as e:
         print(f"      Error creating feature importance plot: {e}")
+
+def find_closest_ems_stations(
+    train_stations_path: str = None,
+    ems_stations_path: str = None,
+    output_path: str = None,
+    n_closest: int = 5
+) -> pd.DataFrame:
+    """
+    Find the N closest FMI EMS weather stations to each train station using the Haversine formula.
+    
+    This function loads train station and FMI EMS station metadata, calculates distances
+    between each pair using the Haversine formula, and identifies the N closest EMS stations
+    for each train station, ordered from closest to farthest.
+    
+    Parameters:
+    -----------
+    train_stations_path : str, optional
+        Path to the train stations metadata CSV file.
+        Default: data/input/metadata/metadata_train_stations.csv
+    ems_stations_path : str, optional
+        Path to the FMI EMS stations metadata CSV file.
+        Default: data/input/metadata/metadata_fmi_ems_stations.csv
+    output_path : str, optional
+        Path where the output CSV will be saved.
+        Default: data/input/metadata/train_station_closest_ems.csv
+    n_closest : int, optional
+        Number of closest EMS stations to find for each train station.
+        Default: 5
+        
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame containing train station info and their N closest EMS stations
+        with distances in kilometers.
+        
+    Raises:
+    -------
+    FileNotFoundError
+        If input files are not found at the specified paths.
+    ValueError
+        If required columns are missing from the input files.
+    """
+    print("\n" + "=" * 60)
+    print("FINDING CLOSEST FMI EMS STATIONS TO TRAIN STATIONS")
+    print("=" * 60)
+    
+    # Get script directory and project root for default paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    
+    # Set default paths if not provided
+    if train_stations_path is None:
+        train_stations_path = os.path.join(
+            project_root, "data", "input", "metadata", "metadata_train_stations.csv"
+        )
+    if ems_stations_path is None:
+        ems_stations_path = os.path.join(
+            project_root, "data", "input", "metadata", "metadata_fmi_ems_stations.csv"
+        )
+    if output_path is None:
+        output_path = os.path.join(
+            project_root, "data", "input", "metadata", "train_station_closest_ems.csv"
+        )
+    
+    # -------------------------------------------------------------------------
+    # Step 1: Load train stations metadata
+    # -------------------------------------------------------------------------
+    print(f"\n[Step 1/4] Loading train stations metadata...")
+    print(f"  Path: {train_stations_path}")
+    
+    if not os.path.exists(train_stations_path):
+        raise FileNotFoundError(f"Train stations file not found: {train_stations_path}")
+    
+    train_stations_df = pd.read_csv(train_stations_path)
+    print(f"  ✓ Loaded {len(train_stations_df)} train stations")
+    
+    # Validate required columns
+    required_train_cols = ['stationName', 'stationShortCode', 'latitude', 'longitude']
+    missing_train_cols = [col for col in required_train_cols if col not in train_stations_df.columns]
+    if missing_train_cols:
+        raise ValueError(f"Missing required columns in train stations file: {missing_train_cols}")
+    
+    # -------------------------------------------------------------------------
+    # Step 2: Load FMI EMS stations metadata
+    # -------------------------------------------------------------------------
+    print(f"\n[Step 2/4] Loading FMI EMS stations metadata...")
+    print(f"  Path: {ems_stations_path}")
+    
+    if not os.path.exists(ems_stations_path):
+        raise FileNotFoundError(f"FMI EMS stations file not found: {ems_stations_path}")
+    
+    ems_stations_df = pd.read_csv(ems_stations_path)
+    print(f"  ✓ Loaded {len(ems_stations_df)} FMI EMS stations")
+    
+    # Validate required columns
+    required_ems_cols = ['station_name', 'fmisid', 'latitude', 'longitude']
+    missing_ems_cols = [col for col in required_ems_cols if col not in ems_stations_df.columns]
+    if missing_ems_cols:
+        raise ValueError(f"Missing required columns in EMS stations file: {missing_ems_cols}")
+    
+    # -------------------------------------------------------------------------
+    # Step 3: Calculate distances and find N closest EMS stations
+    # -------------------------------------------------------------------------
+    print(f"\n[Step 3/4] Calculating distances using Haversine formula...")
+    print(f"  Finding {n_closest} closest EMS stations for each train station...")
+    
+    results = []
+    skipped_stations = 0
+    total_stations = len(train_stations_df)
+    
+    for idx, train_station in train_stations_df.iterrows():
+        train_name = train_station['stationName']
+        train_code = train_station['stationShortCode']
+        train_lat = train_station['latitude']
+        train_lon = train_station['longitude']
+        train_passenger = train_station.get('passengerTraffic', None)
+        train_type = train_station.get('type', None)
+        
+        # Skip if train station has invalid coordinates
+        if pd.isna(train_lat) or pd.isna(train_lon):
+            print(f"  ⚠️  Skipping train station '{train_name}' - missing coordinates")
+            skipped_stations += 1
+            continue
+        
+        # Train station coordinates as tuple (lat, lon)
+        train_coords = (train_lat, train_lon)
+        
+        # Calculate distance to all EMS stations
+        distances = []
+        for _, ems_station in ems_stations_df.iterrows():
+            ems_lat = ems_station['latitude']
+            ems_lon = ems_station['longitude']
+            
+            # Skip EMS stations with invalid coordinates
+            if pd.isna(ems_lat) or pd.isna(ems_lon):
+                continue
+            
+            # EMS station coordinates as tuple (lat, lon)
+            ems_coords = (ems_lat, ems_lon)
+            
+            # Calculate distance using haversine library
+            distance_km = haversine(train_coords, ems_coords, unit=Unit.KILOMETERS)
+            
+            distances.append({
+                'ems_station_name': ems_station['station_name'],
+                'ems_fmisid': ems_station['fmisid'],
+                'ems_latitude': ems_lat,
+                'ems_longitude': ems_lon,
+                'distance_km': distance_km
+            })
+        
+        # Sort by distance (closest first) and take top N
+        distances_sorted = sorted(distances, key=lambda x: x['distance_km'])
+        closest_n = distances_sorted[:n_closest]
+        
+        # Build result row for this train station
+        result_row = {
+            'train_station_name': train_name,
+            'train_station_code': train_code,
+            'train_latitude': train_lat,
+            'train_longitude': train_lon,
+            'train_passenger_traffic': train_passenger,
+            'train_type': train_type
+        }
+        
+        # Add closest EMS stations (ranked 1 to N)
+        for rank, ems_data in enumerate(closest_n, start=1):
+            result_row[f'ems_{rank}_name'] = ems_data['ems_station_name']
+            result_row[f'ems_{rank}_fmisid'] = ems_data['ems_fmisid']
+            result_row[f'ems_{rank}_latitude'] = ems_data['ems_latitude']
+            result_row[f'ems_{rank}_longitude'] = ems_data['ems_longitude']
+            result_row[f'ems_{rank}_distance_km'] = round(ems_data['distance_km'], 3)
+        
+        results.append(result_row)
+        
+        # Progress indicator every 50 stations
+        if (idx + 1) % 50 == 0:
+            print(f"    Processed {idx + 1}/{total_stations} train stations...")
+    
+    # Create results DataFrame
+    results_df = pd.DataFrame(results)
+    print(f"  ✓ Completed distance calculations for {len(results_df)} train stations")
+    if skipped_stations > 0:
+        print(f"  ⚠️  Skipped {skipped_stations} stations with missing coordinates")
+    
+    # -------------------------------------------------------------------------
+    # Step 4: Save results to CSV
+    # -------------------------------------------------------------------------
+    print(f"\n[Step 4/4] Saving results to CSV...")
+    print(f"  Output path: {output_path}")
+    
+    # Ensure output directory exists
+    output_dir = os.path.dirname(output_path)
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"  ✓ Created output directory: {output_dir}")
+    
+    results_df.to_csv(output_path, index=False)
+    file_size = os.path.getsize(output_path) / 1024  # Size in KB
+    print(f"  ✓ Saved results to: {output_path} ({file_size:.1f} KB)")
+    
+    # -------------------------------------------------------------------------
+    # Summary
+    # -------------------------------------------------------------------------
+    print("\n" + "-" * 60)
+    print("SUMMARY:")
+    print("-" * 60)
+    print(f"  Train stations processed: {len(results_df)}")
+    print(f"  Train stations skipped: {skipped_stations}")
+    print(f"  EMS stations available: {len(ems_stations_df)}")
+    print(f"  Closest EMS stations per train station: {n_closest}")
+    print(f"  Output columns: {len(results_df.columns)}")
+    
+    # Show sample of results
+    if len(results_df) > 0:
+        print("\n  Sample output (first 3 train stations):")
+        for _, row in results_df.head(3).iterrows():
+            print(f"\n    {row['train_station_name']} ({row['train_station_code']}):")
+            for rank in range(1, n_closest + 1):
+                ems_name = row.get(f'ems_{rank}_name', 'N/A')
+                ems_dist = row.get(f'ems_{rank}_distance_km', 'N/A')
+                if pd.notna(ems_name):
+                    print(f"      {rank}. {ems_name} - {ems_dist} km")
+    
+    print("\n" + "=" * 60)
+    print("✓ Closest EMS stations calculation completed successfully!")
+    print("=" * 60 + "\n")
+    
+    return results_df
