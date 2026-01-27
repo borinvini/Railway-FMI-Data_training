@@ -14,6 +14,7 @@ from src.file_utils import generate_output_path, save_dataframe_to_csv
 from config.const_preprocessing import (
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
     FOLDER_ADD_WEATHER_SCENARIOS_COL,
+    FOLDER_ADD_WEATHER_1H_WINDOW_FEATURES,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
     FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS,
     FOLDER_CONVERT_HOUR_TO_SINCOS,
@@ -470,6 +471,36 @@ class PreprocessingPipeline:
                 result["errors"].append("merge_weather_columns skipped - no data available")
         else:
             print(f"    ⊝ merge_weather_columns (disabled)")
+
+        if state_machine.get("add_weather_1h_window_features", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → add_weather_1h_window_features")
+                    weather_1h_window_df = self.add_weather_1h_window_features(
+                        dataframe=result["data"], 
+                        month_id=file_id
+                    )
+                    
+                    if weather_1h_window_df is not None:
+                        result["data"] = weather_1h_window_df
+                        result["steps_executed"].append("add_weather_1h_window_features")
+                        result["file_info"]["rows"] = len(weather_1h_window_df)
+                        result["file_info"]["columns"] = len(weather_1h_window_df.columns)
+                        print(f"      ✓ Added 1h window weather features: {len(weather_1h_window_df)} rows, {len(weather_1h_window_df.columns)} columns")
+                    else:
+                        result["errors"].append("add_weather_1h_window_features failed")
+                        print(f"      ✗ Failed to add 1h window weather features")
+                        return result
+                        
+                except Exception as e:
+                    result["errors"].append(f"add_weather_1h_window_features failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ add_weather_1h_window_features (no data available)")
+                result["errors"].append("add_weather_1h_window_features skipped - no data available")
+        else:
+            print(f"    ⊝ add_weather_1h_window_features (disabled)")
 
         if state_machine.get("add_weather_scenarios_col", False):
             if result["data"] is not None:
@@ -1602,6 +1633,14 @@ class PreprocessingPipeline:
                 print(f"Error merging weather columns: {e}")
                 logger.error(f"Error merging weather columns: {str(e)}")
                 return dataframe  # Return original dataframe on error
+
+    def add_weather_1h_window_features(self, dataframe=None, month_id=None):
+            """
+            Add weather features computed from a 1-hour rolling window.
+            ...
+            """
+            # ... implementation with FOLDER_ADD_WEATHER_1H_WINDOW_FEATURES ...
+
 
     def add_weather_scenarios_col(self, dataframe, output_file=None, month_id=None):
         """

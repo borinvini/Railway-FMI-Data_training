@@ -7,6 +7,7 @@ PREPROCESSING_STATE_MACHINE = {
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "merge_weather_columns": True,
+    "add_weather_1h_window_features": True,
     "add_weather_scenarios_col": True,
     "weather_scenario_one_hot_encoder": True,
     "process_actual_time_column": True,
@@ -29,20 +30,21 @@ FOLDER_FILTER_BY_TARGET_STATION = "data/output/2-filter_by_target_station"
 FOLDER_PROCESS_CAUSES_COLUMN = "data/output/3-process_causes_column"
 FOLDER_ADD_TRAIN_DELAYED_FEATURE = "data/output/4-add_train_delayed_feature"
 FOLDER_MERGE_WEATHER_COLUMNS = "data/output/5-merge_weather_columns"
-FOLDER_ADD_WEATHER_SCENARIOS_COL = "data/output/6-add_weather_scenarios_col"
-FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER = "data/output/7-weather_scenario_one_hot_encoder"
+FOLDER_ADD_WEATHER_1H_WINDOW_FEATURES = "data/output/6-add_weather_1h_window_features"
+FOLDER_ADD_WEATHER_SCENARIOS_COL = "data/output/7-add_weather_scenarios_col"
+FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER = "data/output/8-weather_scenario_one_hot_encoder"
 
 FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/8-process_actual_time_column"
-FOLDER_FILTER_COLUMNS = "data/output/9-filter_columns"
-FOLDER_CONVERT_BOOLEAN_TO_NUMERIC = "data/output/10-convert_boolean_to_numeric"
-FOLDER_HANDLE_MISSING_VALUES = "data/output/11-handle_missing_values"
-FOLDER_CONVERT_HOUR_TO_SINCOS = "data/output/12-convert_hour_to_sincos"
-FOLDER_CONVERT_MONTH_TO_SINCOS = "data/output/13-convert_month_to_sincos"
-FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS = "data/output/14-convert_dayofweek_to_sincos"
-FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS = "data/output/15-drop_original_temporal_columns"
-FOLDER_SELECT_TARGET = "data/output/16-select_target"
-FOLDER_FILTER_STRONG_WEATHER_CAUSES = "data/output/17-filter_strong_weather_causes"
-FOLDER_REMOVE_DUPLICATES = "data/output/18-remove_duplicates"
+FOLDER_FILTER_COLUMNS = "data/output/8-filter_columns"
+FOLDER_CONVERT_BOOLEAN_TO_NUMERIC = "data/output/11-convert_boolean_to_numeric"
+FOLDER_HANDLE_MISSING_VALUES = "data/output/12-handle_missing_values"
+FOLDER_CONVERT_HOUR_TO_SINCOS = "data/output/13-convert_hour_to_sincos"
+FOLDER_CONVERT_MONTH_TO_SINCOS = "data/output/14-convert_month_to_sincos"
+FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS = "data/output/15-convert_dayofweek_to_sincos"
+FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS = "data/output/16-drop_original_temporal_columns"
+FOLDER_SELECT_TARGET = "data/output/17-select_target"
+FOLDER_FILTER_STRONG_WEATHER_CAUSES = "data/output/18-filter_strong_weather_causes"
+FOLDER_REMOVE_DUPLICATES = "data/output/19-remove_duplicates"
 
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/100-preprocessed"
@@ -52,7 +54,7 @@ TRAINING_READY_OUTPUT_FOLDER = "data/output/101-preprocessed_training_ready"
 WEATHER_MISSING_THRESHOLD = 30.0
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes'  
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes_eachStation_offset'  
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
 

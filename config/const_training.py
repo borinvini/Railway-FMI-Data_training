@@ -6,9 +6,9 @@ TRAINING_STATE_MACHINE = {
     "select_training_cols": True,
     "split_dataset": True,
     "scale_weather_features": True,
-    "numeric_correlation_analysis": True,
-    "data_distribution_analysis": True,
-    "target_feature_analysis": True,
+    "numeric_correlation_analysis": False,
+    "data_distribution_analysis": False,
+    "target_feature_analysis": False,
     "train_xgboost_with_randomized_search_cv": True,
 }
 
@@ -129,7 +129,7 @@ SCORE_METRIC = 'f1'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 20
+RANDOM_SEARCH_ITERATIONS = 30
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration
