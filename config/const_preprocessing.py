@@ -388,6 +388,8 @@ ALL_1H_WINDOW_OUTPUT_COLUMNS = [
     CLOUD_AMOUNT_1H_WINDOW_MEAN,
 ]
 
+ALL_WEATHER_FEATURES.extend(ALL_1H_WINDOW_OUTPUT_COLUMNS)
+
 # -----------------------------------------------------------------------------
 # Feature Descriptions (for documentation/logging)
 # -----------------------------------------------------------------------------
