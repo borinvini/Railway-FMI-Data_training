@@ -1952,31 +1952,31 @@ class PreprocessingPipeline:
                     print(f"  {feature_key}: {len(stations_with_feature):,} EMS stations have data")
                     logger.info(f"Stations with {feature_key} data: {len(stations_with_feature)}")
                 
-                # Create union of all stations that have ANY weather data
-                all_fmi_stations_with_data = set()
-                for stations in fmi_stations_with_data.values():
-                    all_fmi_stations_with_data.update(stations)
-                
-                print(f"\n✓ Total EMS stations with weather data: {len(all_fmi_stations_with_data):,}")
-                
                 # Index FMI data by station for faster lookup
                 fmi_by_station = {
                     station: group for station, group 
                     in fmi_df.groupby(FMI_STATION_NAME_COL)
                 }
                 
-                # Function to get best EMS station for a train station (for ANY weather feature)
-                def get_best_ems_station(train_code):
-                    """Find the closest EMS station that has any weather data."""
+                # Function to get best EMS station for a SPECIFIC weather feature
+                def get_best_ems_station_for_feature(train_code, feature_key):
+                    """Find the closest EMS station that has data for the specific weather feature."""
                     ems_list = station_to_ems.get(train_code, [])
+                    stations_with_this_feature = fmi_stations_with_data.get(feature_key, set())
                     for ems_name in ems_list:
-                        if ems_name in all_fmi_stations_with_data:
+                        if ems_name in stations_with_this_feature:
                             return ems_name
                     return None
                 
-                # Map each train station to its best EMS station
-                df['_ems_station'] = df[TRAIN_STATION_SHORT_CODE_COL].apply(get_best_ems_station)
-                
+                # Map each train station to its best EMS station FOR EACH FEATURE
+                ems_station_cols = {}
+                for feature_key in available_fmi_features.keys():
+                    col_name = f'_ems_station_{feature_key}'
+                    df[col_name] = df[TRAIN_STATION_SHORT_CODE_COL].apply(
+                        lambda x, fk=feature_key: get_best_ems_station_for_feature(x, fk)
+                    )
+                    ems_station_cols[feature_key] = col_name
+                                
                 # ================================================================
                 # STEP 8: Calculate 1h window features using optimized approach
                 # ================================================================
@@ -1996,62 +1996,52 @@ class PreprocessingPipeline:
                         'mean': np.full(n_rows, np.nan),
                     }
                 
-                # Statistics tracking
+                # Statistics tracking (per feature)
                 rows_with_valid_data = {feature_key: 0 for feature_key in available_fmi_features.keys()}
-                rows_no_ems_match = 0
-                rows_no_time_window_data = 0
+                rows_no_ems_match = {feature_key: 0 for feature_key in available_fmi_features.keys()}
+                rows_no_time_window_data = {feature_key: 0 for feature_key in available_fmi_features.keys()}
                 
-                # Group by EMS station for batch processing
-                # Replace None/NaN with a placeholder to avoid categorical error
+                # Process each feature independently
                 NO_EMS_PLACEHOLDER = "__NO_EMS_STATION__"
-                df['_ems_station'] = df['_ems_station'].fillna(NO_EMS_PLACEHOLDER)
 
-                # Group by EMS station for batch processing
-                ems_groups = df.groupby('_ems_station')
-                
-                total_groups = len(ems_groups)
-                processed_groups = 0
-                
-                for ems_name, group_df in ems_groups:
-                    processed_groups += 1
+                for feature_key, fmi_col_name in available_fmi_features.items():
+                    ems_col = ems_station_cols[feature_key]
                     
-                    if ems_name == NO_EMS_PLACEHOLDER:
-                        rows_no_ems_match += len(group_df)
-                        continue
+                    print(f"\n  Processing {feature_key}...")
                     
-                    if ems_name not in fmi_by_station:
-                        rows_no_ems_match += len(group_df)
-                        continue
+                    df[ems_col] = df[ems_col].fillna(NO_EMS_PLACEHOLDER)
+                    feature_groups = df.groupby(ems_col)
                     
-                    # Get FMI data for this station
-                    station_fmi = fmi_by_station[ems_name]
-                    
-                    # Process each row in the group
-                    for df_idx in group_df.index:
-                        scheduled_time = df.loc[df_idx, '_scheduled_dt']
-                        
-                        if pd.isna(scheduled_time):
+                    for ems_name, group_df in feature_groups:
+                        if ems_name == NO_EMS_PLACEHOLDER:
+                            rows_no_ems_match[feature_key] += len(group_df)
                             continue
                         
-                        # Calculate time window
-                        window_start = scheduled_time - window_td
-                        window_end = scheduled_time
-                        
-                        # Filter FMI data for this time window
-                        time_mask = (
-                            (station_fmi[FMI_TIMESTAMP_COL] >= window_start) & 
-                            (station_fmi[FMI_TIMESTAMP_COL] <= window_end)
-                        )
-                        
-                        if not time_mask.any():
-                            rows_no_time_window_data += 1
+                        if ems_name not in fmi_by_station:
+                            rows_no_ems_match[feature_key] += len(group_df)
                             continue
                         
-                        # Get the original position in df
-                        pos = df.index.get_loc(df_idx)
+                        station_fmi = fmi_by_station[ems_name]
                         
-                        # Calculate statistics for each available weather feature
-                        for feature_key, fmi_col_name in available_fmi_features.items():
+                        for df_idx in group_df.index:
+                            scheduled_time = df.loc[df_idx, '_scheduled_dt']
+                            
+                            if pd.isna(scheduled_time):
+                                continue
+                            
+                            window_start = scheduled_time - window_td
+                            window_end = scheduled_time
+                            
+                            time_mask = (
+                                (station_fmi[FMI_TIMESTAMP_COL] >= window_start) & 
+                                (station_fmi[FMI_TIMESTAMP_COL] <= window_end)
+                            )
+                            
+                            if not time_mask.any():
+                                rows_no_time_window_data[feature_key] += 1
+                                continue
+                            
+                            pos = df.index.get_loc(df_idx)
                             window_data = station_fmi.loc[time_mask, fmi_col_name]
                             valid_data = window_data.dropna()
                             
@@ -2060,14 +2050,10 @@ class PreprocessingPipeline:
                                 feature_results[feature_key]['max'][pos] = valid_data.max()
                                 feature_results[feature_key]['mean'][pos] = valid_data.mean()
                                 rows_with_valid_data[feature_key] += 1
-                    
-                    # Progress reporting
-                    if processed_groups % max(1, total_groups // 10) == 0:
-                        progress_pct = (processed_groups / total_groups) * 100
-                        print(f"  Progress: {processed_groups}/{total_groups} station groups ({progress_pct:.1f}%)")
                 
                 # Clean up temporary columns
-                df = df.drop(columns=['_scheduled_dt', '_ems_station'])
+                cols_to_drop = ['_scheduled_dt'] + list(ems_station_cols.values())
+                df = df.drop(columns=cols_to_drop)
                 
                 # ================================================================
                 # STEP 9: Add result columns to dataframe
@@ -2098,14 +2084,14 @@ class PreprocessingPipeline:
                 print(f"1H WINDOW FEATURE EXTRACTION SUMMARY")
                 print(f"{'='*70}")
                 print(f"Total rows processed: {n_rows:,}")
-                print(f"Rows without EMS station match: {rows_no_ems_match:,}")
-                print(f"Rows without time window data: {rows_no_time_window_data:,}")
                 print(f"\nData availability per feature:")
-                
+
                 for feature_key in available_fmi_features.keys():
                     valid_count = rows_with_valid_data[feature_key]
+                    no_ems_count = rows_no_ems_match[feature_key]
+                    no_window_count = rows_no_time_window_data[feature_key]
                     pct = (valid_count / n_rows * 100) if n_rows > 0 else 0
-                    print(f"  {feature_key}: {valid_count:,} rows ({pct:.1f}%)")
+                    print(f"  {feature_key}: {valid_count:,} rows ({pct:.1f}%) | no EMS: {no_ems_count:,} | no window: {no_window_count:,}")
                 
                 print(f"{'='*70}")
                 
