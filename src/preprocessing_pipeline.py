@@ -14,7 +14,8 @@ from sklearn.preprocessing import OneHotEncoder
 from src.file_utils import generate_output_path, save_dataframe_to_csv
 
 from config.const_preprocessing import (
-    FMI_SNOW_DEPTH_COL,
+    ALL_1H_WINDOW_OUTPUT_COLUMNS,
+    WEATHER_1H_WINDOW_OUTPUT_COLS,
     FMI_STATION_NAME_COL,
     FMI_TIMESTAMP_COL,
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
@@ -36,10 +37,13 @@ from config.const_preprocessing import (
     FOLDER_REMOVE_DUPLICATES,
     FOLDER_SELECT_TARGET,
     FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
+    NUM_STATS_PER_FEATURE,
+    NUM_WEATHER_1H_WINDOW_FEATURES,
     PREPROCESSED_OUTPUT_FOLDER,
     SNOW_DEPTH_1H_WINDOW_MAX,
     SNOW_DEPTH_1H_WINDOW_MEAN,
     SNOW_DEPTH_1H_WINDOW_MIN,
+    TOTAL_1H_WINDOW_COLUMNS,
     TRAIN_STATION_SHORT_CODE_COL,
     TRAINING_READY_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
@@ -48,6 +52,7 @@ from config.const_preprocessing import (
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAIN_DELAY_MINUTES,
     VALID_WEATHER_SCENARIO_FEATURES,
+    WEATHER_1H_WINDOW_FEATURES,
     WEATHER_COLS_TO_MERGE,
     VALID_TARGET_FEATURES,
     VALID_TRAIN_PREDICTION_FEATURES,
@@ -1665,9 +1670,17 @@ class PreprocessingPipeline:
         1. Loads FMI weather data for the current month and its predecessor (if exists)
         2. Loads the train station to EMS station mapping metadata
         3. For each row in the dataframe:
-        - Finds the closest EMS station (from top 5) that has snow depth measurements
-        - Calculates min, max, mean of snow depth in a 1h window before scheduledTime
-        4. Adds new columns: snow_depth_1h_window_min, snow_depth_1h_window_max, snow_depth_1h_window_mean
+           - Finds the closest EMS station (from top 5) that has weather measurements
+           - Calculates min, max, mean for all 8 weather features in a 1h window before scheduledTime
+        4. Adds 24 new columns (8 features × 3 statistics):
+           - Air temperature: air_temperature_1h_window_{min,max,mean}
+           - Wind speed: wind_speed_1h_window_{min,max,mean}
+           - Relative humidity: relative_humidity_1h_window_{min,max,mean}
+           - Precipitation intensity: precipitation_intensity_1h_window_{min,max,mean}
+           - Snow depth: snow_depth_1h_window_{min,max,mean}
+           - Pressure (msl): pressure_msl_1h_window_{min,max,mean}
+           - Horizontal visibility: horizontal_visibility_1h_window_{min,max,mean}
+           - Cloud amount: cloud_amount_1h_window_{min,max,mean}
         
         Parameters:
         -----------
@@ -1679,7 +1692,7 @@ class PreprocessingPipeline:
         Returns:
         --------
         pandas.DataFrame
-            The dataframe with added 1h window weather feature columns.
+            The dataframe with added 24 1h window weather feature columns.
         """
       
         # Check if dataframe is provided
@@ -1689,6 +1702,7 @@ class PreprocessingPipeline:
             
         df = dataframe.copy()
         print(f"Adding 1h window weather features to dataframe with {len(df):,} rows")
+        print(f"Processing {NUM_WEATHER_1H_WINDOW_FEATURES} weather features × {NUM_STATS_PER_FEATURE} statistics = {TOTAL_1H_WINDOW_COLUMNS} new columns")
         
         if df.empty:
             print("Warning: Empty dataframe")
@@ -1698,6 +1712,7 @@ class PreprocessingPipeline:
         with self.get_logger("add_weather_1h_window_features.log", "add_weather_1h_window_features", month_id) as logger:
             try:
                 logger.info(f"Starting 1h window weather feature extraction for {len(df)} rows")
+                logger.info(f"Features to process: {list(WEATHER_1H_WINDOW_FEATURES.keys())}")
                 
                 # ================================================================
                 # STEP 1: Extract year and month from month_id
@@ -1758,43 +1773,40 @@ class PreprocessingPipeline:
                 current_month_files = glob.glob(current_month_pattern)
                 if current_month_files:
                     try:
-                        current_month_file = current_month_files[0]  # Take first match
-                        current_df = pd.read_csv(current_month_file)
-                        fmi_dataframes.append(current_df)
-                        print(f"✓ Loaded current month FMI data: {os.path.basename(current_month_file)}")
-                        print(f"  Shape: {current_df.shape[0]:,} rows × {current_df.shape[1]} columns")
-                        logger.info(f"Loaded current month FMI data: {current_month_file} ({current_df.shape[0]} rows)")
+                        current_fmi_path = current_month_files[0]
+                        current_fmi_df = pd.read_csv(current_fmi_path)
+                        fmi_dataframes.append(current_fmi_df)
+                        print(f"✓ Loaded current month FMI data: {os.path.basename(current_fmi_path)} ({len(current_fmi_df):,} rows)")
+                        logger.info(f"Loaded current month FMI data: {current_fmi_path} ({len(current_fmi_df)} rows)")
                     except Exception as e:
                         logger.error(f"Error loading current month FMI data: {e}")
                         print(f"✗ Error loading current month FMI data: {e}")
                 else:
-                    logger.warning(f"Current month FMI file not found matching pattern: {current_month_pattern}")
-                    print(f"⚠️  Current month FMI file not found matching pattern: *_{year}_{month:02d}.csv")
+                    logger.warning(f"No FMI data found for current month pattern: {current_month_pattern}")
+                    print(f"⚠️  No FMI data found for current month pattern: {current_month_pattern}")
                 
-                # Load predecessor month using glob pattern
+                # Load predecessor month
                 pred_month_files = glob.glob(pred_month_pattern)
                 if pred_month_files:
                     try:
-                        pred_month_file = pred_month_files[0]  # Take first match
-                        pred_df = pd.read_csv(pred_month_file)
-                        fmi_dataframes.append(pred_df)
-                        print(f"✓ Loaded predecessor month FMI data: {os.path.basename(pred_month_file)}")
-                        print(f"  Shape: {pred_df.shape[0]:,} rows × {pred_df.shape[1]} columns")
-                        logger.info(f"Loaded predecessor month FMI data: {pred_month_file} ({pred_df.shape[0]} rows)")
+                        pred_fmi_path = pred_month_files[0]
+                        pred_fmi_df = pd.read_csv(pred_fmi_path)
+                        fmi_dataframes.append(pred_fmi_df)
+                        print(f"✓ Loaded predecessor month FMI data: {os.path.basename(pred_fmi_path)} ({len(pred_fmi_df):,} rows)")
+                        logger.info(f"Loaded predecessor month FMI data: {pred_fmi_path} ({len(pred_fmi_df)} rows)")
                     except Exception as e:
-                        logger.warning(f"Error loading predecessor month FMI data: {e}")
+                        logger.error(f"Error loading predecessor month FMI data: {e}")
                         print(f"⚠️  Error loading predecessor month FMI data: {e}")
                 else:
-                    logger.info(f"Predecessor month FMI file not found (may be expected): *_{pred_year}_{pred_month:02d}.csv")
                     print(f"  Predecessor month not found (may be expected for first month of data)")
                 
                 # Combine FMI dataframes
                 if not fmi_dataframes:
                     logger.error("No FMI weather data files could be loaded")
                     print("✗ No FMI weather data files could be loaded")
-                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    # Initialize all output columns with NaN
+                    for col in ALL_1H_WINDOW_OUTPUT_COLUMNS:
+                        df[col] = np.nan
                     return df
                 
                 fmi_df = pd.concat(fmi_dataframes, ignore_index=True)
@@ -1804,130 +1816,161 @@ class PreprocessingPipeline:
                 # ================================================================
                 # STEP 3: Parse and validate FMI data
                 # ================================================================
-                required_fmi_cols = [FMI_TIMESTAMP_COL, FMI_STATION_NAME_COL, FMI_SNOW_DEPTH_COL]
-                missing_cols = [col for col in required_fmi_cols if col not in fmi_df.columns]
                 
-                if missing_cols:
-                    logger.error(f"Missing required FMI columns: {missing_cols}")
-                    print(f"✗ Missing required FMI columns: {missing_cols}")
+                # Check for required columns (timestamp and station name)
+                required_base_cols = [FMI_TIMESTAMP_COL, FMI_STATION_NAME_COL]
+                missing_base_cols = [col for col in required_base_cols if col not in fmi_df.columns]
+                
+                if missing_base_cols:
+                    logger.error(f"Missing required base FMI columns: {missing_base_cols}")
+                    print(f"✗ Missing required base FMI columns: {missing_base_cols}")
                     print(f"  Available columns: {fmi_df.columns.tolist()}")
-                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    for col in ALL_1H_WINDOW_OUTPUT_COLUMNS:
+                        df[col] = np.nan
                     return df
                 
-                # Convert timestamps and numeric columns
+                # Check which weather feature columns are available
+                available_fmi_features = {}
+                missing_fmi_features = []
+                
+                print(f"\n--- FMI WEATHER FEATURE AVAILABILITY CHECK ---")
+                for feature_key, fmi_col_name in WEATHER_1H_WINDOW_FEATURES.items():
+                    if fmi_col_name in fmi_df.columns:
+                        available_fmi_features[feature_key] = fmi_col_name
+                        non_null_count = fmi_df[fmi_col_name].notna().sum()
+                        print(f"  ✓ {feature_key}: '{fmi_col_name}' found ({non_null_count:,} non-null values)")
+                        logger.info(f"Feature available: {feature_key} -> {fmi_col_name} ({non_null_count} values)")
+                    else:
+                        missing_fmi_features.append(feature_key)
+                        print(f"  ✗ {feature_key}: '{fmi_col_name}' NOT FOUND")
+                        logger.warning(f"Feature missing: {feature_key} -> {fmi_col_name}")
+                
+                print(f"\nAvailable features: {len(available_fmi_features)}/{NUM_WEATHER_1H_WINDOW_FEATURES}")
+                
+                if not available_fmi_features:
+                    logger.error("No weather feature columns found in FMI data")
+                    print("✗ No weather feature columns found in FMI data")
+                    for col in ALL_1H_WINDOW_OUTPUT_COLUMNS:
+                        df[col] = np.nan
+                    return df
+                
+                # Convert timestamps
                 fmi_df[FMI_TIMESTAMP_COL] = pd.to_datetime(fmi_df[FMI_TIMESTAMP_COL], errors='coerce')
                 
                 # Ensure FMI timestamps are tz-naive for consistent comparison
                 if fmi_df[FMI_TIMESTAMP_COL].dt.tz is not None:
                     fmi_df[FMI_TIMESTAMP_COL] = fmi_df[FMI_TIMESTAMP_COL].dt.tz_localize(None)
-                    print(f"  Converted FMI timestamps to tz-naive")
                 
-                fmi_df[FMI_SNOW_DEPTH_COL] = pd.to_numeric(fmi_df[FMI_SNOW_DEPTH_COL], errors='coerce')
+                # Convert weather feature columns to numeric
+                for feature_key, fmi_col_name in available_fmi_features.items():
+                    fmi_df[fmi_col_name] = pd.to_numeric(fmi_df[fmi_col_name], errors='coerce')
                 
-                # Remove rows with invalid timestamps
-                fmi_df = fmi_df.dropna(subset=[FMI_TIMESTAMP_COL])
-                
-                # Sort by timestamp for efficient time-based lookups
-                fmi_df = fmi_df.sort_values(FMI_TIMESTAMP_COL).reset_index(drop=True)
-                
-                print(f"✓ Parsed FMI timestamps and snow depth values")
-                logger.info("Parsed FMI timestamps and snow depth values")
+                print(f"\n✓ FMI data validation complete")
+                print(f"  Time range: {fmi_df[FMI_TIMESTAMP_COL].min()} to {fmi_df[FMI_TIMESTAMP_COL].max()}")
                 
                 # ================================================================
-                # STEP 4: Load train station to EMS mapping metadata
+                # STEP 4: Load train station to EMS station mapping
                 # ================================================================
-                print(f"\n--- LOADING STATION MAPPING METADATA ---")
+                
+                print(f"\n--- LOADING STATION MAPPING ---")
                 
                 metadata_path = os.path.join(self.project_root, TRAIN_STATION_EMS_METADATA_PATH)
                 
                 if not os.path.exists(metadata_path):
-                    logger.error(f"Station mapping metadata not found: {metadata_path}")
-                    print(f"✗ Station mapping metadata not found: {metadata_path}")
-                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    logger.error(f"Metadata file not found: {metadata_path}")
+                    print(f"✗ Metadata file not found: {metadata_path}")
+                    for col in ALL_1H_WINDOW_OUTPUT_COLUMNS:
+                        df[col] = np.nan
                     return df
                 
                 try:
-                    station_mapping_df = pd.read_csv(metadata_path)
-                    print(f"✓ Loaded station mapping metadata")
-                    print(f"  Shape: {station_mapping_df.shape[0]:,} train stations")
-                    logger.info(f"Loaded station mapping metadata: {station_mapping_df.shape}")
+                    metadata_df = pd.read_csv(metadata_path)
+                    print(f"✓ Loaded station mapping: {len(metadata_df):,} rows")
+                    logger.info(f"Loaded station mapping from {metadata_path}: {len(metadata_df)} rows")
                 except Exception as e:
-                    logger.error(f"Error loading station mapping metadata: {e}")
-                    print(f"✗ Error loading station mapping metadata: {e}")
-                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    logger.error(f"Error loading metadata: {e}")
+                    print(f"✗ Error loading metadata: {e}")
+                    for col in ALL_1H_WINDOW_OUTPUT_COLUMNS:
+                        df[col] = np.nan
                     return df
                 
                 # ================================================================
-                # STEP 5: Build optimized lookup structures
+                # STEP 5: Prepare station-to-EMS mapping dictionary
                 # ================================================================
-                print(f"\n--- BUILDING OPTIMIZED LOOKUP STRUCTURES ---")
                 
-                # Build station-to-EMS mapping
+                print(f"\n--- BUILDING STATION MAPPING ---")
+                
+                # Build mapping of train station -> list of EMS stations (ordered by distance)
                 station_to_ems = {}
-                for _, row in station_mapping_df.iterrows():
-                    train_code = row.get('train_station_code')
-                    if pd.isna(train_code):
-                        continue
-                    ems_list = []
-                    for i in range(1, 6):
-                        ems_name_col = f'ems_{i}_name'
-                        if ems_name_col in row.index and pd.notna(row[ems_name_col]):
-                            ems_list.append(row[ems_name_col])
-                    station_to_ems[train_code] = ems_list
                 
-                # Get set of stations with snow depth data
-                snow_valid_mask = fmi_df[FMI_SNOW_DEPTH_COL].notna()
-                fmi_stations_with_snow = set(fmi_df.loc[snow_valid_mask, FMI_STATION_NAME_COL].unique())
+                # Group by train station code to get all EMS options
+                if 'train_station_code' in metadata_df.columns:
+                    for train_code in metadata_df['train_station_code'].unique():
+                        station_rows = metadata_df[metadata_df['train_station_code'] == train_code]
+                        # Get closest EMS stations (assuming they're ordered or have distance column)
+                        ems_stations = []
+                        for col in ['ems_1_name', 'ems_2_name', 'ems_3_name', 'ems_4_name', 'ems_5_name']:
+                            if col in station_rows.columns:
+                                ems_name = station_rows[col].iloc[0] if len(station_rows) > 0 else None
+                                if pd.notna(ems_name):
+                                    ems_stations.append(ems_name)
+                        station_to_ems[train_code] = ems_stations
                 
-                # Get total number of EMS stations in FMI data
-                total_ems_stations = fmi_df[FMI_STATION_NAME_COL].nunique()
-                
-                print(f"✓ Built mapping for {len(station_to_ems)} train stations")
-                print(f"✓ Found {len(fmi_stations_with_snow)}/{total_ems_stations} EMS stations with snow depth data")
-                logger.info(f"Mapped {len(station_to_ems)} stations, {len(fmi_stations_with_snow)}/{total_ems_stations} with snow data")
-                
-                # Pre-index FMI data by station for efficient lookups
-                # This creates a dict: {station_name: DataFrame of that station's data}
-                fmi_by_station = {name: group.copy() for name, group in fmi_df.groupby(FMI_STATION_NAME_COL)}
-                
-                print(f"✓ Pre-indexed FMI data by station ({len(fmi_by_station)} stations)")
+                print(f"✓ Built mapping for {len(station_to_ems):,} train stations")
+                logger.info(f"Built station mapping for {len(station_to_ems)} train stations")
                 
                 # ================================================================
-                # STEP 6: Validate input dataframe
+                # STEP 6: Prepare dataframe for processing
                 # ================================================================
-                required_cols = [TRAIN_SCHEDULED_TIME_COL, TRAIN_STATION_SHORT_CODE_COL]
-                missing_cols = [col for col in required_cols if col not in df.columns]
                 
-                if missing_cols:
-                    logger.error(f"Missing required columns in input dataframe: {missing_cols}")
-                    print(f"✗ Missing required columns: {missing_cols}")
-                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
-                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
-                    return df
+                print(f"\n--- PREPARING DATA FOR PROCESSING ---")
                 
-                # Parse scheduled time
+                # Parse scheduledTime
                 df['_scheduled_dt'] = pd.to_datetime(df[TRAIN_SCHEDULED_TIME_COL], errors='coerce')
                 
-                # Convert to tz-naive (remove timezone info) for consistent comparison with FMI data
+                # Ensure train data timestamps are tz-naive
                 if df['_scheduled_dt'].dt.tz is not None:
                     df['_scheduled_dt'] = df['_scheduled_dt'].dt.tz_localize(None)
-                    print(f"  Converted scheduled times to tz-naive")
+                
+                valid_times = df['_scheduled_dt'].notna().sum()
+                print(f"✓ Valid scheduled times: {valid_times:,} / {len(df):,}")
+                logger.info(f"Valid scheduled times: {valid_times}/{len(df)}")
                 
                 # ================================================================
-                # STEP 7: Create lookup function for EMS station selection
+                # STEP 7: Find which EMS stations have data for each feature
                 # ================================================================
+                
+                print(f"\n--- ANALYZING EMS STATION DATA AVAILABILITY ---")
+                
+                # Get unique FMI stations that have data for each feature
+                fmi_stations_with_data = {}
+                for feature_key, fmi_col_name in available_fmi_features.items():
+                    stations_with_feature = set(
+                        fmi_df[fmi_df[fmi_col_name].notna()][FMI_STATION_NAME_COL].unique()
+                    )
+                    fmi_stations_with_data[feature_key] = stations_with_feature
+                    print(f"  {feature_key}: {len(stations_with_feature):,} EMS stations have data")
+                    logger.info(f"Stations with {feature_key} data: {len(stations_with_feature)}")
+                
+                # Create union of all stations that have ANY weather data
+                all_fmi_stations_with_data = set()
+                for stations in fmi_stations_with_data.values():
+                    all_fmi_stations_with_data.update(stations)
+                
+                print(f"\n✓ Total EMS stations with weather data: {len(all_fmi_stations_with_data):,}")
+                
+                # Index FMI data by station for faster lookup
+                fmi_by_station = {
+                    station: group for station, group 
+                    in fmi_df.groupby(FMI_STATION_NAME_COL)
+                }
+                
+                # Function to get best EMS station for a train station (for ANY weather feature)
                 def get_best_ems_station(train_code):
-                    """Get the closest EMS station that measures snow depth."""
+                    """Find the closest EMS station that has any weather data."""
                     ems_list = station_to_ems.get(train_code, [])
                     for ems_name in ems_list:
-                        if ems_name in fmi_stations_with_snow:
+                        if ems_name in all_fmi_stations_with_data:
                             return ems_name
                     return None
                 
@@ -1938,22 +1981,33 @@ class PreprocessingPipeline:
                 # STEP 8: Calculate 1h window features using optimized approach
                 # ================================================================
                 print(f"\n--- CALCULATING 1H WINDOW FEATURES (OPTIMIZED) ---")
+                print(f"Processing {len(available_fmi_features)} weather features...")
                 
                 window_td = pd.Timedelta(minutes=WEATHER_WINDOW_MINUTES)
                 
-                # Initialize result arrays
+                # Initialize result arrays for all features
                 n_rows = len(df)
-                snow_min = np.full(n_rows, np.nan)
-                snow_max = np.full(n_rows, np.nan)
-                snow_mean = np.full(n_rows, np.nan)
+                feature_results = {}
                 
-                # Statistics
-                rows_with_valid_data = 0
+                for feature_key in available_fmi_features.keys():
+                    feature_results[feature_key] = {
+                        'min': np.full(n_rows, np.nan),
+                        'max': np.full(n_rows, np.nan),
+                        'mean': np.full(n_rows, np.nan),
+                    }
+                
+                # Statistics tracking
+                rows_with_valid_data = {feature_key: 0 for feature_key in available_fmi_features.keys()}
                 rows_no_ems_match = 0
                 rows_no_time_window_data = 0
                 
                 # Group by EMS station for batch processing
-                ems_groups = df.groupby('_ems_station', dropna=False)
+                # Replace None/NaN with a placeholder to avoid categorical error
+                NO_EMS_PLACEHOLDER = "__NO_EMS_STATION__"
+                df['_ems_station'] = df['_ems_station'].fillna(NO_EMS_PLACEHOLDER)
+
+                # Group by EMS station for batch processing
+                ems_groups = df.groupby('_ems_station')
                 
                 total_groups = len(ems_groups)
                 processed_groups = 0
@@ -1961,8 +2015,7 @@ class PreprocessingPipeline:
                 for ems_name, group_df in ems_groups:
                     processed_groups += 1
                     
-                    if pd.isna(ems_name):
-                        # No EMS station found for these rows
+                    if ems_name == NO_EMS_PLACEHOLDER:
                         rows_no_ems_match += len(group_df)
                         continue
                     
@@ -1989,20 +2042,24 @@ class PreprocessingPipeline:
                             (station_fmi[FMI_TIMESTAMP_COL] >= window_start) & 
                             (station_fmi[FMI_TIMESTAMP_COL] <= window_end)
                         )
-                        window_data = station_fmi.loc[time_mask, FMI_SNOW_DEPTH_COL]
                         
-                        # Calculate statistics
-                        valid_data = window_data.dropna()
-                        
-                        if len(valid_data) == 0:
+                        if not time_mask.any():
                             rows_no_time_window_data += 1
-                        else:
-                            # Get the original position in df
-                            pos = df.index.get_loc(df_idx)
-                            snow_min[pos] = valid_data.min()
-                            snow_max[pos] = valid_data.max()
-                            snow_mean[pos] = valid_data.mean()
-                            rows_with_valid_data += 1
+                            continue
+                        
+                        # Get the original position in df
+                        pos = df.index.get_loc(df_idx)
+                        
+                        # Calculate statistics for each available weather feature
+                        for feature_key, fmi_col_name in available_fmi_features.items():
+                            window_data = station_fmi.loc[time_mask, fmi_col_name]
+                            valid_data = window_data.dropna()
+                            
+                            if len(valid_data) > 0:
+                                feature_results[feature_key]['min'][pos] = valid_data.min()
+                                feature_results[feature_key]['max'][pos] = valid_data.max()
+                                feature_results[feature_key]['mean'][pos] = valid_data.mean()
+                                rows_with_valid_data[feature_key] += 1
                     
                     # Progress reporting
                     if processed_groups % max(1, total_groups // 10) == 0:
@@ -2012,39 +2069,65 @@ class PreprocessingPipeline:
                 # Clean up temporary columns
                 df = df.drop(columns=['_scheduled_dt', '_ems_station'])
                 
-                # Add result columns
-                df[SNOW_DEPTH_1H_WINDOW_MIN] = snow_min
-                df[SNOW_DEPTH_1H_WINDOW_MAX] = snow_max
-                df[SNOW_DEPTH_1H_WINDOW_MEAN] = snow_mean
+                # ================================================================
+                # STEP 9: Add result columns to dataframe
+                # ================================================================
+                
+                print(f"\n--- ADDING RESULT COLUMNS ---")
+                
+                # Add columns for available features
+                for feature_key in available_fmi_features.keys():
+                    output_cols = WEATHER_1H_WINDOW_OUTPUT_COLS[feature_key]
+                    df[output_cols['min']] = feature_results[feature_key]['min']
+                    df[output_cols['max']] = feature_results[feature_key]['max']
+                    df[output_cols['mean']] = feature_results[feature_key]['mean']
+                    print(f"  ✓ Added {feature_key} columns: {output_cols['min']}, {output_cols['max']}, {output_cols['mean']}")
+                
+                # Add NaN columns for missing features
+                for feature_key in missing_fmi_features:
+                    output_cols = WEATHER_1H_WINDOW_OUTPUT_COLS[feature_key]
+                    df[output_cols['min']] = np.nan
+                    df[output_cols['max']] = np.nan
+                    df[output_cols['mean']] = np.nan
+                    print(f"  ⚠️  Added {feature_key} columns with NaN (feature not available in FMI data)")
                 
                 # ================================================================
-                # STEP 9: Report statistics
+                # STEP 10: Report statistics
                 # ================================================================
-                print(f"\n--- 1H WINDOW FEATURE EXTRACTION SUMMARY ---")
-                print(f"{'='*60}")
+                print(f"\n{'='*70}")
+                print(f"1H WINDOW FEATURE EXTRACTION SUMMARY")
+                print(f"{'='*70}")
                 print(f"Total rows processed: {n_rows:,}")
-                print(f"Rows with valid snow depth data: {rows_with_valid_data:,} ({rows_with_valid_data/n_rows*100:.1f}%)")
                 print(f"Rows without EMS station match: {rows_no_ems_match:,}")
                 print(f"Rows without time window data: {rows_no_time_window_data:,}")
-                print(f"{'='*60}")
+                print(f"\nData availability per feature:")
                 
-                logger.info(f"Summary - Total: {n_rows}, Valid: {rows_with_valid_data}, "
-                        f"No EMS: {rows_no_ems_match}, No window data: {rows_no_time_window_data}")
+                for feature_key in available_fmi_features.keys():
+                    valid_count = rows_with_valid_data[feature_key]
+                    pct = (valid_count / n_rows * 100) if n_rows > 0 else 0
+                    print(f"  {feature_key}: {valid_count:,} rows ({pct:.1f}%)")
+                
+                print(f"{'='*70}")
+                
+                logger.info(f"Summary - Total: {n_rows}, No EMS: {rows_no_ems_match}, No window data: {rows_no_time_window_data}")
+                for feature_key, count in rows_with_valid_data.items():
+                    logger.info(f"Valid data for {feature_key}: {count}")
                 
                 # Statistics for new columns
                 print(f"\n--- NEW COLUMN STATISTICS ---")
-                for col in [SNOW_DEPTH_1H_WINDOW_MIN, SNOW_DEPTH_1H_WINDOW_MAX, SNOW_DEPTH_1H_WINDOW_MEAN]:
-                    non_null = df[col].notna().sum()
-                    if non_null > 0:
-                        print(f"{col}:")
-                        print(f"  Non-null: {non_null:,} ({non_null/len(df)*100:.1f}%)")
-                        print(f"  Range: [{df[col].min():.2f}, {df[col].max():.2f}]")
-                        print(f"  Mean: {df[col].mean():.2f}")
-                    else:
-                        print(f"{col}: All values are null")
+                for col in ALL_1H_WINDOW_OUTPUT_COLUMNS:
+                    if col in df.columns:
+                        non_null = df[col].notna().sum()
+                        if non_null > 0:
+                            print(f"{col}:")
+                            print(f"  Non-null: {non_null:,} ({non_null/len(df)*100:.1f}%)")
+                            print(f"  Range: [{df[col].min():.2f}, {df[col].max():.2f}]")
+                            print(f"  Mean: {df[col].mean():.2f}")
+                        else:
+                            print(f"{col}: All values are null")
                 
                 # ================================================================
-                # STEP 10: Save processed data
+                # STEP 11: Save processed data
                 # ================================================================
                 print(f"\n--- SAVING add_weather_1h_window_features DATA ---")
                 
@@ -2057,6 +2140,7 @@ class PreprocessingPipeline:
                     )
                     
                     print(f"✓ Successfully saved 1h window weather features to: {saved_file_path}")
+                    print(f"  Total new columns added: {TOTAL_1H_WINDOW_COLUMNS}")
                     logger.info(f"Saved processed data to: {saved_file_path}")
                     
                 except Exception as save_error:
@@ -2073,7 +2157,6 @@ class PreprocessingPipeline:
                 traceback.print_exc()
                 logger.error(traceback.format_exc())
                 return dataframe
-
 
     def add_weather_scenarios_col(self, dataframe, output_file=None, month_id=None):
         """

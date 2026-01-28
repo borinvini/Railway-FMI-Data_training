@@ -211,19 +211,193 @@ WINDOW_WEATHER_DATA_FOLDER = "data/input/window_weather_data"
 # Path to train station to EMS station mapping metadata
 TRAIN_STATION_EMS_METADATA_PATH = "data/input/metadata/train_station_closest_ems.csv"
 
-# FMI Weather data column names
-FMI_TIMESTAMP_COL = "timestamp"
-FMI_STATION_NAME_COL = "station_name"
-FMI_SNOW_DEPTH_COL = "Snow depth"
-
 # Train data column names for matching
 TRAIN_SCHEDULED_TIME_COL = "scheduledTime"
 TRAIN_STATION_SHORT_CODE_COL = "stationShortCode"
 
-# New feature column names for 1h window snow depth statistics
+# FMI Weather data column names
+FMI_TIMESTAMP_COL = "timestamp"
+FMI_STATION_NAME_COL = "station_name"
+
+# Time window configuration (in minutes)
+WEATHER_WINDOW_MINUTES = 60
+
+# FMI column names for all 8 weather features
+FMI_AIR_TEMPERATURE_COL = "Air temperature"
+FMI_WIND_SPEED_COL = "Wind speed"
+FMI_RELATIVE_HUMIDITY_COL = "Relative humidity"
+FMI_PRECIPITATION_INTENSITY_COL = "Precipitation intensity"
+FMI_SNOW_DEPTH_COL = "Snow depth"
+FMI_PRESSURE_MSL_COL = "Pressure (msl)"
+FMI_HORIZONTAL_VISIBILITY_COL = "Horizontal visibility"
+FMI_CLOUD_AMOUNT_COL = "Cloud amount"
+
+# -----------------------------------------------------------------------------
+# Weather Features Configuration for 1h Window Processing
+# Dictionary mapping feature key -> FMI column name
+# This allows easy iteration and maintains consistency
+# -----------------------------------------------------------------------------
+WEATHER_1H_WINDOW_FEATURES = {
+    "air_temperature": FMI_AIR_TEMPERATURE_COL,
+    "wind_speed": FMI_WIND_SPEED_COL,
+    "relative_humidity": FMI_RELATIVE_HUMIDITY_COL,
+    "precipitation_intensity": FMI_PRECIPITATION_INTENSITY_COL,
+    "snow_depth": FMI_SNOW_DEPTH_COL,
+    "pressure_msl": FMI_PRESSURE_MSL_COL,
+    "horizontal_visibility": FMI_HORIZONTAL_VISIBILITY_COL,
+    "cloud_amount": FMI_CLOUD_AMOUNT_COL,
+}
+
+# Number of weather features for 1h window processing
+NUM_WEATHER_1H_WINDOW_FEATURES = len(WEATHER_1H_WINDOW_FEATURES)
+
+# Number of statistics per feature (min, max, mean)
+NUM_STATS_PER_FEATURE = 3
+
+# Total number of new columns (8 features × 3 stats = 24)
+TOTAL_1H_WINDOW_COLUMNS = NUM_WEATHER_1H_WINDOW_FEATURES * NUM_STATS_PER_FEATURE
+
+# -----------------------------------------------------------------------------
+# Output Column Names for 1h Window Statistics
+# Format: {feature_key}_1h_window_{statistic}
+# -----------------------------------------------------------------------------
+
+# Air Temperature (°C)
+AIR_TEMP_1H_WINDOW_MIN = "air_temperature_1h_window_min"
+AIR_TEMP_1H_WINDOW_MAX = "air_temperature_1h_window_max"
+AIR_TEMP_1H_WINDOW_MEAN = "air_temperature_1h_window_mean"
+
+# Wind Speed (m/s)
+WIND_SPEED_1H_WINDOW_MIN = "wind_speed_1h_window_min"
+WIND_SPEED_1H_WINDOW_MAX = "wind_speed_1h_window_max"
+WIND_SPEED_1H_WINDOW_MEAN = "wind_speed_1h_window_mean"
+
+# Relative Humidity (%)
+HUMIDITY_1H_WINDOW_MIN = "relative_humidity_1h_window_min"
+HUMIDITY_1H_WINDOW_MAX = "relative_humidity_1h_window_max"
+HUMIDITY_1H_WINDOW_MEAN = "relative_humidity_1h_window_mean"
+
+# Precipitation Intensity (mm/h)
+PRECIP_INTENSITY_1H_WINDOW_MIN = "precipitation_intensity_1h_window_min"
+PRECIP_INTENSITY_1H_WINDOW_MAX = "precipitation_intensity_1h_window_max"
+PRECIP_INTENSITY_1H_WINDOW_MEAN = "precipitation_intensity_1h_window_mean"
+
+# Snow Depth (cm)
 SNOW_DEPTH_1H_WINDOW_MIN = "snow_depth_1h_window_min"
 SNOW_DEPTH_1H_WINDOW_MAX = "snow_depth_1h_window_max"
 SNOW_DEPTH_1H_WINDOW_MEAN = "snow_depth_1h_window_mean"
 
-# Time window configuration (in minutes)
-WEATHER_WINDOW_MINUTES = 60
+# Pressure MSL (hPa)
+PRESSURE_1H_WINDOW_MIN = "pressure_msl_1h_window_min"
+PRESSURE_1H_WINDOW_MAX = "pressure_msl_1h_window_max"
+PRESSURE_1H_WINDOW_MEAN = "pressure_msl_1h_window_mean"
+
+# Horizontal Visibility (m)
+VISIBILITY_1H_WINDOW_MIN = "horizontal_visibility_1h_window_min"
+VISIBILITY_1H_WINDOW_MAX = "horizontal_visibility_1h_window_max"
+VISIBILITY_1H_WINDOW_MEAN = "horizontal_visibility_1h_window_mean"
+
+# Cloud Amount (oktas, 0-8)
+CLOUD_AMOUNT_1H_WINDOW_MIN = "cloud_amount_1h_window_min"
+CLOUD_AMOUNT_1H_WINDOW_MAX = "cloud_amount_1h_window_max"
+CLOUD_AMOUNT_1H_WINDOW_MEAN = "cloud_amount_1h_window_mean"
+
+# -----------------------------------------------------------------------------
+# Dictionary Mapping Feature Keys to Output Column Names
+# Used for dynamic column generation in the processing method
+# -----------------------------------------------------------------------------
+WEATHER_1H_WINDOW_OUTPUT_COLS = {
+    "air_temperature": {
+        "min": AIR_TEMP_1H_WINDOW_MIN,
+        "max": AIR_TEMP_1H_WINDOW_MAX,
+        "mean": AIR_TEMP_1H_WINDOW_MEAN,
+    },
+    "wind_speed": {
+        "min": WIND_SPEED_1H_WINDOW_MIN,
+        "max": WIND_SPEED_1H_WINDOW_MAX,
+        "mean": WIND_SPEED_1H_WINDOW_MEAN,
+    },
+    "relative_humidity": {
+        "min": HUMIDITY_1H_WINDOW_MIN,
+        "max": HUMIDITY_1H_WINDOW_MAX,
+        "mean": HUMIDITY_1H_WINDOW_MEAN,
+    },
+    "precipitation_intensity": {
+        "min": PRECIP_INTENSITY_1H_WINDOW_MIN,
+        "max": PRECIP_INTENSITY_1H_WINDOW_MAX,
+        "mean": PRECIP_INTENSITY_1H_WINDOW_MEAN,
+    },
+    "snow_depth": {
+        "min": SNOW_DEPTH_1H_WINDOW_MIN,
+        "max": SNOW_DEPTH_1H_WINDOW_MAX,
+        "mean": SNOW_DEPTH_1H_WINDOW_MEAN,
+    },
+    "pressure_msl": {
+        "min": PRESSURE_1H_WINDOW_MIN,
+        "max": PRESSURE_1H_WINDOW_MAX,
+        "mean": PRESSURE_1H_WINDOW_MEAN,
+    },
+    "horizontal_visibility": {
+        "min": VISIBILITY_1H_WINDOW_MIN,
+        "max": VISIBILITY_1H_WINDOW_MAX,
+        "mean": VISIBILITY_1H_WINDOW_MEAN,
+    },
+    "cloud_amount": {
+        "min": CLOUD_AMOUNT_1H_WINDOW_MIN,
+        "max": CLOUD_AMOUNT_1H_WINDOW_MAX,
+        "mean": CLOUD_AMOUNT_1H_WINDOW_MEAN,
+    },
+}
+
+# -----------------------------------------------------------------------------
+# List of All 1h Window Output Columns (for validation and reference)
+# Total: 24 columns (8 features × 3 statistics)
+# -----------------------------------------------------------------------------
+ALL_1H_WINDOW_OUTPUT_COLUMNS = [
+    # Air Temperature
+    AIR_TEMP_1H_WINDOW_MIN,
+    AIR_TEMP_1H_WINDOW_MAX,
+    AIR_TEMP_1H_WINDOW_MEAN,
+    # Wind Speed
+    WIND_SPEED_1H_WINDOW_MIN,
+    WIND_SPEED_1H_WINDOW_MAX,
+    WIND_SPEED_1H_WINDOW_MEAN,
+    # Relative Humidity
+    HUMIDITY_1H_WINDOW_MIN,
+    HUMIDITY_1H_WINDOW_MAX,
+    HUMIDITY_1H_WINDOW_MEAN,
+    # Precipitation Intensity
+    PRECIP_INTENSITY_1H_WINDOW_MIN,
+    PRECIP_INTENSITY_1H_WINDOW_MAX,
+    PRECIP_INTENSITY_1H_WINDOW_MEAN,
+    # Snow Depth
+    SNOW_DEPTH_1H_WINDOW_MIN,
+    SNOW_DEPTH_1H_WINDOW_MAX,
+    SNOW_DEPTH_1H_WINDOW_MEAN,
+    # Pressure MSL
+    PRESSURE_1H_WINDOW_MIN,
+    PRESSURE_1H_WINDOW_MAX,
+    PRESSURE_1H_WINDOW_MEAN,
+    # Horizontal Visibility
+    VISIBILITY_1H_WINDOW_MIN,
+    VISIBILITY_1H_WINDOW_MAX,
+    VISIBILITY_1H_WINDOW_MEAN,
+    # Cloud Amount
+    CLOUD_AMOUNT_1H_WINDOW_MIN,
+    CLOUD_AMOUNT_1H_WINDOW_MAX,
+    CLOUD_AMOUNT_1H_WINDOW_MEAN,
+]
+
+# -----------------------------------------------------------------------------
+# Feature Descriptions (for documentation/logging)
+# -----------------------------------------------------------------------------
+WEATHER_1H_WINDOW_FEATURE_DESCRIPTIONS = {
+    "air_temperature": "Air temperature in degrees Celsius",
+    "wind_speed": "Wind speed in meters per second",
+    "relative_humidity": "Relative humidity percentage (0-100%)",
+    "precipitation_intensity": "Precipitation intensity in mm/h",
+    "snow_depth": "Snow depth in centimeters",
+    "pressure_msl": "Atmospheric pressure at mean sea level in hPa",
+    "horizontal_visibility": "Horizontal visibility in meters",
+    "cloud_amount": "Cloud amount in oktas (0-8 scale)",
+}
