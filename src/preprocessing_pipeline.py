@@ -4,6 +4,8 @@ import datetime
 import logging
 import os
 import re
+import glob
+                
 
 import numpy as np
 import pandas as pd
@@ -12,6 +14,9 @@ from sklearn.preprocessing import OneHotEncoder
 from src.file_utils import generate_output_path, save_dataframe_to_csv
 
 from config.const_preprocessing import (
+    FMI_SNOW_DEPTH_COL,
+    FMI_STATION_NAME_COL,
+    FMI_TIMESTAMP_COL,
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
     FOLDER_ADD_WEATHER_SCENARIOS_COL,
     FOLDER_ADD_WEATHER_1H_WINDOW_FEATURES,
@@ -32,6 +37,10 @@ from config.const_preprocessing import (
     FOLDER_SELECT_TARGET,
     FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
     PREPROCESSED_OUTPUT_FOLDER,
+    SNOW_DEPTH_1H_WINDOW_MAX,
+    SNOW_DEPTH_1H_WINDOW_MEAN,
+    SNOW_DEPTH_1H_WINDOW_MIN,
+    TRAIN_STATION_SHORT_CODE_COL,
     TRAINING_READY_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     PREPROCESSING_STATE_MACHINE,
@@ -48,6 +57,18 @@ from config.const_preprocessing import (
     CATEGORICAL_FEATURES,
     WEATHER_MISSING_THRESHOLD,
     DATA_FILE_PREFIX_FOR_TRAINING,
+    WEATHER_WINDOW_MINUTES,
+    WINDOW_WEATHER_DATA_FOLDER,
+    TRAIN_STATION_EMS_METADATA_PATH,
+    FMI_TIMESTAMP_COL,
+    FMI_STATION_NAME_COL,
+    FMI_SNOW_DEPTH_COL,
+    TRAIN_SCHEDULED_TIME_COL,
+    TRAIN_STATION_SHORT_CODE_COL,
+    SNOW_DEPTH_1H_WINDOW_MIN,
+    SNOW_DEPTH_1H_WINDOW_MAX,
+    SNOW_DEPTH_1H_WINDOW_MEAN,
+    WEATHER_WINDOW_MINUTES,
 )
 
 
@@ -1635,11 +1656,423 @@ class PreprocessingPipeline:
                 return dataframe  # Return original dataframe on error
 
     def add_weather_1h_window_features(self, dataframe=None, month_id=None):
-            """
-            Add weather features computed from a 1-hour rolling window.
-            ...
-            """
-            # ... implementation with FOLDER_ADD_WEATHER_1H_WINDOW_FEATURES ...
+        """
+        Add weather features computed from a 1-hour rolling window before each scheduled time.
+        
+        OPTIMIZED VERSION: Uses vectorized operations for efficient processing of large datasets.
+        
+        This method:
+        1. Loads FMI weather data for the current month and its predecessor (if exists)
+        2. Loads the train station to EMS station mapping metadata
+        3. For each row in the dataframe:
+        - Finds the closest EMS station (from top 5) that has snow depth measurements
+        - Calculates min, max, mean of snow depth in a 1h window before scheduledTime
+        4. Adds new columns: snow_depth_1h_window_min, snow_depth_1h_window_max, snow_depth_1h_window_mean
+        
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            The dataframe to process containing train data with 'scheduledTime' and 'stationShortCode' columns.
+        month_id : str, optional
+            Month identifier in format "YYYY_MM" for logging purposes and file identification.
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with added 1h window weather feature columns.
+        """
+      
+        # Check if dataframe is provided
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+            
+        df = dataframe.copy()
+        print(f"Adding 1h window weather features to dataframe with {len(df):,} rows")
+        
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+        
+        # Use the logging method for detailed logging
+        with self.get_logger("add_weather_1h_window_features.log", "add_weather_1h_window_features", month_id) as logger:
+            try:
+                logger.info(f"Starting 1h window weather feature extraction for {len(df)} rows")
+                
+                # ================================================================
+                # STEP 1: Extract year and month from month_id
+                # ================================================================
+                if month_id is None:
+                    month_id = self.current_file_id
+                    
+                # Parse year and month from month_id (format: "YYYY_MM")
+                try:
+                    parts = month_id.split('_')
+                    if len(parts) == 2:
+                        year = int(parts[0])
+                        month = int(parts[1])
+                    else:
+                        match = re.search(r'(\d{4}).*?(\d{2})', month_id)
+                        if match:
+                            year, month = int(match.group(1)), int(match.group(2))
+                        else:
+                            raise ValueError(f"Cannot parse month_id: {month_id}")
+                except Exception as e:
+                    logger.error(f"Error parsing month_id '{month_id}': {e}")
+                    print(f"Error parsing month_id '{month_id}': {e}")
+                    return dataframe
+                
+                print(f"\n--- LOADING FMI WEATHER DATA ---")
+                print(f"Target period: {year}-{month:02d}")
+                logger.info(f"Target period: {year}-{month:02d}")
+                
+                # ================================================================
+                # STEP 2: Load FMI weather data (current month + predecessor)
+                # ================================================================
+
+                fmi_dataframes = []
+                
+                # Current month file pattern: fmi_weather_observations_YYYY_MM.csv
+                # Using glob to match pattern *_YYYY_MM.csv
+                current_month_pattern = os.path.join(
+                    self.project_root, 
+                    WINDOW_WEATHER_DATA_FOLDER, 
+                    f"*_{year}_{month:02d}.csv"
+                )
+                
+                # Predecessor month
+                if month == 1:
+                    pred_year = year - 1
+                    pred_month = 12
+                else:
+                    pred_year = year
+                    pred_month = month - 1
+                
+                pred_month_pattern = os.path.join(
+                    self.project_root, 
+                    WINDOW_WEATHER_DATA_FOLDER, 
+                    f"*_{pred_year}_{pred_month:02d}.csv"
+                )
+                
+                # Load current month using glob pattern
+                current_month_files = glob.glob(current_month_pattern)
+                if current_month_files:
+                    try:
+                        current_month_file = current_month_files[0]  # Take first match
+                        current_df = pd.read_csv(current_month_file)
+                        fmi_dataframes.append(current_df)
+                        print(f"✓ Loaded current month FMI data: {os.path.basename(current_month_file)}")
+                        print(f"  Shape: {current_df.shape[0]:,} rows × {current_df.shape[1]} columns")
+                        logger.info(f"Loaded current month FMI data: {current_month_file} ({current_df.shape[0]} rows)")
+                    except Exception as e:
+                        logger.error(f"Error loading current month FMI data: {e}")
+                        print(f"✗ Error loading current month FMI data: {e}")
+                else:
+                    logger.warning(f"Current month FMI file not found matching pattern: {current_month_pattern}")
+                    print(f"⚠️  Current month FMI file not found matching pattern: *_{year}_{month:02d}.csv")
+                
+                # Load predecessor month using glob pattern
+                pred_month_files = glob.glob(pred_month_pattern)
+                if pred_month_files:
+                    try:
+                        pred_month_file = pred_month_files[0]  # Take first match
+                        pred_df = pd.read_csv(pred_month_file)
+                        fmi_dataframes.append(pred_df)
+                        print(f"✓ Loaded predecessor month FMI data: {os.path.basename(pred_month_file)}")
+                        print(f"  Shape: {pred_df.shape[0]:,} rows × {pred_df.shape[1]} columns")
+                        logger.info(f"Loaded predecessor month FMI data: {pred_month_file} ({pred_df.shape[0]} rows)")
+                    except Exception as e:
+                        logger.warning(f"Error loading predecessor month FMI data: {e}")
+                        print(f"⚠️  Error loading predecessor month FMI data: {e}")
+                else:
+                    logger.info(f"Predecessor month FMI file not found (may be expected): *_{pred_year}_{pred_month:02d}.csv")
+                    print(f"  Predecessor month not found (may be expected for first month of data)")
+                
+                # Combine FMI dataframes
+                if not fmi_dataframes:
+                    logger.error("No FMI weather data files could be loaded")
+                    print("✗ No FMI weather data files could be loaded")
+                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    return df
+                
+                fmi_df = pd.concat(fmi_dataframes, ignore_index=True)
+                print(f"\n✓ Combined FMI data: {fmi_df.shape[0]:,} rows × {fmi_df.shape[1]} columns")
+                logger.info(f"Combined FMI data shape: {fmi_df.shape}")
+                
+                # ================================================================
+                # STEP 3: Parse and validate FMI data
+                # ================================================================
+                required_fmi_cols = [FMI_TIMESTAMP_COL, FMI_STATION_NAME_COL, FMI_SNOW_DEPTH_COL]
+                missing_cols = [col for col in required_fmi_cols if col not in fmi_df.columns]
+                
+                if missing_cols:
+                    logger.error(f"Missing required FMI columns: {missing_cols}")
+                    print(f"✗ Missing required FMI columns: {missing_cols}")
+                    print(f"  Available columns: {fmi_df.columns.tolist()}")
+                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    return df
+                
+                # Convert timestamps and numeric columns
+                fmi_df[FMI_TIMESTAMP_COL] = pd.to_datetime(fmi_df[FMI_TIMESTAMP_COL], errors='coerce')
+                
+                # Ensure FMI timestamps are tz-naive for consistent comparison
+                if fmi_df[FMI_TIMESTAMP_COL].dt.tz is not None:
+                    fmi_df[FMI_TIMESTAMP_COL] = fmi_df[FMI_TIMESTAMP_COL].dt.tz_localize(None)
+                    print(f"  Converted FMI timestamps to tz-naive")
+                
+                fmi_df[FMI_SNOW_DEPTH_COL] = pd.to_numeric(fmi_df[FMI_SNOW_DEPTH_COL], errors='coerce')
+                
+                # Remove rows with invalid timestamps
+                fmi_df = fmi_df.dropna(subset=[FMI_TIMESTAMP_COL])
+                
+                # Sort by timestamp for efficient time-based lookups
+                fmi_df = fmi_df.sort_values(FMI_TIMESTAMP_COL).reset_index(drop=True)
+                
+                print(f"✓ Parsed FMI timestamps and snow depth values")
+                logger.info("Parsed FMI timestamps and snow depth values")
+                
+                # ================================================================
+                # STEP 4: Load train station to EMS mapping metadata
+                # ================================================================
+                print(f"\n--- LOADING STATION MAPPING METADATA ---")
+                
+                metadata_path = os.path.join(self.project_root, TRAIN_STATION_EMS_METADATA_PATH)
+                
+                if not os.path.exists(metadata_path):
+                    logger.error(f"Station mapping metadata not found: {metadata_path}")
+                    print(f"✗ Station mapping metadata not found: {metadata_path}")
+                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    return df
+                
+                try:
+                    station_mapping_df = pd.read_csv(metadata_path)
+                    print(f"✓ Loaded station mapping metadata")
+                    print(f"  Shape: {station_mapping_df.shape[0]:,} train stations")
+                    logger.info(f"Loaded station mapping metadata: {station_mapping_df.shape}")
+                except Exception as e:
+                    logger.error(f"Error loading station mapping metadata: {e}")
+                    print(f"✗ Error loading station mapping metadata: {e}")
+                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    return df
+                
+                # ================================================================
+                # STEP 5: Build optimized lookup structures
+                # ================================================================
+                print(f"\n--- BUILDING OPTIMIZED LOOKUP STRUCTURES ---")
+                
+                # Build station-to-EMS mapping
+                station_to_ems = {}
+                for _, row in station_mapping_df.iterrows():
+                    train_code = row.get('train_station_code')
+                    if pd.isna(train_code):
+                        continue
+                    ems_list = []
+                    for i in range(1, 6):
+                        ems_name_col = f'ems_{i}_name'
+                        if ems_name_col in row.index and pd.notna(row[ems_name_col]):
+                            ems_list.append(row[ems_name_col])
+                    station_to_ems[train_code] = ems_list
+                
+                # Get set of stations with snow depth data
+                snow_valid_mask = fmi_df[FMI_SNOW_DEPTH_COL].notna()
+                fmi_stations_with_snow = set(fmi_df.loc[snow_valid_mask, FMI_STATION_NAME_COL].unique())
+                
+                # Get total number of EMS stations in FMI data
+                total_ems_stations = fmi_df[FMI_STATION_NAME_COL].nunique()
+                
+                print(f"✓ Built mapping for {len(station_to_ems)} train stations")
+                print(f"✓ Found {len(fmi_stations_with_snow)}/{total_ems_stations} EMS stations with snow depth data")
+                logger.info(f"Mapped {len(station_to_ems)} stations, {len(fmi_stations_with_snow)}/{total_ems_stations} with snow data")
+                
+                # Pre-index FMI data by station for efficient lookups
+                # This creates a dict: {station_name: DataFrame of that station's data}
+                fmi_by_station = {name: group.copy() for name, group in fmi_df.groupby(FMI_STATION_NAME_COL)}
+                
+                print(f"✓ Pre-indexed FMI data by station ({len(fmi_by_station)} stations)")
+                
+                # ================================================================
+                # STEP 6: Validate input dataframe
+                # ================================================================
+                required_cols = [TRAIN_SCHEDULED_TIME_COL, TRAIN_STATION_SHORT_CODE_COL]
+                missing_cols = [col for col in required_cols if col not in df.columns]
+                
+                if missing_cols:
+                    logger.error(f"Missing required columns in input dataframe: {missing_cols}")
+                    print(f"✗ Missing required columns: {missing_cols}")
+                    df[SNOW_DEPTH_1H_WINDOW_MIN] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MAX] = np.nan
+                    df[SNOW_DEPTH_1H_WINDOW_MEAN] = np.nan
+                    return df
+                
+                # Parse scheduled time
+                df['_scheduled_dt'] = pd.to_datetime(df[TRAIN_SCHEDULED_TIME_COL], errors='coerce')
+                
+                # Convert to tz-naive (remove timezone info) for consistent comparison with FMI data
+                if df['_scheduled_dt'].dt.tz is not None:
+                    df['_scheduled_dt'] = df['_scheduled_dt'].dt.tz_localize(None)
+                    print(f"  Converted scheduled times to tz-naive")
+                
+                # ================================================================
+                # STEP 7: Create lookup function for EMS station selection
+                # ================================================================
+                def get_best_ems_station(train_code):
+                    """Get the closest EMS station that measures snow depth."""
+                    ems_list = station_to_ems.get(train_code, [])
+                    for ems_name in ems_list:
+                        if ems_name in fmi_stations_with_snow:
+                            return ems_name
+                    return None
+                
+                # Map each train station to its best EMS station
+                df['_ems_station'] = df[TRAIN_STATION_SHORT_CODE_COL].apply(get_best_ems_station)
+                
+                # ================================================================
+                # STEP 8: Calculate 1h window features using optimized approach
+                # ================================================================
+                print(f"\n--- CALCULATING 1H WINDOW FEATURES (OPTIMIZED) ---")
+                
+                window_td = pd.Timedelta(minutes=WEATHER_WINDOW_MINUTES)
+                
+                # Initialize result arrays
+                n_rows = len(df)
+                snow_min = np.full(n_rows, np.nan)
+                snow_max = np.full(n_rows, np.nan)
+                snow_mean = np.full(n_rows, np.nan)
+                
+                # Statistics
+                rows_with_valid_data = 0
+                rows_no_ems_match = 0
+                rows_no_time_window_data = 0
+                
+                # Group by EMS station for batch processing
+                ems_groups = df.groupby('_ems_station', dropna=False)
+                
+                total_groups = len(ems_groups)
+                processed_groups = 0
+                
+                for ems_name, group_df in ems_groups:
+                    processed_groups += 1
+                    
+                    if pd.isna(ems_name):
+                        # No EMS station found for these rows
+                        rows_no_ems_match += len(group_df)
+                        continue
+                    
+                    if ems_name not in fmi_by_station:
+                        rows_no_ems_match += len(group_df)
+                        continue
+                    
+                    # Get FMI data for this station
+                    station_fmi = fmi_by_station[ems_name]
+                    
+                    # Process each row in the group
+                    for df_idx in group_df.index:
+                        scheduled_time = df.loc[df_idx, '_scheduled_dt']
+                        
+                        if pd.isna(scheduled_time):
+                            continue
+                        
+                        # Calculate time window
+                        window_start = scheduled_time - window_td
+                        window_end = scheduled_time
+                        
+                        # Filter FMI data for this time window
+                        time_mask = (
+                            (station_fmi[FMI_TIMESTAMP_COL] >= window_start) & 
+                            (station_fmi[FMI_TIMESTAMP_COL] <= window_end)
+                        )
+                        window_data = station_fmi.loc[time_mask, FMI_SNOW_DEPTH_COL]
+                        
+                        # Calculate statistics
+                        valid_data = window_data.dropna()
+                        
+                        if len(valid_data) == 0:
+                            rows_no_time_window_data += 1
+                        else:
+                            # Get the original position in df
+                            pos = df.index.get_loc(df_idx)
+                            snow_min[pos] = valid_data.min()
+                            snow_max[pos] = valid_data.max()
+                            snow_mean[pos] = valid_data.mean()
+                            rows_with_valid_data += 1
+                    
+                    # Progress reporting
+                    if processed_groups % max(1, total_groups // 10) == 0:
+                        progress_pct = (processed_groups / total_groups) * 100
+                        print(f"  Progress: {processed_groups}/{total_groups} station groups ({progress_pct:.1f}%)")
+                
+                # Clean up temporary columns
+                df = df.drop(columns=['_scheduled_dt', '_ems_station'])
+                
+                # Add result columns
+                df[SNOW_DEPTH_1H_WINDOW_MIN] = snow_min
+                df[SNOW_DEPTH_1H_WINDOW_MAX] = snow_max
+                df[SNOW_DEPTH_1H_WINDOW_MEAN] = snow_mean
+                
+                # ================================================================
+                # STEP 9: Report statistics
+                # ================================================================
+                print(f"\n--- 1H WINDOW FEATURE EXTRACTION SUMMARY ---")
+                print(f"{'='*60}")
+                print(f"Total rows processed: {n_rows:,}")
+                print(f"Rows with valid snow depth data: {rows_with_valid_data:,} ({rows_with_valid_data/n_rows*100:.1f}%)")
+                print(f"Rows without EMS station match: {rows_no_ems_match:,}")
+                print(f"Rows without time window data: {rows_no_time_window_data:,}")
+                print(f"{'='*60}")
+                
+                logger.info(f"Summary - Total: {n_rows}, Valid: {rows_with_valid_data}, "
+                        f"No EMS: {rows_no_ems_match}, No window data: {rows_no_time_window_data}")
+                
+                # Statistics for new columns
+                print(f"\n--- NEW COLUMN STATISTICS ---")
+                for col in [SNOW_DEPTH_1H_WINDOW_MIN, SNOW_DEPTH_1H_WINDOW_MAX, SNOW_DEPTH_1H_WINDOW_MEAN]:
+                    non_null = df[col].notna().sum()
+                    if non_null > 0:
+                        print(f"{col}:")
+                        print(f"  Non-null: {non_null:,} ({non_null/len(df)*100:.1f}%)")
+                        print(f"  Range: [{df[col].min():.2f}, {df[col].max():.2f}]")
+                        print(f"  Mean: {df[col].mean():.2f}")
+                    else:
+                        print(f"{col}: All values are null")
+                
+                # ================================================================
+                # STEP 10: Save processed data
+                # ================================================================
+                print(f"\n--- SAVING add_weather_1h_window_features DATA ---")
+                
+                try:
+                    saved_file_path = save_dataframe_to_csv(
+                        folder_path=FOLDER_ADD_WEATHER_1H_WINDOW_FEATURES,
+                        month_id=month_id if month_id else self.current_file_id,
+                        df=df,
+                        file_prefix="add_weather_1h_window_features"
+                    )
+                    
+                    print(f"✓ Successfully saved 1h window weather features to: {saved_file_path}")
+                    logger.info(f"Saved processed data to: {saved_file_path}")
+                    
+                except Exception as save_error:
+                    print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+                    logger.error(f"Failed to save: {save_error}")
+                
+                return df
+                
+            except Exception as e:
+                error_msg = f"Error in add_weather_1h_window_features: {e}"
+                print(f"✗ {error_msg}")
+                logger.error(error_msg)
+                import traceback
+                traceback.print_exc()
+                logger.error(traceback.format_exc())
+                return dataframe
 
 
     def add_weather_scenarios_col(self, dataframe, output_file=None, month_id=None):

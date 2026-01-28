@@ -203,3 +203,27 @@ STRONG_INDICATORS = {'I1', 'I2'}
 
 # Possible weather delay indicators (score: 2)  
 POSSIBLE_INDICATORS = {'A1', 'K1', 'O1', 'P1', 'S1', 'S2', 'T2', 'T3', 'V3'}
+
+
+# Path to FMI weather data for 1h window feature calculation
+WINDOW_WEATHER_DATA_FOLDER = "data/input/window_weather_data"
+
+# Path to train station to EMS station mapping metadata
+TRAIN_STATION_EMS_METADATA_PATH = "data/input/metadata/train_station_closest_ems.csv"
+
+# FMI Weather data column names
+FMI_TIMESTAMP_COL = "timestamp"
+FMI_STATION_NAME_COL = "station_name"
+FMI_SNOW_DEPTH_COL = "Snow depth"
+
+# Train data column names for matching
+TRAIN_SCHEDULED_TIME_COL = "scheduledTime"
+TRAIN_STATION_SHORT_CODE_COL = "stationShortCode"
+
+# New feature column names for 1h window snow depth statistics
+SNOW_DEPTH_1H_WINDOW_MIN = "snow_depth_1h_window_min"
+SNOW_DEPTH_1H_WINDOW_MAX = "snow_depth_1h_window_max"
+SNOW_DEPTH_1H_WINDOW_MEAN = "snow_depth_1h_window_mean"
+
+# Time window configuration (in minutes)
+WEATHER_WINDOW_MINUTES = 60
