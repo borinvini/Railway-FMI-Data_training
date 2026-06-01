@@ -850,8 +850,8 @@ class TrainingPipeline:
             merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
             os.makedirs(merged_training_ready_dir, exist_ok=True)
             
-            # Find all training-ready CSV files using glob pattern
-            training_ready_pattern = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER, "training_ready_*.csv")
+            # Find all training-ready parquet files using glob pattern
+            training_ready_pattern = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER, "training_ready_*.parquet")
             training_ready_files = glob.glob(training_ready_pattern)
             
             if not training_ready_files:
@@ -878,8 +878,8 @@ class TrainingPipeline:
                     print(f"    merge_data_files: Processing {filename}...")
                     
                     # Extract month information from filename using regex
-                    # Expected format: training_ready_YYYY_MM.csv
-                    month_match = re.search(r'training_ready_(\d{4})_(\d{2})\.csv$', filename)
+                    # Expected format: training_ready_YYYY_MM.parquet
+                    month_match = re.search(r'training_ready_(\d{4})_(\d{2})\.parquet$', filename)
                     
                     if not month_match:
                         print(f"    merge_data_files: Warning - Could not extract date from {filename}. Skipping.")
@@ -887,9 +887,9 @@ class TrainingPipeline:
                     
                     year = int(month_match.group(1))
                     month_number = int(month_match.group(2))
-                    
-                    # Read the CSV file
-                    df = pd.read_csv(file_path)
+
+                    # Read the parquet file
+                    df = pd.read_parquet(file_path)
                     
                     if df.empty:
                         print(f"    merge_data_files: Warning - File {filename} is empty. Skipping.")
