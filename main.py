@@ -1,4 +1,4 @@
-from src.file_utils import check_csv_files, extract_date_range, ensure_folder_structure, find_closest_ems_stations
+from src.file_utils import check_parquet_files, extract_date_range, ensure_folder_structure
 from src.training_pipeline import TrainingPipeline
 from src.preprocessing_pipeline import PreprocessingPipeline  
 
@@ -37,24 +37,6 @@ def main():
         print("Cannot proceed without proper folder structure. Please check permissions and try again.")
         return
     
-    # STEP 1.5: Find closest EMS stations for each train station
-    # This creates a mapping file used for weather data assignment
-    print("\n" + "-" * 60)
-    print("METADATA PROCESSING: Train Station to EMS Station Mapping")
-    print("-" * 60)
-    try:
-        closest_ems_df = find_closest_ems_stations(n_closest=5)
-        print("✓ Closest EMS stations mapping created successfully!")
-    except FileNotFoundError as e:
-        print(f"⚠️  Skipping EMS station mapping (metadata files not found):")
-        print(f"   {e}")
-        print("   Please ensure the following files exist:")
-        print("   - data/input/metadata/metadata_train_stations.csv")
-        print("   - data/input/metadata/metadata_fmi_ems_stations.csv")
-    except Exception as e:
-        print(f"✗ Error creating EMS station mapping: {e}")
-
-    
     # STEP 2: Display configuration information
     print("\n" + "="*60)
     print("STARTING RAILWAY FMI DATA CHECK AND PROCESSING")
@@ -71,23 +53,23 @@ def main():
         print(f"Only trains passing through ALL of these stations will be processed: {', '.join(REQUIRED_STATIONS)}")
         print(f"This may significantly reduce the amount of data available for training.\n")
     
-    # STEP 4: Check for CSV files in the input directory
-    print(f"Checking for CSV files...")
-    csv_files = check_csv_files()
+    # STEP 4: Check for parquet files in the input directory
+    print(f"Checking for parquet files...")
+    parquet_files = check_parquet_files()
             
     # STEP 5: Extract date range from filenames
-    date_range = extract_date_range(csv_files)
+    date_range = extract_date_range(parquet_files)
     
     print("\nInitial data check complete.")
 
-    if not csv_files:
-        print(f"\n⚠️  No CSV files found in {INPUT_FOLDER}")
+    if not parquet_files:
+        print(f"\n⚠️  No parquet files found in {INPUT_FOLDER}")
         print("The folder structure has been created successfully.")
-        print("Please place your CSV files in the input directory and run the script again.")
+        print("Please place your parquet files in the input directory and run the script again.")
         print(f"\nNext steps:")
-        print(f"  1. Add your CSV files to: {INPUT_FOLDER}")
-        print(f"  2. Expected format: matched_data_YYYY_MM.csv")
-        print(f"  3. Example: matched_data_2023_12.csv")
+        print(f"  1. Add your parquet files to: {INPUT_FOLDER}")
+        print(f"  2. Expected format: matched_data_YYYY_MM.parquet")
+        print(f"  3. Example: matched_data_2023_12.parquet")
         print(f"  4. Then run: python main.py")
         return
      
@@ -98,7 +80,7 @@ def main():
         print("="*60)
         print("Preprocessing pipeline execution is disabled in configuration.")
         print("To enable preprocessing pipeline execution, set EXECUTE_PREPROCESSING_DATA_PIPELINE = True in config/const.py")
-        print(f"Found {len(csv_files)} CSV files ready for processing when enabled.")
+        print(f"Found {len(parquet_files)} parquet files ready for processing when enabled.")
     else:
         # STEP 7: Initialize and run the preprocessing pipeline
         print("\n" + "="*60)
@@ -111,9 +93,9 @@ def main():
         print(f"Preprocessing state machine configuration: {PREPROCESSING_STATE_MACHINE}")
         print(f"Starting preprocessing pipeline execution with target feature: '{DEFAULT_TARGET_FEATURE}'")
         
-        # Run the full preprocessing pipeline on all CSV files with the default target feature
+        # Run the full preprocessing pipeline on all parquet files with the default target feature
         preprocessing_results = preprocessing_pipeline.run_pipeline(  # CHANGED: Use PreprocessingPipeline instance
-            csv_files, 
+            parquet_files,
             target_feature=DEFAULT_TARGET_FEATURE
         )
         
@@ -155,7 +137,7 @@ def main():
         
         # Run the training pipeline steps
         training_results = training_pipeline.execute_training_pipeline_steps(
-            csv_files,
+            parquet_files,
             state_machine=TRAINING_STATE_MACHINE
         )
         
