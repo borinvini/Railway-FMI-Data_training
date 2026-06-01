@@ -38,45 +38,22 @@ from config.const_training import (
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
 )
 
-def save_dataframe_to_csv(folder_path: str, month_id: str, df: pd.DataFrame, 
-                          file_prefix: str = "data") -> str:
+def save_dataframe_to_parquet(folder_path: str, month_id: str, df: pd.DataFrame,
+                              file_prefix: str = "data") -> str:
     """
-    Generic function to save a DataFrame to a CSV file in a specified folder.
-    
-    Parameters
-    ----------
-    folder_path : str
-        The directory path where the CSV file will be saved.
-        Example: "data/output/1-extract_nested_data"
-    month_id : str
-        The month identifier for the file naming convention.
-        Example: "2024_01" or "202401"
-    df : pd.DataFrame
-        The pandas DataFrame to be saved to CSV.
-    file_prefix : str, optional
-        Prefix for the filename (default is "data").
-        The final filename will be: {file_prefix}_{month_id}.csv
-    
-    Returns
-    -------
-    str
-        The full path of the saved CSV file.
+    Generic function to save a DataFrame to a parquet file in a specified folder.
     """
-    
-    # Create the folder path if it doesn't exist
     folder = Path(folder_path)
     folder.mkdir(parents=True, exist_ok=True)
-    
-    # Generate filename with month identifier
-    filename = f"{file_prefix}_{month_id}.csv"
+
+    filename = f"{file_prefix}_{month_id}.parquet"
     file_path = folder / filename
-    
-    # Save the DataFrame to CSV
-    df.to_csv(file_path, index=False, encoding='utf-8')
-    
+
+    df.to_parquet(file_path, index=False)
+
     print(f"Successfully saved DataFrame to {file_path}")
     print(f"Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
-    
+
     return str(file_path)
 
 def ensure_folder_structure():
@@ -134,40 +111,35 @@ def ensure_folder_structure():
         "total_verified": len(required_directories)
     }
 
-def check_csv_files():
+def check_parquet_files():
     """
-    Check if there are CSV files in the data/input folder and print their names.
-    Returns a list of CSV file paths found.
-    
-    Note: The input folder is guaranteed to exist by the main initialization process.
+    Check if there are parquet files in the data/input folder and print their names.
+    Returns a list of parquet file paths found.
     """
-    # Using only Approach 1: Based on the script's location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     input_folder = os.path.join(project_root, INPUT_FOLDER)
-    
-    print(f"Looking for CSV files in: {input_folder}")
-    
-    # Check for CSV files in the data/input folder
-    csv_files = []
+
+    print(f"Looking for parquet files in: {input_folder}")
+
+    parquet_files = []
     if os.path.exists(input_folder):
-        csv_files = glob.glob(os.path.join(input_folder, '*.csv'))
-    
-    # Report findings
-    if csv_files:
-        print(f"\n✓ Success! Found {len(csv_files)} CSV files in the input folder:")
-        for file in csv_files:
-            file_size = os.path.getsize(file) / (1024 * 1024)  # Size in MB
+        parquet_files = glob.glob(os.path.join(input_folder, '*.parquet'))
+
+    if parquet_files:
+        print(f"\n✓ Success! Found {len(parquet_files)} parquet files in the input folder:")
+        for file in parquet_files:
+            file_size = os.path.getsize(file) / (1024 * 1024)
             print(f"  - {os.path.basename(file)} ({file_size:.1f} MB)")
     else:
-        print(f"\n⚠️  No CSV files found in the input folder.")
+        print(f"\n⚠️  No parquet files found in the input folder.")
         print(f"\nTo get started:")
-        print(f"  1. Place your CSV files in: {input_folder}")
-        print(f"  2. Expected file format: {DATA_FILE_PREFIX}YYYY_MM.csv")
-        print(f"  3. Example: {DATA_FILE_PREFIX}2023_12.csv")
-        print(f"  4. Then run: python main.py --target trainDelayed")
-    
-    return csv_files
+        print(f"  1. Place your parquet files in: {input_folder}")
+        print(f"  2. Expected file format: {DATA_FILE_PREFIX}YYYY_MM.parquet")
+        print(f"  3. Example: {DATA_FILE_PREFIX}2023_12.parquet")
+        print(f"  4. Then run: python main.py")
+
+    return parquet_files
 
 def extract_date_range(csv_files):
     """
@@ -186,7 +158,7 @@ def extract_date_range(csv_files):
     
     # Extract all YYYY_MM patterns from filenames
     dates = []
-    pattern = f'{DATA_FILE_PREFIX}(\\d{{4}})_(\\d{{2}})\\.csv'  # Use the constant here
+    pattern = f'{DATA_FILE_PREFIX}(\\d{{4}})_(\\d{{2}})\\.parquet'
     
     for file_path in csv_files:
         filename = os.path.basename(file_path)
@@ -236,10 +208,10 @@ def generate_output_path(input_file_path):
     
     if match:
         year, month = match.groups()
-        output_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year}_{month}.csv"
+        output_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{year}_{month}.parquet"
     else:
         # Fallback if date pattern not found
-        output_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}processed.csv"
+        output_filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}processed.parquet"
         print(f"Warning: Could not extract date from filename. Using default: {output_filename}")
     
     # Ensure specific output directories exist (basic structure guaranteed by main initialization)
@@ -250,10 +222,10 @@ def generate_output_path(input_file_path):
     output_file_path = os.path.join(OUTPUT_FOLDER, output_filename)
     print(f"Will save to {OUTPUT_FOLDER} directory: {output_file_path}")
     
-    # Load the CSV file
-    print(f"Loading CSV file: {input_file_path}")
-    df = pd.read_csv(input_file_path)
-    print(f"Successfully loaded CSV with {len(df)} rows and {len(df.columns)} columns")
+    # Load the parquet file
+    print(f"Loading parquet file: {input_file_path}")
+    df = pd.read_parquet(input_file_path)
+    print(f"Successfully loaded parquet with {len(df)} rows and {len(df.columns)} columns")
     
     return output_file_path, df
 
