@@ -171,7 +171,7 @@ class PreprocessingPipeline:
             filename = os.path.basename(input_file_path)
             
             # Extract year and month from filename
-            match = re.search(r'(\d{4})_(\d{2})\.csv$', filename)
+            match = re.search(r'(\d{4})_(\d{2})\.parquet$', filename)
             
             if not match:
                 print(f"\n[{i+1}/{len(csv_files)}] Warning: Could not extract date from filename {filename}. Skipping.")
@@ -269,7 +269,7 @@ class PreprocessingPipeline:
             print(f"\nSuccessfully processed files:")
             for info in processed_files_info:
                 steps_str = " → ".join(info['steps_executed'])
-                print(f"  {info['original_file']} -> preprocessed_data_{info['file_id']}.csv")
+                print(f"  {info['original_file']} -> preprocessed_data_{info['file_id']}.parquet")
                 print(f"    ({info['rows']:,} rows, {len(info['steps_executed'])} steps: {steps_str})")
         
         if failed_files > 0:
@@ -593,29 +593,29 @@ class PreprocessingPipeline:
         else:
             print(f"    ⊝ handle_missing_values (disabled)")
 
-        if state_machine.get("save_month_df_to_csv", False):
+        if state_machine.get("save_month_df_to_parquet", False):
             if result["data"] is not None:
                 try:
-                    print(f"    → save_month_df_to_csv")
-                    save_success = self.save_month_df_to_csv(file_id, result["data"])
-                    
+                    print(f"    → save_month_df_to_parquet")
+                    save_success = self.save_month_df_to_parquet(file_id, result["data"])
+
                     if save_success:
-                        result["steps_executed"].append("save_month_df_to_csv")
+                        result["steps_executed"].append("save_month_df_to_parquet")
                         print(f"      ✓ Saved preprocessed data for {file_id}")
                     else:
-                        result["errors"].append("save_month_df_to_csv failed")
+                        result["errors"].append("save_month_df_to_parquet failed")
                         print(f"      ✗ Failed to save data for {file_id}")
                         return result
-                        
+
                 except Exception as e:
-                    result["errors"].append(f"save_month_df_to_csv failed: {str(e)}")
+                    result["errors"].append(f"save_month_df_to_parquet failed: {str(e)}")
                     print(f"      ✗ Failed - {str(e)}")
                     return result
             else:
-                print(f"    ⊝ save_month_df_to_csv (no data available)")
-                result["errors"].append("save_month_df_to_csv skipped - no data available")
+                print(f"    ⊝ save_month_df_to_parquet (no data available)")
+                result["errors"].append("save_month_df_to_parquet skipped - no data available")
         else:
-            print(f"    ⊝ save_month_df_to_csv (disabled)")
+            print(f"    ⊝ save_month_df_to_parquet (disabled)")
 
         if state_machine.get("convert_hour_to_sincos", False):
             if result["data"] is not None:
@@ -840,29 +840,29 @@ class PreprocessingPipeline:
         else:
             print(f"    ⊝ remove_duplicates (disabled)")
 
-        if state_machine.get("save_training_ready_csv", False):
+        if state_machine.get("save_training_ready_parquet", False):
             if result["data"] is not None:
                 try:
-                    print(f"    → save_training_ready_csv")
-                    save_success = self.save_training_ready_csv(file_id, result["data"])
-                    
+                    print(f"    → save_training_ready_parquet")
+                    save_success = self.save_training_ready_parquet(file_id, result["data"])
+
                     if save_success:
-                        result["steps_executed"].append("save_training_ready_csv")
+                        result["steps_executed"].append("save_training_ready_parquet")
                         print(f"      ✓ Saved training-ready data for {file_id}")
                     else:
-                        result["errors"].append("save_training_ready_csv failed")
+                        result["errors"].append("save_training_ready_parquet failed")
                         print(f"      ✗ Failed to save training-ready data for {file_id}")
                         return result
-                        
+
                 except Exception as e:
-                    result["errors"].append(f"save_training_ready_csv failed: {str(e)}")
+                    result["errors"].append(f"save_training_ready_parquet failed: {str(e)}")
                     print(f"      ✗ Failed - {str(e)}")
                     return result
             else:
-                print(f"    ⊝ save_training_ready_csv (no data available)")
-                result["errors"].append("save_training_ready_csv skipped - no data available")
+                print(f"    ⊝ save_training_ready_parquet (no data available)")
+                result["errors"].append("save_training_ready_parquet skipped - no data available")
         else:
-            print(f"    ⊝ save_training_ready_csv (disabled)")
+            print(f"    ⊝ save_training_ready_parquet (disabled)")
 
         
         # Mark as successful if no errors occurred
@@ -949,7 +949,7 @@ class PreprocessingPipeline:
         print(f"\n--- SAVING filter_by_target_station DATA ---")
             
         try:
-            saved_file_path = save_dataframe_to_csv(
+            saved_file_path = save_dataframe_to_parquet(
                 folder_path=FOLDER_FILTER_BY_TARGET_STATION,
                 month_id=self.current_file_id,
                 df=filtered_df,
@@ -1179,7 +1179,7 @@ class PreprocessingPipeline:
             print(f"\n--- SAVING PROCESSED process_causes_column DATA ---")
                 
             try:
-                saved_file_path = save_dataframe_to_csv(
+                saved_file_path = save_dataframe_to_parquet(
                     folder_path=FOLDER_PROCESS_CAUSES_COLUMN,
                     month_id=self.current_file_id,
                     df=df,
@@ -1264,7 +1264,7 @@ class PreprocessingPipeline:
             print(f"\n--- SAVING PROCESSED add_train_delayed_feature DATA ---")
                 
             try:
-                saved_file_path = save_dataframe_to_csv(
+                saved_file_path = save_dataframe_to_parquet(
                     folder_path=FOLDER_ADD_TRAIN_DELAYED_FEATURE,
                     month_id=self.current_file_id,
                     df=df,
@@ -1589,7 +1589,7 @@ class PreprocessingPipeline:
             # Save the dataframe with one-hot encoded features
             print(f"--- SAVING weather_scenario_one_hot_encoder DATA ---")
             
-            saved_file_path = save_dataframe_to_csv(
+            saved_file_path = save_dataframe_to_parquet(
                 folder_path=FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
                 month_id=month_id if month_id else self.current_file_id,
                 df=df,
@@ -1784,7 +1784,7 @@ class PreprocessingPipeline:
                 print(f"\n--- SAVING PROCESSED process_actual_time_column DATA ---")
                 
                 try:
-                    saved_file_path = save_dataframe_to_csv(
+                    saved_file_path = save_dataframe_to_parquet(
                         folder_path=FOLDER_PROCESS_ACTUAL_TIME_COLUMN,
                         month_id=self.current_file_id,
                         df=df,
@@ -1943,7 +1943,7 @@ class PreprocessingPipeline:
                 print(f"\n--- SAVING PROCESSED filter_columns DATA ---")
                 
                 try:
-                    saved_file_path = save_dataframe_to_csv(
+                    saved_file_path = save_dataframe_to_parquet(
                         folder_path=FOLDER_FILTER_COLUMNS,
                         month_id=self.current_file_id,
                         df=filtered_df,
@@ -2052,7 +2052,7 @@ class PreprocessingPipeline:
                     print(f"\n--- SAVING PROCESSED convert_boolean_to_numeric DATA ---")
                 
                     try:
-                        saved_file_path = save_dataframe_to_csv(
+                        saved_file_path = save_dataframe_to_parquet(
                             folder_path=FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
                             month_id=self.current_file_id,
                             df=df,
@@ -2397,7 +2397,7 @@ class PreprocessingPipeline:
             print(f"\n--- SAVING PROCESSED handle_missing_values DATA ---")
                 
             try:
-                saved_file_path = save_dataframe_to_csv(
+                saved_file_path = save_dataframe_to_parquet(
                     folder_path=FOLDER_HANDLE_MISSING_VALUES,
                     month_id=self.current_file_id,
                     df=df,
@@ -2412,39 +2412,24 @@ class PreprocessingPipeline:
             
             return df
 
-    def save_month_df_to_csv(self, month_id, dataframe):
+    def save_month_df_to_parquet(self, month_id, dataframe):
         """
-        Save a processed month's dataframe to a CSV file.
-        
-        Parameters:
-        -----------
-        month_id : str
-            Month identifier in format "YYYY-YYYY_MM" for the filename.
-        dataframe : pandas.DataFrame
-            The dataframe to save.
-            
-        Returns:
-        --------
-        bool
-            True if saving was successful, False otherwise.
+        Save a processed month's dataframe to a parquet file.
         """
         try:
             if dataframe is None or dataframe.empty:
                 print(f"Warning: Cannot save empty dataframe for {month_id}")
                 return False
-                
-            # Create the output filename
-            filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}.csv"
+
+            filename = f"{DATA_FILE_PREFIX_FOR_TRAINING}{month_id}.parquet"
             file_path = os.path.join(self.preprocessed_dir, filename)
-            
-            # Ensure output directory exists
+
             os.makedirs(self.preprocessed_dir, exist_ok=True)
-            
-            # Save the dataframe
-            dataframe.to_csv(file_path, index=False)
+
+            dataframe.to_parquet(file_path, index=False)
             print(f"Successfully saved dataframe to {file_path}")
             return True
-            
+
         except Exception as e:
             print(f"Error saving dataframe for {month_id}: {e}")
             return False
@@ -2613,7 +2598,7 @@ class PreprocessingPipeline:
                 print(f"\n--- SAVING PROCESSED convert_hour_to_sincos DATA ---")
                 
                 try:
-                    saved_file_path = save_dataframe_to_csv(
+                    saved_file_path = save_dataframe_to_parquet(
                         folder_path=FOLDER_CONVERT_HOUR_TO_SINCOS,
                         month_id=self.current_file_id,
                         df=df,
@@ -2796,7 +2781,7 @@ class PreprocessingPipeline:
                 print(f"\n--- SAVING PROCESSED convert_month_to_sincos DATA ---")
                 
                 try:
-                    saved_file_path = save_dataframe_to_csv(
+                    saved_file_path = save_dataframe_to_parquet(
                         folder_path=FOLDER_CONVERT_MONTH_TO_SINCOS,
                         month_id=self.current_file_id,
                         df=df,
@@ -2977,7 +2962,7 @@ class PreprocessingPipeline:
                     print(f"\n--- SAVING PROCESSED convert_dayofweek_to_sincos DATA ---")
                 
                     try:
-                        saved_file_path = save_dataframe_to_csv(
+                        saved_file_path = save_dataframe_to_parquet(
                             folder_path=FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS,
                             month_id=self.current_file_id,
                             df=df,
@@ -3094,7 +3079,7 @@ class PreprocessingPipeline:
                 print(f"\n--- SAVING PROCESSED drop_original_temporal_columns DATA ---")
                 
                 try:
-                    saved_file_path = save_dataframe_to_csv(
+                    saved_file_path = save_dataframe_to_parquet(
                         folder_path=FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS,
                         month_id=self.current_file_id,
                         df=df,
@@ -3183,7 +3168,7 @@ class PreprocessingPipeline:
         print(f"\n--- SAVING PROCESSED select_target_feature DATA ---")
                 
         try:
-            saved_file_path = save_dataframe_to_csv(
+            saved_file_path = save_dataframe_to_parquet(
                 folder_path=FOLDER_SELECT_TARGET,
                 month_id=self.current_file_id,
                 df=df,
@@ -3425,7 +3410,7 @@ class PreprocessingPipeline:
             print(f"\n--- SAVING PROCESSED filter_weather_train_schedules DATA ---")
             
             try:
-                saved_file_path = save_dataframe_to_csv(
+                saved_file_path = save_dataframe_to_parquet(
                     folder_path=FOLDER_FILTER_STRONG_WEATHER_CAUSES,
                     month_id=self.current_file_id,
                     df=filtered_df,
@@ -3531,7 +3516,7 @@ class PreprocessingPipeline:
         print(f"\n--- SAVING PROCESSED remove_duplicates DATA ---")
                     
         try:
-            saved_file_path = save_dataframe_to_csv(
+            saved_file_path = save_dataframe_to_parquet(
                 folder_path=FOLDER_REMOVE_DUPLICATES,
                 month_id=self.current_file_id,
                 df=df_deduplicated,
@@ -3546,42 +3531,25 @@ class PreprocessingPipeline:
 
         return df_deduplicated
 
-    def save_training_ready_csv(self, month_id, dataframe):
+    def save_training_ready_parquet(self, month_id, dataframe):
         """
-        Save a training-ready dataframe to the training-ready directory.
-        
-        Parameters:
-        -----------
-        month_id : str
-            Month identifier in format "YYYY_MM" for the filename.
-        dataframe : pandas.DataFrame
-            The dataframe to save.
-            
-        Returns:
-        --------
-        bool
-            True if saving was successful, False otherwise.
+        Save a training-ready dataframe to the training-ready directory as parquet.
         """
         try:
             if dataframe is None or dataframe.empty:
                 print(f"Warning: Cannot save empty dataframe for {month_id}")
                 return False
-                
-            # Create the training-ready directory path
+
             training_ready_dir = TRAINING_READY_OUTPUT_FOLDER
-            
-            # Create the output filename with training_ready prefix
-            filename = f"training_ready_{month_id}.csv"
+            filename = f"training_ready_{month_id}.parquet"
             file_path = os.path.join(training_ready_dir, filename)
-            
-            # Ensure output directory exists
+
             os.makedirs(training_ready_dir, exist_ok=True)
-            
-            # Save the dataframe
-            dataframe.to_csv(file_path, index=False)
+
+            dataframe.to_parquet(file_path, index=False)
             print(f"Successfully saved training-ready dataframe to {file_path}")
             return True
-            
+
         except Exception as e:
             print(f"Error saving training-ready dataframe for {month_id}: {e}")
             return False
