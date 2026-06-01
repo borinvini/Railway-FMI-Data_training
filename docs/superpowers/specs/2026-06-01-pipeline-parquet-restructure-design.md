@@ -12,7 +12,7 @@ The input data format has changed in three ways:
 
 1. **File format:** CSV → Parquet (`.parquet`)
 2. **Row granularity:** One row per train (all stops in a nested `timeTableRows` column) → one row per train stop
-3. **Weather data:** Previously computed as a 1-hour rolling window join against separate FMI files → now pre-matched and present directly in the input file
+3. **Weather data:** Previously computed as a 1-hour rolling window join against separate FMI files → now pre-matched and present directly in the input file, with weather columns already merged (no "Other" variant columns)
 
 The goal is to update every pipeline stage to match these new requirements, delete stages that are now unnecessary, and make no other changes.
 
@@ -43,6 +43,11 @@ The entire section of constants that supported the 1h window join is deleted:
 - `ALL_1H_WINDOW_OUTPUT_COLUMNS` list
 - `WEATHER_1H_WINDOW_FEATURE_DESCRIPTIONS` dict
 - `ALL_WEATHER_FEATURES.extend(ALL_1H_WINDOW_OUTPUT_COLUMNS)` call
+
+### Pipeline step: `merge_weather_columns`
+- **Reason:** This step merged "Other" variant columns (e.g., `Snow depth Other` → `Snow depth`) for features that had two sources. The new pre-matched data already has single clean columns per weather feature — there are no "Other" variants.
+- **Remove from:** `PREPROCESSING_STATE_MACHINE` dict, method body in `preprocessing_pipeline.py`, `FOLDER_MERGE_WEATHER_COLUMNS` constant in `const_preprocessing.py`.
+- Also delete related constants: `WEATHER_COLS_TO_MERGE` list.
 
 ### EMS station mapping step in `main.py`
 - Step 1.5 (`find_closest_ems_stations`) and its import from `file_utils` are removed. This was only needed to support the FMI weather join.
@@ -83,8 +88,8 @@ The entire section of constants that supported the 1h window join is deleted:
 
 ## What Stays Unchanged
 
-### Preprocessing pipeline steps (16 steps, logic untouched)
-`filter_by_target_station`, `process_causes_column`, `add_train_delayed_feature`, `merge_weather_columns`, `add_weather_scenarios_col`, `weather_scenario_one_hot_encoder`, `process_actual_time_column`, `filter_columns`, `convert_boolean_to_numeric`, `handle_missing_values`, `convert_hour_to_sincos`, `convert_month_to_sincos`, `convert_dayofweek_to_sincos`, `drop_original_temporal_columns`, `select_target`, `filter_strong_weather_causes`, `remove_duplicates`
+### Preprocessing pipeline steps (15 steps, logic untouched)
+`filter_by_target_station`, `process_causes_column`, `add_train_delayed_feature`, `add_weather_scenarios_col`, `weather_scenario_one_hot_encoder`, `process_actual_time_column`, `filter_columns`, `convert_boolean_to_numeric`, `handle_missing_values`, `convert_hour_to_sincos`, `convert_month_to_sincos`, `convert_dayofweek_to_sincos`, `drop_original_temporal_columns`, `select_target`, `filter_strong_weather_causes`, `remove_duplicates`
 
 ### Training pipeline steps (logic untouched)
 `merge_data_files`, `select_training_cols`, `split_dataset`, `scale_weather_features`, `train_xgboost_with_randomized_search_cv`
@@ -101,8 +106,8 @@ Folder name constants keep their current numbering. Gaps where steps 1 and 6 use
 
 | File | Change type |
 |------|-------------|
-| `config/const_preprocessing.py` | Delete FMI window constants block, delete two folder constants |
-| `src/preprocessing_pipeline.py` | Delete 2 methods, rename 2 methods, update all CSV I/O calls, update filename regex, update imports |
+| `config/const_preprocessing.py` | Delete FMI window constants block, delete three folder constants, delete `WEATHER_COLS_TO_MERGE` |
+| `src/preprocessing_pipeline.py` | Delete 3 methods, rename 2 methods, update all CSV I/O calls, update filename regex, update imports |
 | `src/file_utils.py` | Rename 4 functions, swap CSV I/O for parquet throughout |
 | `main.py` | Remove EMS mapping step, update function call names, update print messages |
 | `src/training_pipeline.py` | Swap CSV reads for parquet reads, update glob patterns |
@@ -112,6 +117,6 @@ Folder name constants keep their current numbering. Gaps where steps 1 and 6 use
 ## Success Criteria
 
 - `python main.py` runs without error against `matched_data_2024_01.parquet` style input files
-- All 16 remaining preprocessing steps execute in order and produce `.parquet` output files
-- No reference to `timeTableRows`, `window_weather_data`, or FMI window constants remains in any active code path
+- All 15 remaining preprocessing steps execute in order and produce `.parquet` output files
+- No reference to `timeTableRows`, `window_weather_data`, `WEATHER_COLS_TO_MERGE`, or FMI window constants remains in any active code path
 - Training pipeline reads the parquet output and runs to completion
