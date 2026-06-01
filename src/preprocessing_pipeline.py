@@ -2174,9 +2174,10 @@ class PreprocessingPipeline:
                     if nulls > 0:
                         # Calculate percentage of missing values
                         percentage = (nulls / len(df)) * 100
-                        df[col] = df[col].fillna(0)  # Fill with 0 instead of False since they're now numeric
-                        print(f"- Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
-                        logger.info(f"Filled {nulls} missing values in '{col}' with 0 ({percentage:.2f}%)")
+                        fill_value = "00:00" if col == 'hour' else 0
+                        df[col] = df[col].fillna(fill_value)
+                        print(f"- Filled {nulls} missing values in '{col}' with {fill_value!r} ({percentage:.2f}%)")
+                        logger.info(f"Filled {nulls} missing values in '{col}' with {fill_value!r} ({percentage:.2f}%)")
                     else:
                         print(f"- Filled {nulls} missing values in '{col}' with 0")
                         logger.info(f"Filled {nulls} missing values in '{col}' with 0")
