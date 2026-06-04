@@ -2213,8 +2213,10 @@ class PreprocessingPipeline:
                         print(f"Coerced '{col}' to numeric: {coerced_to_nan} non-numeric values became NaN")
                         logger.info(f"Coerced '{col}' to numeric: {coerced_to_nan} non-numeric values became NaN")
 
-            # Check required columns
-            required_cols = [col for col in VALID_TARGET_FEATURES if col in df.columns]
+            # Drop rows only when the numeric delay targets are missing — trainDelayed and cancelled
+            # are derived/boolean and should not gate row retention here.
+            NUMERIC_DELAY_COLS = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
+            required_cols = [col for col in NUMERIC_DELAY_COLS if col in df.columns]
             
             if required_cols:
                 print(f"Checking for missing values in required columns: {required_cols}")
