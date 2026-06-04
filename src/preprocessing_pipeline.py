@@ -2190,6 +2190,18 @@ class PreprocessingPipeline:
                         print(f"- Filled {nulls} missing values in '{col}' with 0")
                         logger.info(f"Filled {nulls} missing values in '{col}' with 0")
 
+            # Coerce target feature columns from object/string to numeric.
+            # Handles string-encoded floats ("1.0") and timestamp contamination.
+            # Rows where coercion produces NaN are removed by the dropna below.
+            for col in VALID_TARGET_FEATURES:
+                if col in df.columns and df[col].dtype == object:
+                    before_nulls = int(df[col].isna().sum())
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    coerced_to_nan = int(df[col].isna().sum()) - before_nulls
+                    if coerced_to_nan > 0:
+                        print(f"Coerced '{col}' to numeric: {coerced_to_nan} non-numeric values became NaN")
+                        logger.info(f"Coerced '{col}' to numeric: {coerced_to_nan} non-numeric values → NaN")
+
             # Check required columns
             required_cols = [col for col in VALID_TARGET_FEATURES if col in df.columns]
             
