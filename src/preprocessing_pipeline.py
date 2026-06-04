@@ -1365,7 +1365,20 @@ class PreprocessingPipeline:
         )
         df.loc[heavy_rain_mask, 'weather_scenario'] = 'Heavy Rain'
         
-        # 5. SLEET/FREEZING RAIN - Dangerous mixed precipitation
+        # 5. BLACK ICE CONDITIONS - Ice from freezing condensation/dew (no active precipitation needed)
+        # Must come before Freezing Rain: black ice forms at near-0°C with high humidity and
+        # dew-point close to air temp, with little or no active precipitation.
+        black_ice_mask = (
+            (df['Air temperature'] >= -2) &
+            (df['Air temperature'] <= 2) &
+            (df['Relative humidity'] > 80) &
+            (abs(df['Dew-point temperature'] - df['Air temperature']) < 2) &
+            (df['Precipitation amount'] <= 0.5) &  # light/no active precip distinguishes from Freezing Rain
+            (df['weather_scenario'] == 'Normal/Clear')
+        )
+        df.loc[black_ice_mask, 'weather_scenario'] = 'Black Ice'
+
+        # 6. SLEET/FREEZING RAIN - Active precipitation that freezes on contact
         sleet_mask = (
             ((df['Precipitation amount'] > 0) | (df['Precipitation intensity'] > 0)) &
             (df['Air temperature'] >= -2) &
@@ -1373,17 +1386,6 @@ class PreprocessingPipeline:
             (df['weather_scenario'] == 'Normal/Clear')
         )
         df.loc[sleet_mask, 'weather_scenario'] = 'Freezing Rain'
-        
-        # 6. BLACK ICE CONDITIONS - Extremely hazardous road conditions
-        black_ice_mask = (
-            (df['Air temperature'] >= -2) &
-            (df['Air temperature'] <= 2) &
-            (df['Relative humidity'] > 80) &
-            (abs(df['Dew-point temperature'] - df['Air temperature']) < 2) &
-            (df['Precipitation amount'] > 0) &
-            (df['weather_scenario'] == 'Normal/Clear')
-        )
-        df.loc[black_ice_mask, 'weather_scenario'] = 'Black Ice'
         
         # 7. DENSE FOG - Low visibility conditions
         dense_fog_mask = (
@@ -1430,24 +1432,19 @@ class PreprocessingPipeline:
         if null_weather_data > 0:
             print(f"⚠ Warning: {null_weather_data} missing weather data points detected")
         
-        # Ensure output folder exists
-        os.makedirs(FOLDER_ADD_WEATHER_SCENARIOS_COL, exist_ok=True)
-        
-        # Determine output file path
-        if output_file:
-            # If output_file is provided, use it
-            save_path = output_file
-        else:
-            # Generate filename based on month_id if available
-            if month_id:
-                filename = f"add_weather_scenarios_col_{month_id}.csv"
-            else:
-                filename = "add_weather_scenarios_col.csv"
-            save_path = os.path.join(FOLDER_ADD_WEATHER_SCENARIOS_COL, filename)
-        
-        # Save to CSV
-        df.to_csv(save_path, index=False)
-        print(f"✓ Data with weather scenarios saved to: {save_path}")
+        print(f"\n--- SAVING add_weather_scenarios_col DATA ---")
+
+        try:
+            saved_file_path = save_dataframe_to_parquet(
+                folder_path=FOLDER_ADD_WEATHER_SCENARIOS_COL,
+                month_id=self.current_file_id,
+                df=df,
+                file_prefix="add_weather_scenarios_col"
+            )
+            print(f"✓ Successfully saved weather scenarios data to: {saved_file_path}")
+        except Exception as save_error:
+            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+            print("Continuing with processing, but data was not saved to folder.")
         
         return df
 
