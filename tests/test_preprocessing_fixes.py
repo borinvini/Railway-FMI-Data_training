@@ -96,3 +96,38 @@ def test_coerce_target_columns_to_numeric(mock_save, tmp_path):
     )
     # Row 3 had a timestamp in differenceInMinutes → coerced to NaN → dropped
     assert len(result) == 2, f"Expected 2 rows after dropping non-numeric target row, got {len(result)}"
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_coerce_does_not_drop_string_boolean_columns(mock_save, tmp_path):
+    """trainDelayed and cancelled as string-encoded booleans must NOT be coerced to NaN."""
+    pipeline = _make_pipeline(tmp_path)
+
+    df = pd.DataFrame({
+        "differenceInMinutes": ["5.0", "3.0"],
+        "differenceInMinutes_offset": ["1.0", "-2.0"],
+        "differenceInMinutes_eachStation_offset": [5.0, -2.0],
+        # String-encoded booleans — realistic from CSV or some parquet reads
+        "trainDelayed": pd.Series(["True", "False"], dtype=object),
+        "cancelled": pd.Series(["False", "False"], dtype=object),
+        "month": [1, 1],
+        "Air temperature": [2.0, 3.0],
+        "Wind speed": [5.0, 4.0],
+        "Gust speed": [8.0, 7.0],
+        "Wind direction": [180.0, 90.0],
+        "Relative humidity": [75.0, 80.0],
+        "Dew-point temperature": [0.0, 1.0],
+        "Precipitation intensity": [0.0, 0.1],
+        "Snow depth": [0.0, 0.0],
+        "Pressure (msl)": [1013.0, 1010.0],
+        "Horizontal visibility": [10000.0, 8000.0],
+        "Cloud amount": [2.0, 4.0],
+    })
+
+    with patch.object(pipeline, "get_logger", _null_logger):
+        result = pipeline.handle_missing_values(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert len(result) == 2, (
+        f"Expected all 2 rows retained (string booleans must not be coerced to NaN), got {len(result)}"
+    )
