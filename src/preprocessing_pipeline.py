@@ -1888,6 +1888,13 @@ class PreprocessingPipeline:
                 print(f"Weather scenario columns found: {weather_scenario_cols_found}")
                 logger.info(f"Weather scenario columns found: {weather_scenario_cols_found}")
 
+                # Add rolling window columns matching (12h, (24h, (72h patterns
+                window_patterns = ('(12h', '(24h', '(72h')
+                window_cols_found = [col for col in df.columns if any(p in col for p in window_patterns)]
+                columns_to_keep.extend(window_cols_found)
+                print(f"Rolling window columns found: {len(window_cols_found)}")
+                logger.info(f"Rolling window columns found: {window_cols_found}")
+
                 # Add utility columns if they exist
                 #utility_columns = ['data_year', 'train_id', 'causes']
                 #utility_cols_found = [col for col in utility_columns if col in df.columns]

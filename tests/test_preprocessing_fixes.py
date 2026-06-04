@@ -131,3 +131,52 @@ def test_coerce_does_not_drop_string_boolean_columns(mock_save, tmp_path):
     assert len(result) == 2, (
         f"Expected all 2 rows retained (string booleans must not be coerced to NaN), got {len(result)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix 3
+# ---------------------------------------------------------------------------
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_filter_columns_keeps_rolling_windows(mock_save, tmp_path):
+    """filter_columns must retain columns whose names contain (12h, (24h, or (72h."""
+    pipeline = _make_pipeline(tmp_path)
+
+    df = pd.DataFrame({
+        # Target features
+        "differenceInMinutes_eachStation_offset": [1.0, 2.0],
+        "differenceInMinutes": [1.0, 2.0],
+        "differenceInMinutes_offset": [1.0, 2.0],
+        "trainDelayed": [1, 0],
+        "cancelled": [0, 0],
+        # Train prediction features
+        "trainStopping": [1, 1],
+        "commercialStop": [1, 1],
+        "month": [1, 2],
+        "hour": ["10:00", "11:00"],
+        "day_of_week": [2, 3],
+        "day_of_month": [15, 16],
+        "causes_related_to_weather": [0, 1],
+        # Basic weather
+        "Air temperature": [2.0, 3.0],
+        "Wind speed": [5.0, 4.0],
+        # Rolling window columns — these MUST be kept after the fix
+        "Air temperature (12h max)": [4.0, 5.0],
+        "Air temperature (24h mean)": [3.0, 4.0],
+        "Snow depth (72h max)": [10.0, 15.0],
+        "Precipitation amount (12h cumulative)": [0.5, 0.0],
+        # Columns that must be dropped
+        "stationShortCode": ["OL", "OL"],
+        "trainNumber": [123, 456],
+    })
+
+    with patch.object(pipeline, "get_logger", _null_logger):
+        result = pipeline.filter_columns(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert "Air temperature (12h max)" in result.columns, "12h window column must be kept"
+    assert "Air temperature (24h mean)" in result.columns, "24h window column must be kept"
+    assert "Snow depth (72h max)" in result.columns, "72h window column must be kept"
+    assert "Precipitation amount (12h cumulative)" in result.columns, "12h cumulative must be kept"
+    assert "stationShortCode" not in result.columns, "stationShortCode must be dropped"
+    assert "trainNumber" not in result.columns, "trainNumber must be dropped"
