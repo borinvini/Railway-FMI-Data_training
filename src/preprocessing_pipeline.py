@@ -1746,7 +1746,15 @@ class PreprocessingPipeline:
                     if col in df.columns:
                         # Fill NaN values with 0 for rows that couldn't be parsed, then convert to int
                         df[col] = df[col].fillna(0).astype(int)
-                
+
+                # Drop rows where actualTime could not be parsed (month stays 0 after fillna)
+                unparseable_mask = (df['month'] == 0)
+                if unparseable_mask.any():
+                    count = int(unparseable_mask.sum())
+                    df = df[~unparseable_mask].copy()
+                    print(f"Dropped {count} rows with unparseable actualTime (month=0)")
+                    logger.info(f"Dropped {count} rows with unparseable actualTime (month=0)")
+
                 # Log statistics if we have valid data
                 if len(df) > 0 and 'month' in df.columns:
                     valid_temporal_data = df[df['month'] > 0]
