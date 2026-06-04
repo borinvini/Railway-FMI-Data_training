@@ -1240,6 +1240,9 @@ class PreprocessingPipeline:
                 print(f"Available columns: {list(df.columns)}")
                 return df
             
+            # Coerce to numeric before comparison — source parquets store this as object dtype
+            df[TRAIN_DELAYED_TARGET_COLUMN] = pd.to_numeric(df[TRAIN_DELAYED_TARGET_COLUMN], errors='coerce')
+
             # Create trainDelayed column based on the configured target column
             df['trainDelayed'] = df[TRAIN_DELAYED_TARGET_COLUMN] > TRAIN_DELAY_MINUTES
             
