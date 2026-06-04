@@ -1,6 +1,6 @@
 # Pipeline execution control flag
-EXECUTE_PREPROCESSING_DATA_PIPELINE = False
-EXECUTE_TRAINING_PIPELINE = True
+EXECUTE_PREPROCESSING_DATA_PIPELINE = True
+EXECUTE_TRAINING_PIPELINE = False
 
 # Constants for file processing
 FOLDER_NAME = "data"
