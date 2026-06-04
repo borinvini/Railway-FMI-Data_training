@@ -173,5 +173,8 @@ Desktop.ini
 *.joblib
 *.pkl
 
+# Data files
+*.parquet
+
 *.txt
 *.png
