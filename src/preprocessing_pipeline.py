@@ -2314,6 +2314,12 @@ class PreprocessingPipeline:
         
             
             if important_weather_features:
+                # Coerce all weather/window columns to numeric — source parquets store some as
+                # object dtype (string numbers). Window cols bypass add_weather_scenarios_col coercion.
+                for col in important_weather_features:
+                    if df[col].dtype == object:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+
                 print(f"\n--- WEATHER FEATURES IMPUTATION WITH MONTH-SPECIFIC MEDIANS ---")
                 logger.info("=== Weather Features Imputation with Month-Specific Medians ===")
                 
