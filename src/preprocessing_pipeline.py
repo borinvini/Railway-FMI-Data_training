@@ -2739,10 +2739,10 @@ class PreprocessingPipeline:
                 print("Creating month sin/cos cyclical features...")
                 
                 # Calculate sin and cos for the 12-month cycle
-                # Formula: sin(2π × month / 12) and cos(2π × month / 12)
-                # Note: We use the month values directly since they're already in 1-12 format
-                df['month_sin'] = np.sin(2 * np.pi * df['month'] / 12.0)
-                df['month_cos'] = np.cos(2 * np.pi * df['month'] / 12.0)
+                # Formula: sin(2π × (month - 1) / 12) — subtract 1 so the cycle runs
+                # 0..11/12, keeping December adjacent to January on the circle.
+                df['month_sin'] = np.sin(2 * np.pi * (df['month'] - 1) / 12.0)
+                df['month_cos'] = np.cos(2 * np.pi * (df['month'] - 1) / 12.0)
                 
                 # For missing month values, set sin/cos to 0 (neutral position on the unit circle)
                 month_mask = df['month'].isna()
@@ -2922,10 +2922,10 @@ class PreprocessingPipeline:
                     print("Creating day_of_week sin/cos cyclical features...")
                     
                     # Calculate sin and cos for the 7-day cycle
-                    # Formula: sin(2π × day_of_week / 7) and cos(2π × day_of_week / 7)
-                    # Note: We use the day_of_week values directly since they're already in 1-7 format
-                    df['day_week_sin'] = np.sin(2 * np.pi * df['day_of_week'] / 7.0)
-                    df['day_week_cos'] = np.cos(2 * np.pi * df['day_of_week'] / 7.0)
+                    # Formula: sin(2π × (day_of_week - 1) / 7) — subtract 1 so the cycle runs
+                    # 0..6/7, keeping day 7 (Saturday) adjacent to day 1 (Sunday) on the circle.
+                    df['day_week_sin'] = np.sin(2 * np.pi * (df['day_of_week'] - 1) / 7.0)
+                    df['day_week_cos'] = np.cos(2 * np.pi * (df['day_of_week'] - 1) / 7.0)
                     
                     # For missing day_of_week values, set sin/cos to 0 (neutral position on the unit circle)
                     day_mask = df['day_of_week'].isna()
