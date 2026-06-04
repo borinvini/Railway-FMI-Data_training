@@ -1669,6 +1669,11 @@ class TrainingPipeline:
             
             # Identify weather features that exist in the dataset
             available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
+
+            # Also include rolling window columns (12h, 24h, 72h) — same pattern as filter_columns
+            window_patterns = ('(12h', '(24h', '(72h')
+            available_window_features = [col for col in train_df.columns if any(p in col for p in window_patterns)]
+            available_weather_features = available_weather_features + available_window_features
             
             # NEW LOGIC: Handle case when no weather features are found
             if not available_weather_features:
