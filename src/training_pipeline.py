@@ -314,7 +314,7 @@ class TrainingPipeline:
                     print(f"      ✓ Successfully scaled weather features")
                     print(f"      ✓ Total train rows: {scaling_result.get('total_train_rows', 0):,}")
                     print(f"      ✓ Total test rows: {scaling_result.get('total_test_rows', 0):,}")
-                    print(f"      ✓ Weather features scaled: {scaling_result.get('weather_features_available', [])}")
+                    print(f"      ✓ Weather features scaled: {scaling_result.get('weather_features_scaled', [])}")
                     result["success"] = True
                 else:
                     error_msg = scaling_result.get("error", "scale_weather_features returned unsuccessful result")
@@ -719,7 +719,15 @@ class TrainingPipeline:
         if state_machine.get("train_xgboost_with_randomized_search_cv", False):
             try:
                 print(f"    → train_xgboost_with_randomized_search_cv")
-                xgboost_result = self.train_xgboost_with_randomized_search_cv()
+                _use_scaled = state_machine.get("scale_weather_features", False)
+                _data_folder = (
+                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    if _use_scaled
+                    else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+                )
+                xgboost_result = self.train_xgboost_with_randomized_search_cv(
+                    data_dir=os.path.join(self.project_root, _data_folder)
+                )
                 
                 if xgboost_result and xgboost_result.get("success", False):
                     result["steps_executed"].append("train_xgboost_with_randomized_search_cv")
@@ -897,12 +905,6 @@ class TrainingPipeline:
                     
                     print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
                     
-                    # Add source tracking columns
-                    df = df.copy()  # Avoid modifying the original dataframe
-                    df['source_month'] = month_number
-                    df['source_year'] = year
-                    df['source_file'] = filename
-                    
                     # Store the dataframe and file info
                     all_dataframes.append(df)
                     file_info.append({
@@ -935,28 +937,24 @@ class TrainingPipeline:
             
             print(f"    merge_data_files: Merged dataset shape: {merged_df.shape}")
 
-            # Generate summary statistics
-            month_distribution = merged_df['source_month'].value_counts().sort_index()
-            year_distribution = merged_df['source_year'].value_counts().sort_index()
-
-            # Remove source tracking columns before saving
-            columns_to_remove = ['source_month', 'source_year', 'source_file']
-            print(f"    merge_data_files: Dropping source tracking columns: {', '.join(columns_to_remove)}")
-            merged_df = merged_df.drop(columns=columns_to_remove, errors='ignore')
-            
-            print(f"    merge_data_files: Removed source tracking columns. Final shape: {merged_df.shape}")
+            # Compute distribution stats from file_info without touching the dataframe
+            month_distribution = {}
+            year_distribution = {}
+            for info in file_info:
+                month_distribution[info['month']] = month_distribution.get(info['month'], 0) + info['rows']
+                year_distribution[info['year']] = year_distribution.get(info['year'], 0) + info['rows']
 
             # Generate output filename
             sorted_files = sorted(file_info, key=lambda x: (x['year'], x['month']))
             first_file = sorted_files[0]
             last_file = sorted_files[-1]
 
-            # Format: merged_data_YYYY-MM_to_YYYY-MM.csv
-            output_filename = f"merged_data_{first_file['year']}-{first_file['month']:02d}_to_{last_file['year']}-{last_file['month']:02d}.csv"
+            # Format: merged_data_YYYY-MM_to_YYYY-MM.parquet
+            output_filename = f"merged_data_{first_file['year']}-{first_file['month']:02d}_to_{last_file['year']}-{last_file['month']:02d}.parquet"
             output_path = os.path.join(merged_training_ready_dir, output_filename)
-            
+
             # Save merged dataset
-            merged_df.to_csv(output_path, index=False)
+            merged_df.to_parquet(output_path, index=False)
             print(f"    merge_data_files: Saved merged dataset to {output_path}")
 
             # Save summary information
@@ -982,14 +980,14 @@ class TrainingPipeline:
                 # Month distribution
                 f.write("\nMonth distribution:\n")
                 f.write("-" * 20 + "\n")
-                for month, count in month_distribution.items():
+                for month, count in sorted(month_distribution.items()):
                     f.write(f"Month {month:02d}: {count:,} rows\n")
-                
+
                 # Year distribution
                 f.write("\nYear distribution:\n")
                 f.write("-" * 20 + "\n")
-                for year, count in year_distribution.items():
-                    f.write(f"Year {year}: {count:,} rows\n")
+                for year_key, count in sorted(year_distribution.items()):
+                    f.write(f"Year {year_key}: {count:,} rows\n")
                 
                 # Column information
                 f.write("\nColumns in merged dataset:\n")
@@ -1022,7 +1020,7 @@ class TrainingPipeline:
                 "total_rows": len(merged_df),
                 "total_columns": len(merged_df.columns),
                 "files_merged": len(all_dataframes),
-                "month_distribution": month_distribution.to_dict(),
+                "month_distribution": month_distribution,
                 "file_details": file_info,
                 "message": f"Successfully merged {len(all_dataframes)} files into {len(merged_df):,} rows"
             }
@@ -1078,12 +1076,12 @@ class TrainingPipeline:
                 os.makedirs(merged_training_ready_dir, exist_ok=True)
                 
                 # Find merged data files using glob pattern
-                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.csv")
+                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.parquet")
                 merged_data_files = glob.glob(merged_data_pattern)
-                
+
                 # Filter out train/test files to get only the main merged files
-                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
-                
+                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.parquet') or f.endswith('_test.parquet'))]
+
                 if merged_data_files:
                     # Use the most recent merged file
                     file_path = max(merged_data_files, key=os.path.getmtime)
@@ -1095,16 +1093,16 @@ class TrainingPipeline:
                         "success": False,
                         "error": error_msg,
                         "searched_directory": merged_training_ready_dir,
-                        "search_pattern": "merged_data_*.csv"
+                        "search_pattern": "merged_data_*.parquet"
                     }
             
-            # Load the CSV file
+            # Load the parquet file
             print(f"    select_training_cols: Loading file: {file_path}")
-            
+
             try:
-                df = pd.read_csv(file_path)
+                df = pd.read_parquet(file_path)
             except Exception as e:
-                error_msg = f"Failed to load CSV file: {str(e)}"
+                error_msg = f"Failed to load parquet file: {str(e)}"
                 print(f"    select_training_cols: {error_msg}")
                 return {
                     "success": False,
@@ -1250,10 +1248,10 @@ class TrainingPipeline:
                 
                 # Generate output filename based on original file
                 original_filename = os.path.basename(file_path)
-                output_filename = original_filename.replace('.csv', '.csv')
+                output_filename = original_filename  # already .parquet
                 output_path = os.path.join(selected_training_ready_dir, output_filename)
-                
-                df_filtered.to_csv(output_path, index=False)
+
+                df_filtered.to_parquet(output_path, index=False)
                 print(f"    💾 Saved filtered dataset to: {output_filename}")
                 print(f"    📁 Location: {MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER}")
             except Exception as save_error:
@@ -1331,41 +1329,41 @@ class TrainingPipeline:
             merged_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
             os.makedirs(merged_training_ready_dir, exist_ok=True)
             
-            # Get all CSV files in the directory
-            all_csv_files = [f for f in os.listdir(merged_training_ready_dir) 
-                            if f.endswith('.csv') and os.path.isfile(os.path.join(merged_training_ready_dir, f))]
-            
+            # Get all parquet files in the directory
+            all_parquet_files = [f for f in os.listdir(merged_training_ready_dir)
+                                 if f.endswith('.parquet') and os.path.isfile(os.path.join(merged_training_ready_dir, f))]
+
             # Filter out existing train/test files to get only source files
-            source_csv_files = [f for f in all_csv_files if not (f.endswith('_train.csv') or f.endswith('_test.csv'))]
-            
-            # Check if exactly one CSV file exists
-            if len(source_csv_files) == 0:
-                error_msg = "No CSV files found in the directory"
+            source_parquet_files = [f for f in all_parquet_files if not (f.endswith('_train.parquet') or f.endswith('_test.parquet'))]
+
+            # Check if exactly one parquet file exists
+            if len(source_parquet_files) == 0:
+                error_msg = "No parquet files found in the directory"
                 print(f"    split_dataset: {error_msg}")
                 return {
                     "success": False,
                     "error": error_msg,
                     "processed_files": 0
                 }
-            elif len(source_csv_files) > 1:
-                error_msg = f"Expected exactly one CSV file, but found {len(source_csv_files)}: {', '.join(source_csv_files)}"
+            elif len(source_parquet_files) > 1:
+                error_msg = f"Expected exactly one parquet file, but found {len(source_parquet_files)}: {', '.join(source_parquet_files)}"
                 print(f"    split_dataset: {error_msg}")
                 return {
                     "success": False,
                     "error": error_msg,
                     "processed_files": 0,
-                    "found_files": source_csv_files
+                    "found_files": source_parquet_files
                 }
-            
-            # Proceed with the single CSV file
-            csv_filename = source_csv_files[0]
+
+            # Proceed with the single parquet file
+            csv_filename = source_parquet_files[0]
             file_path = os.path.join(merged_training_ready_dir, csv_filename)
-            
-            print(f"    split_dataset: Found exactly one CSV file: {csv_filename}")
+
+            print(f"    split_dataset: Found exactly one parquet file: {csv_filename}")
             print(f"    split_dataset: Processing {csv_filename}...")
-            
+
             # Read the dataset
-            df = pd.read_csv(file_path)
+            df = pd.read_parquet(file_path)
             
             if df.empty:
                 error_msg = f"File {csv_filename} is empty"
@@ -1427,16 +1425,16 @@ class TrainingPipeline:
             print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(df)) * 100:.1f}%)")
             
             # Generate output filenames
-            base_name = csv_filename.replace('.csv', '')
-            train_filename = f"{base_name}_train.csv"
-            test_filename = f"{base_name}_test.csv"
-            
+            base_name = csv_filename.replace('.parquet', '')
+            train_filename = f"{base_name}_train.parquet"
+            test_filename = f"{base_name}_test.parquet"
+
             train_path = os.path.join(merged_training_ready_dir, train_filename)
             test_path = os.path.join(merged_training_ready_dir, test_filename)
-            
+
             # Save train and test sets
-            train_df.to_csv(train_path, index=False)
-            test_df.to_csv(test_path, index=False)
+            train_df.to_parquet(train_path, index=False)
+            test_df.to_parquet(test_path, index=False)
             
             print(f"      Saved train set to: {train_filename}")
             print(f"      Saved test set to: {test_filename}")
@@ -1596,8 +1594,8 @@ class TrainingPipeline:
             os.makedirs(scaled_training_ready_dir, exist_ok=True)
             
             merged_selected_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
-            train_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_train.csv")
-            test_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_test.csv")
+            train_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_train.parquet")
+            test_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_test.parquet")
             
             train_files = glob.glob(train_pattern)
             test_files = glob.glob(test_pattern)
@@ -1653,8 +1651,8 @@ class TrainingPipeline:
             
             # Load datasets
             try:
-                train_df = pd.read_csv(train_file_path)
-                test_df = pd.read_csv(test_file_path)
+                train_df = pd.read_parquet(train_file_path)
+                test_df = pd.read_parquet(test_file_path)
             except Exception as e:
                 error_msg = f"Error loading datasets: {str(e)}"
                 print(f"    scale_weather_features: {error_msg}")
@@ -1681,8 +1679,8 @@ class TrainingPipeline:
                 print(f"    scale_weather_features: Copying files as-is from source to scaled directory...")
                 
                 # Generate output filenames (keep same naming convention)
-                scaled_train_filename = train_filename.replace('.csv', '.csv')  # Keep same name
-                scaled_test_filename = test_filename.replace('.csv', '.csv')    # Keep same name
+                scaled_train_filename = train_filename  # already .parquet
+                scaled_test_filename = test_filename    # already .parquet
                 
                 scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
                 scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
@@ -1766,14 +1764,20 @@ class TrainingPipeline:
             
             # Create and fit scaler on training data only
             scaler = RobustScaler()
-            
+
             # Extract weather features for scaling
             train_weather_features = train_df[available_weather_features]
             test_weather_features = test_df[available_weather_features]
-            
+
             # Fit scaler on training data only
             scaler.fit(train_weather_features)
-            
+
+            # Save the fitted scaler so it can be applied to new data at inference time
+            scaler_filename = "weather_scaler.joblib"
+            scaler_path = os.path.join(scaled_training_ready_dir, scaler_filename)
+            joblib.dump(scaler, scaler_path)
+            print(f"    scale_weather_features: ✓ Scaler saved to: {scaler_filename}")
+
             # Transform both train and test sets using training parameters
             train_weather_scaled = scaler.transform(train_weather_features)
             test_weather_scaled = scaler.transform(test_weather_features)
@@ -1787,15 +1791,15 @@ class TrainingPipeline:
             test_scaled_df[available_weather_features] = test_weather_scaled
             
             # Generate output filenames
-            scaled_train_filename = train_filename.replace('.csv', '.csv')
-            scaled_test_filename = test_filename.replace('.csv', '.csv')
-            
+            scaled_train_filename = train_filename  # already .parquet
+            scaled_test_filename = test_filename    # already .parquet
+
             scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
             scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
-            
+
             # Save scaled datasets
-            train_scaled_df.to_csv(scaled_train_path, index=False)
-            test_scaled_df.to_csv(scaled_test_path, index=False)
+            train_scaled_df.to_parquet(scaled_train_path, index=False)
+            test_scaled_df.to_parquet(scaled_test_path, index=False)
             
             print(f"    scale_weather_features: ✓ Scaled train dataset saved to: {scaled_train_filename}")
             print(f"    scale_weather_features: ✓ Scaled test dataset saved to: {scaled_test_filename}")
@@ -1806,6 +1810,7 @@ class TrainingPipeline:
                 "original_test_file": test_filename,
                 "scaled_train_file": scaled_train_filename,
                 "scaled_test_file": scaled_test_filename,
+                "scaler_file": scaler_filename,
                 "train_rows": len(train_df),
                 "test_rows": len(test_df),
                 "weather_features_scaled": available_weather_features,
@@ -1846,10 +1851,11 @@ class TrainingPipeline:
                 "train_rows": len(train_df),
                 "test_rows": len(test_df),
                 "weather_features_scaled": available_weather_features,
+                "scaler_path": scaler_path,
                 "scaling_summary": scaling_result,
                 "output_directory": scaled_training_ready_dir,
                 "message": f"Successfully scaled weather features for single train/test file pair: {train_filename}, {test_filename}",
-                "scaling_applied": True  # Flag to indicate scaling was applied
+                "scaling_applied": True
             }
             
         except Exception as e:
@@ -1863,7 +1869,7 @@ class TrainingPipeline:
                 "processed_files": 0
             }
 
-    def train_xgboost_with_randomized_search_cv(self):
+    def train_xgboost_with_randomized_search_cv(self, data_dir=None):
         """
         Modified XGBoost training method that tests different iteration counts and plots performance curve.
         
@@ -1883,11 +1889,13 @@ class TrainingPipeline:
             
             print(f"    train_xgboost_with_randomized_search_cv: Output directory: {output_dir}")
             
-            scaled_data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
-            
+            if data_dir is None:
+                data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            scaled_data_dir = data_dir
+
             # Find training and test files in the specified location
-            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train.csv")
-            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test.csv")
+            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train.parquet")
+            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test.parquet")
             
             train_files = glob.glob(train_pattern)
             test_files = glob.glob(test_pattern)
@@ -1914,7 +1922,7 @@ class TrainingPipeline:
             
             # Extract identifier from filename
             train_filename = os.path.basename(train_file)
-            identifier_match = re.search(r'merged_data_(.+?)_train\.csv', train_filename)
+            identifier_match = re.search(r'merged_data_(.+?)_train\.parquet', train_filename)
             if not identifier_match:
                 error_msg = f"Could not extract identifier from {train_filename}"
                 print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
@@ -1944,10 +1952,10 @@ class TrainingPipeline:
             
             # Load training and test data
             print(f"      Loading training data from {train_file}")
-            train_df = pd.read_csv(train_file)
-            
+            train_df = pd.read_parquet(train_file)
+
             print(f"      Loading test data from {test_file}")
-            test_df = pd.read_csv(test_file)
+            test_df = pd.read_parquet(test_file)
             
             # Check if target feature exists
             if target_feature not in train_df.columns:
@@ -2013,7 +2021,7 @@ class TrainingPipeline:
             test_mape_scores = []  
             
             best_model = None
-            best_f1_score = -np.inf if is_classification else np.inf
+            best_metric = -np.inf if is_classification else np.inf
             best_iteration = None
             
             # Train models with different iteration counts
@@ -2055,8 +2063,8 @@ class TrainingPipeline:
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}")
                     
                     # Track best model based on F1 score
-                    if test_f1 > best_f1_score:
-                        best_f1_score = test_f1
+                    if test_f1 > best_metric:
+                        best_metric = test_f1
                         best_model = current_best_model
                         best_iteration = n_iter
                     
@@ -2074,8 +2082,8 @@ class TrainingPipeline:
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test RMSE = {test_rmse:.4f}, Test R² = {test_r2:.4f}, Test MAE = {test_mae:.4f}, Test MAPE = {test_mape:.2f}%")
                     
                     # Track best model based on RMSE (lower is better)
-                    if test_rmse < best_f1_score:
-                        best_f1_score = test_rmse
+                    if test_rmse < best_metric:
+                        best_metric = test_rmse
                         best_model = current_best_model
                         best_iteration = n_iter
                     
@@ -2084,45 +2092,40 @@ class TrainingPipeline:
                     test_mape_scores.append(test_mape)    # ADD THIS
                 
                 cv_scores.append(current_cv_score)
-                
+
                 # Store detailed results
                 iteration_results.append({
                     'n_iter': n_iter,
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
-                    'test_mae': test_mae_scores[-1] if not is_classification else None,      # ADD THIS
-                    'test_mape': test_mape_scores[-1] if not is_classification else None,    # ADD THIS
+                    'test_mae': test_mae_scores[-1] if not is_classification else None,
+                    'test_mape': test_mape_scores[-1] if not is_classification else None,
                     'best_params': randomized_search.best_params_
                 })
 
-                # Calculate final metrics on the best model
-                print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
+            # Calculate final metrics once on the best model found across all iterations
+            print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
+            final_y_pred = best_model.predict(X_test)
 
-                # Make final predictions with best model
-                final_y_pred = best_model.predict(X_test)
+            if is_classification:
+                final_test_accuracy = accuracy_score(y_test, final_y_pred)
+                final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
+                final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
+                final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
 
-                if is_classification:
-                    # Your existing classification metrics
-                    final_test_accuracy = accuracy_score(y_test, final_y_pred)
-                    final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                    final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
-                    final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
-                    
-                    if hasattr(best_model, 'predict_proba'):
-                        final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
-                        final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
-                    else:
-                        final_test_auc = 0.0
-                        
-                else:  # regression
-                    final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
-                    final_test_mae = mean_absolute_error(y_test, final_y_pred)
-                    final_test_r2 = r2_score(y_test, final_y_pred)
-                    
-                    # Calculate final MAPE
-                    epsilon = 1e-8
-                    final_test_mape = np.mean(np.abs((y_test - final_y_pred) / np.maximum(np.abs(y_test), epsilon))) * 100
-            
+                if hasattr(best_model, 'predict_proba'):
+                    final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
+                    final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                else:
+                    final_test_auc = 0.0
+
+            else:  # regression
+                final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
+                final_test_mae = mean_absolute_error(y_test, final_y_pred)
+                final_test_r2 = r2_score(y_test, final_y_pred)
+                epsilon = 1e-8
+                final_test_mape = np.mean(np.abs((y_test - final_y_pred) / np.maximum(np.abs(y_test), epsilon))) * 100
+
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
             
@@ -2180,10 +2183,11 @@ class TrainingPipeline:
             plt.tight_layout()
             plot_filename = os.path.join(output_dir, f'xgboost_iteration_analysis_{file_identifier}.png')
             plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
-            plt.show()
+            plt.close()
             print(f"      Performance curve saved to: {plot_filename}")
             
             # CREATE AND SAVE FEATURE IMPORTANCE PLOT
+            results = {}
             if best_model is not None:
                 print(f"      Creating feature importance plot...")
                 
@@ -2309,7 +2313,7 @@ class TrainingPipeline:
             print(f"      Training Summary:")
             print(f"        Problem Type: {problem_type}")
             print(f"        Best Iteration Count: {best_iteration}")
-            print(f"        Best Test Score: {best_f1_score:.4f}")
+            print(f"        Best Test Score: {best_metric:.4f}")
             print(f"        Score Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
             
             if is_classification:
