@@ -224,6 +224,37 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ filter_delay_outliers (disabled)")
 
+        if state_machine.get("balance_classes", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → balance_classes")
+                    balance_result = self.balance_classes(data=result["data"])
+
+                    if balance_result and balance_result.get("success", False):
+                        result["data"] = balance_result.get("data")
+                        result["steps_executed"].append("balance_classes")
+                        result["success"] = True
+                        if balance_result.get("skipped", False):
+                            print(f"      ✓ Skipped — minority share already meets threshold")
+                        else:
+                            print(f"      ✓ Rows before: {balance_result.get('rows_before', 0):,}")
+                            print(f"      ✓ Rows after:  {balance_result.get('rows_after', 0):,}")
+                            print(f"      ✓ Method: {balance_result.get('resampling_method', 'N/A')}")
+                    else:
+                        error_msg = balance_result.get("error", "balance_classes returned unsuccessful result")
+                        result["errors"].append(error_msg)
+                        print(f"      ✗ Failed - {error_msg}")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"balance_classes failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ balance_classes (no data available)")
+        else:
+            print(f"    ⊝ balance_classes (disabled)")
+
         if state_machine.get("select_training_cols", False):
             try:
                 print(f"    → select_training_cols")
@@ -318,7 +349,12 @@ class TrainingPipeline:
         if state_machine.get("split_dataset", False):
             try:
                 print(f"    → split_dataset")
-                split_result = self.split_dataset(csv_files)
+                _split_dir = (
+                    os.path.join(self.project_root, MERGED_BALANCED_OUTPUT_FOLDER)
+                    if state_machine.get("balance_classes", False)
+                    else None
+                )
+                split_result = self.split_dataset(csv_files, data_dir=_split_dir)
                 
                 if split_result and split_result.get("success", False):
                     result["steps_executed"].append("split_dataset")
@@ -1564,7 +1600,7 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
-    def split_dataset(self, csv_files=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
+    def split_dataset(self, csv_files=None, data_dir=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
         """
         Split merged training dataset into train and test sets.
         
@@ -1592,7 +1628,7 @@ class TrainingPipeline:
             print(f"    split_dataset: Starting dataset splitting operation...")
             
             # Create/ensure output directory exists
-            merged_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+            merged_training_ready_dir = data_dir if data_dir is not None else os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
             os.makedirs(merged_training_ready_dir, exist_ok=True)
             
             # Get all parquet files in the directory
