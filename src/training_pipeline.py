@@ -897,18 +897,20 @@ class TrainingPipeline:
         df = df[~lower_mask & ~upper_mask].copy()
         rows_after = len(df)
 
-        print(f"\n{'='*60}")
-        print(f"FILTER DELAY OUTLIERS")
-        print(f"{'='*60}")
-        print(f"  Lower bound (q={FILTER_LOWER_QUANTILE}): {lower_bound:.2f} min")
-        print(f"  Upper bound (q={FILTER_UPPER_QUANTILE}): {upper_bound:.2f} min")
-        print(f"  Rows before : {rows_before:,}")
-        print(f"  Removed (lower tail): {rows_removed_lower:,} ({rows_removed_lower / rows_before * 100:.2f}%)")
-        print(f"  Removed (upper tail): {rows_removed_upper:,} ({rows_removed_upper / rows_before * 100:.2f}%)")
-        print(f"  Rows after  : {rows_after:,} ({rows_after / rows_before * 100:.2f}% kept)")
-        print(f"{'='*60}\n")
+        print(f"\n    filter_delay_outliers: Filtering {rows_before:,} rows...")
+        print(f"      Lower bound (q={FILTER_LOWER_QUANTILE}): {lower_bound:.2f} min")
+        print(f"      Upper bound (q={FILTER_UPPER_QUANTILE}): {upper_bound:.2f} min")
+        if rows_before > 0:
+            print(f"      Removed (lower tail): {rows_removed_lower:,} ({rows_removed_lower / rows_before * 100:.2f}%)")
+            print(f"      Removed (upper tail): {rows_removed_upper:,} ({rows_removed_upper / rows_before * 100:.2f}%)")
+            print(f"      Rows after: {rows_after:,} ({rows_after / rows_before * 100:.2f}% kept)")
+        else:
+            print(f"      Input was empty — nothing to filter.")
 
-        print(f"--- SAVING filter_delay_outliers DATA ---")
+        if df.empty:
+            print("⚠️  Warning: All rows removed after outlier filtering — check quantile thresholds.")
+
+        print(f"    filter_delay_outliers: Saving filtered data...")
         try:
             saved_path = save_dataframe_to_parquet(
                 folder_path=os.path.join(self.project_root, MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER),
@@ -916,13 +918,10 @@ class TrainingPipeline:
                 df=df,
                 file_prefix="merged_data",
             )
-            print(f"✓ Saved filtered data to: {saved_path}")
+            print(f"      ✓ Saved filtered data to: {saved_path}")
         except Exception as save_error:
-            print(f"⚠️  Warning: Failed to save filtered data: {save_error}")
-            print("Continuing with in-memory filtered data.")
-
-        if df.empty:
-            print("⚠️  Warning: All rows removed after outlier filtering — check quantile thresholds.")
+            print(f"      ⚠️  Warning: Failed to save filtered data: {save_error}")
+            print("      Continuing with in-memory filtered data.")
 
         return {
             "success": True,

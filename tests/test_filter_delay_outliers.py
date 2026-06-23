@@ -88,8 +88,7 @@ def test_filter_result_contains_removal_counts(mock_save, tmp_path):
     assert result["rows_removed_lower"] + result["rows_removed_upper"] == result["rows_before"] - len(result["data"])
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/outlier_filtered.parquet")
-def test_filter_missing_column_returns_data_unchanged(mock_save, tmp_path):
+def test_filter_missing_column_returns_data_unchanged(tmp_path):
     """If differenceInMinutes is absent, return data unchanged with success=True."""
     pipeline = _make_pipeline(tmp_path)
     df = pd.DataFrame({"some_other_col": [1, 2, 3]})
@@ -120,3 +119,17 @@ def test_filter_saves_parquet(mock_save, tmp_path):
     pipeline.filter_delay_outliers(data=df)
 
     mock_save.assert_called_once()
+
+
+@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/outlier_filtered.parquet")
+def test_filter_empty_dataframe_does_not_crash(mock_save, tmp_path):
+    """Empty DataFrame with the target column present must not crash (ZeroDivisionError guard)."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"differenceInMinutes": pd.Series([], dtype=float), "feature_a": pd.Series([], dtype=int)})
+
+    result = pipeline.filter_delay_outliers(data=df)
+
+    assert result["success"] is True
+    assert result["rows_before"] == 0
+    assert result["rows_removed_lower"] == 0
+    assert result["rows_removed_upper"] == 0
