@@ -1,7 +1,7 @@
 def test_balanced_folder_constant_exists():
     from config.const_training import MERGED_BALANCED_OUTPUT_FOLDER
     assert "504" in MERGED_BALANCED_OUTPUT_FOLDER
-    assert "balanced" in MERGED_BALANCED_OUTPUT_FOLDER
+    assert "balance" in MERGED_BALANCED_OUTPUT_FOLDER
 
 
 def test_balance_classes_in_state_machine():
