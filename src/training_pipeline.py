@@ -1042,9 +1042,8 @@ class TrainingPipeline:
             print("    balance_classes: data_dir is None — skipping")
             return {"success": False, "error": "data_dir is None"}
 
-        import glob as _glob
-        train_files = _glob.glob(os.path.join(data_dir, "*_train.parquet"))
-        test_files = _glob.glob(os.path.join(data_dir, "*_test.parquet"))
+        train_files = glob.glob(os.path.join(data_dir, "*_train.parquet"))
+        test_files = glob.glob(os.path.join(data_dir, "*_test.parquet"))
 
         if not train_files:
             msg = f"No *_train.parquet found in {data_dir}"

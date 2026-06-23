@@ -19,7 +19,6 @@ def test_balance_classes_after_split_dataset_in_state_machine():
 import numpy as np
 import pandas as pd
 import os
-import shutil
 
 from src.training_pipeline import TrainingPipeline
 
