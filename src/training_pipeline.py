@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
             
 from src.file_utils import (
+    save_dataframe_to_parquet,
     format_param_distributions_for_json,
     generate_feature_importance_report, 
     generate_output_path,
@@ -78,6 +79,9 @@ from config.const_preprocessing import (
 
 from config.const_training import (
     MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER,
+    MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER,
+    FILTER_LOWER_QUANTILE,
+    FILTER_UPPER_QUANTILE,
     RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
@@ -831,6 +835,104 @@ class TrainingPipeline:
 
             
         return result
+
+    def filter_delay_outliers(self, data=None):
+        """
+        Remove rows where differenceInMinutes falls outside asymmetric quantile bounds.
+
+        Uses FILTER_LOWER_QUANTILE and FILTER_UPPER_QUANTILE from const_training to
+        compute bounds on the full merged dataset, then drops rows outside those bounds.
+        Saves the filtered dataframe to MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER for inspection.
+
+        Parameters
+        ----------
+        data : pd.DataFrame or None
+            Merged dataframe from merge_data_files. Required.
+
+        Returns
+        -------
+        dict
+            {
+              "success": bool,
+              "data": pd.DataFrame | None,
+              "rows_before": int,
+              "rows_removed_lower": int,
+              "rows_removed_upper": int,
+              "lower_bound": float,
+              "upper_bound": float,
+            }
+            On missing column: success=True, data unchanged, removal counts are 0.
+            On data=None: success=False, error key present.
+        """
+        if data is None:
+            print("    filter_delay_outliers: data is None — skipping")
+            return {"success": False, "error": "data is None", "data": None}
+
+        target_col = "differenceInMinutes"
+
+        if target_col not in data.columns:
+            print(f"    filter_delay_outliers: '{target_col}' not found — returning data unchanged")
+            return {
+                "success": True,
+                "data": data,
+                "rows_before": len(data),
+                "rows_removed_lower": 0,
+                "rows_removed_upper": 0,
+                "lower_bound": None,
+                "upper_bound": None,
+            }
+
+        df = data.copy()
+        rows_before = len(df)
+
+        lower_bound = float(df[target_col].quantile(FILTER_LOWER_QUANTILE))
+        upper_bound = float(df[target_col].quantile(FILTER_UPPER_QUANTILE))
+
+        lower_mask = df[target_col] < lower_bound
+        upper_mask = df[target_col] > upper_bound
+
+        rows_removed_lower = int(lower_mask.sum())
+        rows_removed_upper = int(upper_mask.sum())
+
+        df = df[~lower_mask & ~upper_mask].copy()
+        rows_after = len(df)
+
+        print(f"\n{'='*60}")
+        print(f"FILTER DELAY OUTLIERS")
+        print(f"{'='*60}")
+        print(f"  Lower bound (q={FILTER_LOWER_QUANTILE}): {lower_bound:.2f} min")
+        print(f"  Upper bound (q={FILTER_UPPER_QUANTILE}): {upper_bound:.2f} min")
+        print(f"  Rows before : {rows_before:,}")
+        print(f"  Removed (lower tail): {rows_removed_lower:,} ({rows_removed_lower / rows_before * 100:.2f}%)")
+        print(f"  Removed (upper tail): {rows_removed_upper:,} ({rows_removed_upper / rows_before * 100:.2f}%)")
+        print(f"  Rows after  : {rows_after:,} ({rows_after / rows_before * 100:.2f}% kept)")
+        print(f"{'='*60}\n")
+
+        print(f"--- SAVING filter_delay_outliers DATA ---")
+        try:
+            saved_path = save_dataframe_to_parquet(
+                folder_path=os.path.join(self.project_root, MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER),
+                month_id="outlier_filtered",
+                df=df,
+                file_prefix="merged_data",
+            )
+            print(f"✓ Saved filtered data to: {saved_path}")
+        except Exception as save_error:
+            print(f"⚠️  Warning: Failed to save filtered data: {save_error}")
+            print("Continuing with in-memory filtered data.")
+
+        if df.empty:
+            print("⚠️  Warning: All rows removed after outlier filtering — check quantile thresholds.")
+
+        return {
+            "success": True,
+            "data": df,
+            "rows_before": rows_before,
+            "rows_removed_lower": rows_removed_lower,
+            "rows_removed_upper": rows_removed_upper,
+            "lower_bound": lower_bound,
+            "upper_bound": upper_bound,
+        }
 
     def merge_data_files(self, csv_files):
         """
