@@ -3,6 +3,7 @@ import numpy as np
 
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
+    "filter_delay_outliers": True,   # new
     "select_training_cols": True,
     "split_dataset": True,
     "scale_weather_features": False,
@@ -30,7 +31,14 @@ TRAINING_STATE_MACHINE = {
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merged_training_ready"
 MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER = "data/output/501-merged_selected_training_ready"
-MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/502-merged_selected_scaled_training_ready"
+MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER = "data/output/502-merged_outlier_filtered"
+MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/503-merged_selected_scaled_training_ready"
+
+# Asymmetric quantile thresholds for delay outlier removal
+# Lower tail: conservative cut (few implausibly-early arrivals)
+# Upper tail: more aggressive cut (heavy right tail has likely data errors)
+FILTER_LOWER_QUANTILE = 0.01
+FILTER_UPPER_QUANTILE = 0.99
 
 RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
