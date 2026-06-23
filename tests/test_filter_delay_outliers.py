@@ -201,3 +201,39 @@ def test_state_machine_skips_filter_when_disabled(mock_merge, mock_filter, tmp_p
     pipeline.execute_training_pipeline_steps([], state_machine=_make_state_machine_with_filter(False))
 
     mock_filter.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Dropped-rows CSV
+# ---------------------------------------------------------------------------
+
+@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/outlier_filtered.parquet")
+def test_dropped_rows_csv_is_created(mock_save, tmp_path):
+    """filter_delay_outliers must write a dropped_rows.csv alongside the parquet."""
+    from config.const_training import MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+    pipeline = _make_pipeline(tmp_path)
+    df = _make_df(n=100)
+
+    pipeline.filter_delay_outliers(data=df)
+
+    csv_path = tmp_path / MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER / "dropped_rows.csv"
+    assert csv_path.exists(), f"Expected dropped_rows.csv at {csv_path}"
+
+
+@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/outlier_filtered.parquet")
+def test_dropped_rows_csv_content(mock_save, tmp_path):
+    """dropped_rows.csv must contain all removed rows with a dropped_tail column."""
+    from config.const_training import MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+    pipeline = _make_pipeline(tmp_path)
+    df = _make_df(n=100)
+
+    result = pipeline.filter_delay_outliers(data=df)
+
+    csv_path = tmp_path / MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER / "dropped_rows.csv"
+    dropped = pd.read_csv(csv_path)
+
+    assert "dropped_tail" in dropped.columns
+    assert set(dropped["dropped_tail"].unique()).issubset({"lower", "upper"})
+    assert len(dropped) == result["rows_removed_lower"] + result["rows_removed_upper"]
+    assert (dropped[dropped["dropped_tail"] == "lower"]["differenceInMinutes"] < result["lower_bound"]).all()
+    assert (dropped[dropped["dropped_tail"] == "upper"]["differenceInMinutes"] > result["upper_bound"]).all()

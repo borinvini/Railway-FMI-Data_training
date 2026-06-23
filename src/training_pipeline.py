@@ -938,10 +938,12 @@ class TrainingPipeline:
         if df.empty:
             print("⚠️  Warning: All rows removed after outlier filtering — check quantile thresholds.")
 
+        output_folder = os.path.join(self.project_root, MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER)
+
         print(f"    filter_delay_outliers: Saving filtered data...")
         try:
             saved_path = save_dataframe_to_parquet(
-                folder_path=os.path.join(self.project_root, MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER),
+                folder_path=output_folder,
                 month_id="outlier_filtered",
                 df=df,
                 file_prefix="merged_data",
@@ -950,6 +952,21 @@ class TrainingPipeline:
         except Exception as save_error:
             print(f"      ⚠️  Warning: Failed to save filtered data: {save_error}")
             print("      Continuing with in-memory filtered data.")
+
+        print(f"    filter_delay_outliers: Saving dropped rows log...")
+        try:
+            dropped_lower = data[lower_mask].copy()
+            dropped_lower["dropped_tail"] = "lower"
+            dropped_upper = data[upper_mask].copy()
+            dropped_upper["dropped_tail"] = "upper"
+            dropped_df = pd.concat([dropped_lower, dropped_upper], ignore_index=True)
+            os.makedirs(output_folder, exist_ok=True)
+            csv_path = os.path.join(output_folder, "dropped_rows.csv")
+            dropped_df.to_csv(csv_path, index=False)
+            print(f"      ✓ Saved {len(dropped_df):,} dropped rows to: {csv_path}")
+        except Exception as csv_error:
+            print(f"      ⚠️  Warning: Failed to save dropped rows log: {csv_error}")
+            print("      Continuing without dropped rows log.")
 
         return {
             "success": True,
