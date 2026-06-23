@@ -96,10 +96,23 @@ def test_xgboost_uses_selected_dir_when_scale_disabled(mock_xgb, tmp_path):
 
 
 @patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
-def test_xgboost_uses_balanced_dir_when_balance_enabled_and_scale_disabled(mock_xgb, tmp_path):
+@patch.object(TrainingPipeline, "balance_classes")
+def test_xgboost_uses_balanced_dir_when_balance_enabled_and_scale_disabled(mock_balance, mock_xgb, tmp_path):
     """When balance_classes=True and scale_weather_features=False, XGBoost should receive the 504 (balanced) directory."""
     pipeline = _make_pipeline(tmp_path)
     mock_xgb.return_value = _XGBOOST_SUCCESS
+    mock_balance.return_value = {
+        "success": True,
+        "rows_before": 400,
+        "rows_after": 450,
+        "minority_share_before": 25.0,
+        "minority_share_after": 45.0,
+        "resampling_method": "SMOTE_TOMEK",
+        "skipped": False,
+        "dropped_non_numeric_cols": [],
+        "train_output_path": "/fake/train.parquet",
+        "test_output_path": "/fake/test.parquet",
+    }
 
     sm = _make_state_machine(scale=False)
     sm["balance_classes"] = True
@@ -158,7 +171,7 @@ def test_xgboost_reads_from_split_dataset_folder_when_split_enabled(mock_split, 
 
 
 @patch.object(TrainingPipeline, "split_dataset")
-def test_split_dataset_writes_to_505_folder(mock_split, tmp_path):
+def test_split_dataset_writes_to_503_folder(mock_split, tmp_path):
     """split_dataset state machine block should pass output_dir pointing to 503-split_dataset."""
     pipeline = _make_pipeline(tmp_path)
     mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 400, "total_test_rows": 100}

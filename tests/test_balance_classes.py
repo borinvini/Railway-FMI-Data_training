@@ -1,3 +1,6 @@
+from unittest.mock import patch
+
+
 def test_balanced_folder_constant_exists():
     from config.const_training import MERGED_BALANCED_OUTPUT_FOLDER
     assert "504" in MERGED_BALANCED_OUTPUT_FOLDER
@@ -186,3 +189,91 @@ def test_result_has_no_data_key(tmp_path):
     data_dir = _write_train_test(tmp_path, train_df, test_df)
     result = pipeline.balance_classes(data_dir=data_dir)
     assert "data" not in result, "balance_classes must not return an in-memory DataFrame"
+
+
+# ---------------------------------------------------------------------------
+# State machine tests: balance_classes runs after split_dataset
+# ---------------------------------------------------------------------------
+
+_SPLIT_SUCCESS = {
+    "success": True,
+    "processed_files": 1,
+    "total_train_rows": 320,
+    "total_test_rows": 80,
+}
+
+_BALANCE_SUCCESS = {
+    "success": True,
+    "rows_before": 320,
+    "rows_after": 380,
+    "minority_share_before": 25.0,
+    "minority_share_after": 48.0,
+    "resampling_method": "SMOTE_TOMEK",
+    "skipped": False,
+    "dropped_non_numeric_cols": [],
+    "train_output_path": "/fake/train.parquet",
+    "test_output_path": "/fake/test.parquet",
+}
+
+
+def _base_state_machine(**overrides):
+    sm = {
+        "merge_data_files": False,
+        "filter_delay_outliers": False,
+        "select_training_cols": False,
+        "split_dataset": True,
+        "balance_classes": True,
+        "scale_weather_features": False,
+        "numeric_correlation_analysis": False,
+        "data_distribution_analysis": False,
+        "target_feature_analysis": False,
+        "train_xgboost_with_randomized_search_cv": False,
+    }
+    sm.update(overrides)
+    return sm
+
+
+@patch.object(TrainingPipeline, "balance_classes")
+@patch.object(TrainingPipeline, "split_dataset", return_value=_SPLIT_SUCCESS)
+def test_state_machine_calls_balance_classes_after_split(mock_split, mock_balance, tmp_path):
+    from config.const_training import SPLIT_DATASET_OUTPUT_FOLDER
+    pipeline = _make_pipeline(tmp_path)
+    mock_balance.return_value = _BALANCE_SUCCESS
+
+    result = pipeline.execute_training_pipeline_steps([], state_machine=_base_state_machine())
+
+    mock_balance.assert_called_once()
+    _, kwargs = mock_balance.call_args
+    assert kwargs.get("data_dir") is not None
+    assert SPLIT_DATASET_OUTPUT_FOLDER in kwargs["data_dir"]
+    assert "balance_classes" in result.get("steps_executed", [])
+
+
+@patch.object(TrainingPipeline, "balance_classes")
+@patch.object(TrainingPipeline, "split_dataset", return_value=_SPLIT_SUCCESS)
+def test_state_machine_skips_balance_classes_when_disabled(mock_split, mock_balance, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+
+    pipeline.execute_training_pipeline_steps(
+        [], state_machine=_base_state_machine(balance_classes=False)
+    )
+
+    mock_balance.assert_not_called()
+
+
+@patch.object(TrainingPipeline, "split_dataset")
+def test_split_dataset_no_longer_routes_based_on_balance(mock_split, tmp_path):
+    """split_dataset routing must NOT depend on balance_classes — balance runs after split."""
+    from config.const_training import MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+    pipeline = _make_pipeline(tmp_path)
+    mock_split.return_value = _SPLIT_SUCCESS
+
+    pipeline.execute_training_pipeline_steps(
+        [], state_machine=_base_state_machine(balance_classes=True, split_dataset=True)
+    )
+
+    mock_split.assert_called_once()
+    _, kwargs = mock_split.call_args
+    data_dir = kwargs.get("data_dir")
+    # data_dir must NOT point to balance_classes folder
+    assert data_dir is None or "balance" not in str(data_dir)
