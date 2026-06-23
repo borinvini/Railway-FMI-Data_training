@@ -1,5 +1,3 @@
-import pytest
-
 def test_quantile_constants_exist():
     from config.const_training import FILTER_LOWER_QUANTILE, FILTER_UPPER_QUANTILE
     assert 0.0 < FILTER_LOWER_QUANTILE < 0.1
@@ -14,3 +12,8 @@ def test_outlier_folder_constant_exists():
 def test_scaled_folder_renamed_to_503():
     from config.const_training import MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
     assert "503" in MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+
+def test_quantile_constant_exact_values():
+    from config.const_training import FILTER_LOWER_QUANTILE, FILTER_UPPER_QUANTILE
+    assert FILTER_LOWER_QUANTILE == 0.01
+    assert FILTER_UPPER_QUANTILE == 0.99

@@ -63,7 +63,7 @@ def _make_state_machine(scale: bool) -> dict:
 @patch.object(TrainingPipeline, "scale_weather_features", return_value=_SUCCESS)
 @patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
 def test_xgboost_uses_scaled_dir_when_scale_enabled(mock_xgb, mock_scale, tmp_path):
-    """When scale_weather_features=True, XGBoost should receive the 502 (scaled) directory."""
+    """When scale_weather_features=True, XGBoost should receive the 503 (scaled) directory."""
     pipeline = _make_pipeline(tmp_path)
     mock_xgb.return_value = _XGBOOST_SUCCESS
 
