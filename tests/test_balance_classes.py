@@ -67,6 +67,16 @@ def _make_balanced_df(n=200, seed=42):
 
 
 @patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
+def test_nan_rows_are_dropped_before_resampling(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = _make_imbalanced_df()
+    df.loc[df.index[:10], "feature_a"] = np.nan  # inject NaN into 10 rows
+    result = pipeline.balance_classes(data=df)
+    assert result["success"] is True
+    assert result["skipped"] is False
+
+
+@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
 def test_none_data_returns_failure(mock_save, tmp_path):
     pipeline = _make_pipeline(tmp_path)
     result = pipeline.balance_classes(data=None)

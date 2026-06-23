@@ -1087,6 +1087,12 @@ class TrainingPipeline:
             print(f"    balance_classes: Dropping {len(non_numeric_cols)} non-numeric column(s): {non_numeric_cols}")
 
         X = df[numeric_cols].copy()
+        nan_mask = X.notna().all(axis=1)
+        rows_with_nan = int((~nan_mask).sum())
+        if rows_with_nan > 0:
+            print(f"    balance_classes: Dropping {rows_with_nan:,} rows with NaN values before resampling")
+            X = X[nan_mask]
+            y = y[nan_mask]
 
         if RESAMPLING_METHOD == "SMOTE_TOMEK":
             print(f"    balance_classes: Applying SMOTETomek (random_state={SMOTE_RANDOM_STATE})...")
