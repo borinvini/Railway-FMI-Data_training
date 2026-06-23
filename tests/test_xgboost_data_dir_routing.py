@@ -7,6 +7,7 @@ from config.const_training import (
     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
     MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER,
     MERGED_BALANCED_OUTPUT_FOLDER,
+    SPLIT_DATASET_OUTPUT_FOLDER,
 )
 
 
@@ -132,4 +133,44 @@ def test_xgboost_uses_outlier_filtered_dir_when_filter_enabled_and_balance_scale
     expected = os.path.join(str(tmp_path), MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER)
     assert kwargs.get("data_dir") == expected, (
         f"Expected data_dir={expected!r}, got {kwargs.get('data_dir')!r}"
+    )
+
+
+@patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
+@patch.object(TrainingPipeline, "split_dataset")
+def test_xgboost_reads_from_split_dataset_folder_when_split_enabled(mock_split, mock_xgb, tmp_path):
+    """When split_dataset=True, XGBoost should read from 505-split_dataset regardless of other flags."""
+    pipeline = _make_pipeline(tmp_path)
+    mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 400, "total_test_rows": 100}
+    mock_xgb.return_value = _XGBOOST_SUCCESS
+
+    sm = _make_state_machine(scale=False)
+    sm["split_dataset"] = True
+
+    pipeline.execute_training_pipeline_steps([], state_machine=sm)
+
+    mock_xgb.assert_called_once()
+    _, kwargs = mock_xgb.call_args
+    expected = os.path.join(str(tmp_path), SPLIT_DATASET_OUTPUT_FOLDER)
+    assert kwargs.get("data_dir") == expected, (
+        f"Expected data_dir={expected!r}, got {kwargs.get('data_dir')!r}"
+    )
+
+
+@patch.object(TrainingPipeline, "split_dataset")
+def test_split_dataset_writes_to_505_folder(mock_split, tmp_path):
+    """split_dataset state machine block should pass output_dir pointing to 505-split_dataset."""
+    pipeline = _make_pipeline(tmp_path)
+    mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 400, "total_test_rows": 100}
+
+    sm = _make_state_machine(scale=False)
+    sm["split_dataset"] = True
+
+    pipeline.execute_training_pipeline_steps([], state_machine=sm)
+
+    mock_split.assert_called_once()
+    _, kwargs = mock_split.call_args
+    expected = os.path.join(str(tmp_path), SPLIT_DATASET_OUTPUT_FOLDER)
+    assert kwargs.get("output_dir") == expected, (
+        f"Expected output_dir={expected!r}, got {kwargs.get('output_dir')!r}"
     )

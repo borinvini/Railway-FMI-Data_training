@@ -35,6 +35,7 @@ MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER = "data/output/501-select_training_
 MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER = "data/output/502-filter_delay_outliers"
 MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/503-scale_weather_features"
 MERGED_BALANCED_OUTPUT_FOLDER = "data/output/504-balance_classes"
+SPLIT_DATASET_OUTPUT_FOLDER = "data/output/505-split_dataset"
 
 # Asymmetric quantile thresholds for delay outlier removal
 # Lower tail: conservative cut (few implausibly-early arrivals)

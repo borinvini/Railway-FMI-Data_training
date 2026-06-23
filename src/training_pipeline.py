@@ -110,6 +110,7 @@ from config.const_training import (
     RESAMPLING_METHOD,
     IMBALANCE_THRESHOLD,
     SMOTE_RANDOM_STATE,
+    SPLIT_DATASET_OUTPUT_FOLDER,
 )
 
 
@@ -356,7 +357,11 @@ class TrainingPipeline:
                     if state_machine.get("filter_delay_outliers", False) and not state_machine.get("select_training_cols", False)
                     else None
                 )
-                split_result = self.split_dataset(csv_files, data_dir=_split_dir)
+                split_result = self.split_dataset(
+                    csv_files,
+                    data_dir=_split_dir,
+                    output_dir=os.path.join(self.project_root, SPLIT_DATASET_OUTPUT_FOLDER),
+                )
                 
                 if split_result and split_result.get("success", False):
                     result["steps_executed"].append("split_dataset")
@@ -801,7 +806,9 @@ class TrainingPipeline:
                     and not state_machine.get("select_training_cols", False)
                 )
                 _data_folder = (
-                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    SPLIT_DATASET_OUTPUT_FOLDER
+                    if state_machine.get("split_dataset", False)
+                    else MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
                     if _use_scaled
                     else MERGED_BALANCED_OUTPUT_FOLDER
                     if _use_balanced
@@ -1617,7 +1624,7 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
-    def split_dataset(self, csv_files=None, data_dir=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
+    def split_dataset(self, csv_files=None, data_dir=None, output_dir=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
         """
         Split merged training dataset into train and test sets.
         
@@ -1748,8 +1755,11 @@ class TrainingPipeline:
             train_filename = f"{base_name}_train.parquet"
             test_filename = f"{base_name}_test.parquet"
 
-            train_path = os.path.join(merged_training_ready_dir, train_filename)
-            test_path = os.path.join(merged_training_ready_dir, test_filename)
+            split_output_dir = output_dir if output_dir is not None else merged_training_ready_dir
+            os.makedirs(split_output_dir, exist_ok=True)
+
+            train_path = os.path.join(split_output_dir, train_filename)
+            test_path = os.path.join(split_output_dir, test_filename)
 
             # Save train and test sets
             train_df.to_parquet(train_path, index=False)
