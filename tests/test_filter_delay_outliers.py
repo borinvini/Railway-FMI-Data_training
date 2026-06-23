@@ -22,7 +22,7 @@ def test_quantile_constant_exact_values():
 import numpy as np
 import pandas as pd
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.training_pipeline import TrainingPipeline
 
@@ -133,3 +133,70 @@ def test_filter_empty_dataframe_does_not_crash(mock_save, tmp_path):
     assert result["rows_before"] == 0
     assert result["rows_removed_lower"] == 0
     assert result["rows_removed_upper"] == 0
+
+
+_MERGE_SUCCESS = {
+    "success": True,
+    "data": pd.DataFrame({
+        "differenceInMinutes": list(range(-10, 90)),
+        "feature_a": list(range(100)),
+    }),
+    "processed_files": 1,
+    "total_rows": 100,
+    "total_columns": 2,
+}
+
+_SELECT_COLS_SUCCESS = {
+    "success": True,
+    "total_columns": 2,
+    "file_path": "/fake/merged.parquet",
+    "dataset_shape": (100, 2),
+    "column_types": {},
+}
+
+
+def _make_state_machine_with_filter(filter_enabled: bool) -> dict:
+    return {
+        "merge_data_files": True,
+        "filter_delay_outliers": filter_enabled,
+        "select_training_cols": False,
+        "split_dataset": False,
+        "scale_weather_features": False,
+        "numeric_correlation_analysis": False,
+        "data_distribution_analysis": False,
+        "target_feature_analysis": False,
+        "train_xgboost_with_randomized_search_cv": False,
+    }
+
+
+@patch.object(TrainingPipeline, "filter_delay_outliers")
+@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
+def test_state_machine_calls_filter_when_enabled(mock_merge, mock_filter, tmp_path):
+    """When filter_delay_outliers=True in state machine, method must be called."""
+    pipeline = _make_pipeline(tmp_path)
+    mock_filter.return_value = {
+        "success": True,
+        "data": _MERGE_SUCCESS["data"],
+        "rows_before": 100,
+        "rows_removed_lower": 1,
+        "rows_removed_upper": 1,
+        "lower_bound": -9.0,
+        "upper_bound": 88.0,
+    }
+
+    pipeline.execute_training_pipeline_steps([], state_machine=_make_state_machine_with_filter(True))
+
+    mock_filter.assert_called_once()
+    _, kwargs = mock_filter.call_args
+    assert kwargs.get("data") is not None
+
+
+@patch.object(TrainingPipeline, "filter_delay_outliers")
+@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
+def test_state_machine_skips_filter_when_disabled(mock_merge, mock_filter, tmp_path):
+    """When filter_delay_outliers=False in state machine, method must NOT be called."""
+    pipeline = _make_pipeline(tmp_path)
+
+    pipeline.execute_training_pipeline_steps([], state_machine=_make_state_machine_with_filter(False))
+
+    mock_filter.assert_not_called()

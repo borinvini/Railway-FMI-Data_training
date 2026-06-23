@@ -191,6 +191,33 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ merge_data_files (disabled)")
 
+        if state_machine.get("filter_delay_outliers", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → filter_delay_outliers")
+                    filter_result = self.filter_delay_outliers(data=result["data"])
+
+                    if filter_result and filter_result.get("success", False):
+                        result["data"] = filter_result.get("data")
+                        result["steps_executed"].append("filter_delay_outliers")
+                        removed = filter_result.get("rows_removed_lower", 0) + filter_result.get("rows_removed_upper", 0)
+                        print(f"      ✓ Removed {removed:,} outlier rows")
+                        print(f"      ✓ Rows remaining: {len(result['data']):,}")
+                    else:
+                        error_msg = filter_result.get("error", "filter_delay_outliers returned unsuccessful result")
+                        result["errors"].append(error_msg)
+                        print(f"      ✗ Failed - {error_msg}")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"filter_delay_outliers failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ filter_delay_outliers (no data available)")
+        else:
+            print(f"    ⊝ filter_delay_outliers (disabled)")
+
         if state_machine.get("select_training_cols", False):
             try:
                 print(f"    → select_training_cols")
