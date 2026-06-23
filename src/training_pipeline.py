@@ -19,6 +19,7 @@ from sklearn.preprocessing import RobustScaler
 import xgboost as xgb
 
 from imblearn.over_sampling import BorderlineSMOTE
+from imblearn.combine import SMOTETomek
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import (
@@ -104,7 +105,11 @@ from config.const_training import (
     XGBOOST_PARAM_DISTRIBUTIONS,
     XGBOOST_METHODS_CONFIG,
     MAX_SAMPLE_WEIGHT_REGRESSION,
-    XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER
+    XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER,
+    MERGED_BALANCED_OUTPUT_FOLDER,
+    RESAMPLING_METHOD,
+    IMBALANCE_THRESHOLD,
+    SMOTE_RANDOM_STATE,
 )
 
 
@@ -976,6 +981,121 @@ class TrainingPipeline:
             "rows_removed_upper": rows_removed_upper,
             "lower_bound": lower_bound,
             "upper_bound": upper_bound,
+        }
+
+    def balance_classes(self, data=None):
+        if data is None:
+            print("    balance_classes: data is None — skipping")
+            return {"success": False, "error": "data is None", "data": None}
+
+        target_col = "differenceInMinutes"
+
+        if target_col not in data.columns:
+            print(f"    balance_classes: '{target_col}' not found — returning data unchanged")
+            return {
+                "success": True,
+                "data": data,
+                "rows_before": len(data),
+                "rows_after": len(data),
+                "minority_share_before": None,
+                "minority_share_after": None,
+                "resampling_method": "NONE",
+                "skipped": True,
+                "dropped_non_numeric_cols": [],
+            }
+
+        df = data.copy()
+        rows_before = len(df)
+
+        y = (df[target_col] > TRAIN_DELAY_MINUTES).astype(int)
+        class_counts = y.value_counts()
+        total = len(y)
+        minority_count = int(class_counts.min())
+        minority_share = minority_count / total * 100
+
+        print(f"\n    balance_classes: Class balance before resampling:")
+        print(f"      Punctual (≤ {TRAIN_DELAY_MINUTES} min): {int(class_counts.get(0, 0)):,} ({int(class_counts.get(0, 0)) / total * 100:.1f}%)")
+        print(f"      Delayed  (> {TRAIN_DELAY_MINUTES} min): {int(class_counts.get(1, 0)):,} ({int(class_counts.get(1, 0)) / total * 100:.1f}%)")
+        print(f"      Minority share: {minority_share:.1f}% (threshold: {IMBALANCE_THRESHOLD}%)")
+
+        output_folder = os.path.join(self.project_root, MERGED_BALANCED_OUTPUT_FOLDER)
+
+        if minority_share >= IMBALANCE_THRESHOLD:
+            print(f"    balance_classes: Balance acceptable — skipping resampling")
+            try:
+                saved_path = save_dataframe_to_parquet(
+                    folder_path=output_folder,
+                    month_id="balanced",
+                    df=df,
+                    file_prefix="merged_data",
+                )
+                print(f"      Saved (unchanged) data to: {saved_path}")
+            except Exception as save_error:
+                print(f"      Warning: Failed to save data: {save_error}")
+            return {
+                "success": True,
+                "data": df,
+                "rows_before": rows_before,
+                "rows_after": rows_before,
+                "minority_share_before": minority_share,
+                "minority_share_after": minority_share,
+                "resampling_method": "NONE",
+                "skipped": True,
+                "dropped_non_numeric_cols": [],
+            }
+
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
+
+        if non_numeric_cols:
+            print(f"    balance_classes: Dropping {len(non_numeric_cols)} non-numeric column(s): {non_numeric_cols}")
+
+        X = df[numeric_cols].copy()
+
+        if RESAMPLING_METHOD == "SMOTE_TOMEK":
+            print(f"    balance_classes: Applying SMOTETomek (random_state={SMOTE_RANDOM_STATE})...")
+            resampler = SMOTETomek(random_state=SMOTE_RANDOM_STATE)
+            X_res, y_res = resampler.fit_resample(X, y)
+            used_method = "SMOTE_TOMEK"
+        else:
+            print(f"    balance_classes: RESAMPLING_METHOD='{RESAMPLING_METHOD}' not handled — returning data unchanged")
+            X_res, y_res = X.values, y.values
+            used_method = "NONE"
+
+        df_balanced = pd.DataFrame(X_res, columns=numeric_cols)
+        rows_after = len(df_balanced)
+
+        y_after = pd.Series(y_res)
+        counts_after = y_after.value_counts()
+        minority_share_after = int(counts_after.min()) / len(y_after) * 100
+
+        print(f"\n    balance_classes: Class balance after resampling:")
+        print(f"      Punctual (≤ {TRAIN_DELAY_MINUTES} min): {int(counts_after.get(0, 0)):,} ({int(counts_after.get(0, 0)) / len(y_after) * 100:.1f}%)")
+        print(f"      Delayed  (> {TRAIN_DELAY_MINUTES} min): {int(counts_after.get(1, 0)):,} ({int(counts_after.get(1, 0)) / len(y_after) * 100:.1f}%)")
+        print(f"      Rows: {rows_before:,} → {rows_after:,}")
+
+        try:
+            saved_path = save_dataframe_to_parquet(
+                folder_path=output_folder,
+                month_id="balanced",
+                df=df_balanced,
+                file_prefix="merged_data",
+            )
+            print(f"      Saved balanced data to: {saved_path}")
+        except Exception as save_error:
+            print(f"      Warning: Failed to save balanced data: {save_error}")
+            print("      Continuing with in-memory balanced data.")
+
+        return {
+            "success": True,
+            "data": df_balanced,
+            "rows_before": rows_before,
+            "rows_after": rows_after,
+            "minority_share_before": minority_share,
+            "minority_share_after": minority_share_after,
+            "resampling_method": used_method,
+            "skipped": False,
+            "dropped_non_numeric_cols": non_numeric_cols,
         }
 
     def merge_data_files(self, csv_files):
