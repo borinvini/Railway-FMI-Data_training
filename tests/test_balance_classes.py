@@ -257,3 +257,26 @@ def test_split_dataset_receives_default_folder_when_balance_disabled(mock_merge,
     _, kwargs = mock_split.call_args
     data_dir = kwargs.get("data_dir", "")
     assert data_dir is None or MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER in str(data_dir)
+
+
+@patch.object(TrainingPipeline, "split_dataset")
+@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
+def test_split_dataset_receives_outlier_filtered_folder_when_filter_enabled_and_balance_and_select_disabled(mock_merge, mock_split, tmp_path):
+    from config.const_training import MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+    pipeline = _make_pipeline(tmp_path)
+    mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 320, "total_test_rows": 80}
+
+    pipeline.execute_training_pipeline_steps(
+        [],
+        state_machine=_base_state_machine(
+            balance_classes=False,
+            filter_delay_outliers=True,
+            select_training_cols=False,
+            split_dataset=True,
+        ),
+    )
+
+    mock_split.assert_called_once()
+    _, kwargs = mock_split.call_args
+    assert kwargs.get("data_dir") is not None
+    assert MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER in kwargs["data_dir"]

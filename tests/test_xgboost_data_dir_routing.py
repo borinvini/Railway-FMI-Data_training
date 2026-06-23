@@ -111,3 +111,25 @@ def test_xgboost_uses_balanced_dir_when_balance_enabled_and_scale_disabled(mock_
     assert kwargs.get("data_dir") == expected, (
         f"Expected data_dir={expected!r}, got {kwargs.get('data_dir')!r}"
     )
+
+
+@patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
+def test_xgboost_uses_outlier_filtered_dir_when_filter_enabled_and_balance_scale_select_disabled(mock_xgb, tmp_path):
+    """When filter_delay_outliers=True, balance=False, scale=False, select=False, XGBoost reads from 502."""
+    from config.const_training import MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+    pipeline = _make_pipeline(tmp_path)
+    mock_xgb.return_value = _XGBOOST_SUCCESS
+
+    sm = _make_state_machine(scale=False)
+    sm["filter_delay_outliers"] = True
+    sm["select_training_cols"] = False
+    sm["balance_classes"] = False
+
+    pipeline.execute_training_pipeline_steps([], state_machine=sm)
+
+    mock_xgb.assert_called_once()
+    _, kwargs = mock_xgb.call_args
+    expected = os.path.join(str(tmp_path), MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER)
+    assert kwargs.get("data_dir") == expected, (
+        f"Expected data_dir={expected!r}, got {kwargs.get('data_dir')!r}"
+    )
