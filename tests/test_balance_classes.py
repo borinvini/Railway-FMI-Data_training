@@ -261,12 +261,13 @@ def test_state_machine_skips_balance_classes_when_disabled(mock_split, mock_bala
     mock_balance.assert_not_called()
 
 
+@patch.object(TrainingPipeline, "balance_classes")
 @patch.object(TrainingPipeline, "split_dataset")
-def test_split_dataset_no_longer_routes_based_on_balance(mock_split, tmp_path):
+def test_split_dataset_no_longer_routes_based_on_balance(mock_split, mock_balance, tmp_path):
     """split_dataset routing must NOT depend on balance_classes — balance runs after split."""
-    from config.const_training import MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
     pipeline = _make_pipeline(tmp_path)
     mock_split.return_value = _SPLIT_SUCCESS
+    mock_balance.return_value = {"success": True, "rows_before": 320, "rows_after": 380, "minority_share_before": 25.0, "minority_share_after": 48.0, "resampling_method": "SMOTE_TOMEK", "skipped": False, "dropped_non_numeric_cols": [], "train_output_path": "/fake/train.parquet", "test_output_path": "/fake/test.parquet"}
 
     pipeline.execute_training_pipeline_steps(
         [], state_machine=_base_state_machine(balance_classes=True, split_dataset=True)
