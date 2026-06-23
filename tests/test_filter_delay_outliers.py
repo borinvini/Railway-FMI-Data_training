@@ -15,8 +15,8 @@ def test_scaled_folder_renamed_to_503():
 
 def test_quantile_constant_exact_values():
     from config.const_training import FILTER_LOWER_QUANTILE, FILTER_UPPER_QUANTILE
-    assert FILTER_LOWER_QUANTILE == 0.01
-    assert FILTER_UPPER_QUANTILE == 0.99
+    assert FILTER_LOWER_QUANTILE == 0.005
+    assert FILTER_UPPER_QUANTILE == 0.995
 
 
 import numpy as np
