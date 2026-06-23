@@ -793,9 +793,12 @@ class TrainingPipeline:
             try:
                 print(f"    → train_xgboost_with_randomized_search_cv")
                 _use_scaled = state_machine.get("scale_weather_features", False)
+                _use_balanced = state_machine.get("balance_classes", False)
                 _data_folder = (
                     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
                     if _use_scaled
+                    else MERGED_BALANCED_OUTPUT_FOLDER
+                    if _use_balanced
                     else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
                 )
                 xgboost_result = self.train_xgboost_with_randomized_search_cv(

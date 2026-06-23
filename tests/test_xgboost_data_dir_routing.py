@@ -6,6 +6,7 @@ from src.training_pipeline import TrainingPipeline
 from config.const_training import (
     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
     MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER,
+    MERGED_BALANCED_OUTPUT_FOLDER,
 )
 
 
@@ -88,6 +89,25 @@ def test_xgboost_uses_selected_dir_when_scale_disabled(mock_xgb, tmp_path):
     mock_xgb.assert_called_once()
     _, kwargs = mock_xgb.call_args
     expected = os.path.join(str(tmp_path), MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+    assert kwargs.get("data_dir") == expected, (
+        f"Expected data_dir={expected!r}, got {kwargs.get('data_dir')!r}"
+    )
+
+
+@patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
+def test_xgboost_uses_balanced_dir_when_balance_enabled_and_scale_disabled(mock_xgb, tmp_path):
+    """When balance_classes=True and scale_weather_features=False, XGBoost should receive the 504 (balanced) directory."""
+    pipeline = _make_pipeline(tmp_path)
+    mock_xgb.return_value = _XGBOOST_SUCCESS
+
+    sm = _make_state_machine(scale=False)
+    sm["balance_classes"] = True
+
+    pipeline.execute_training_pipeline_steps([], state_machine=sm)
+
+    mock_xgb.assert_called_once()
+    _, kwargs = mock_xgb.call_args
+    expected = os.path.join(str(tmp_path), MERGED_BALANCED_OUTPUT_FOLDER)
     assert kwargs.get("data_dir") == expected, (
         f"Expected data_dir={expected!r}, got {kwargs.get('data_dir')!r}"
     )
