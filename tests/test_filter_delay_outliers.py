@@ -184,11 +184,12 @@ def test_state_machine_calls_filter_when_enabled(mock_merge, mock_filter, tmp_pa
         "upper_bound": 88.0,
     }
 
-    pipeline.execute_training_pipeline_steps([], state_machine=_make_state_machine_with_filter(True))
+    result = pipeline.execute_training_pipeline_steps([], state_machine=_make_state_machine_with_filter(True))
 
     mock_filter.assert_called_once()
     _, kwargs = mock_filter.call_args
     assert kwargs.get("data") is not None
+    assert "filter_delay_outliers" in result.get("steps_executed", [])
 
 
 @patch.object(TrainingPipeline, "filter_delay_outliers")

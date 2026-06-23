@@ -200,6 +200,7 @@ class TrainingPipeline:
                     if filter_result and filter_result.get("success", False):
                         result["data"] = filter_result.get("data")
                         result["steps_executed"].append("filter_delay_outliers")
+                        result["success"] = True
                         removed = filter_result.get("rows_removed_lower", 0) + filter_result.get("rows_removed_upper", 0)
                         print(f"      ✓ Removed {removed:,} outlier rows")
                         print(f"      ✓ Rows remaining: {len(result['data']):,}")
