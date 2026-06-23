@@ -6,12 +6,12 @@ def test_quantile_constants_exist():
 
 def test_outlier_folder_constant_exists():
     from config.const_training import MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
-    assert "502" in MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
-    assert "outlier" in MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+    assert "501" in MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+    assert "filter" in MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
 
-def test_scaled_folder_renamed_to_503():
+def test_scaled_folder_is_505():
     from config.const_training import MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
-    assert "503" in MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+    assert "505" in MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
 
 def test_quantile_constant_exact_values():
     from config.const_training import FILTER_LOWER_QUANTILE, FILTER_UPPER_QUANTILE
