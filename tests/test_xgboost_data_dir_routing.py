@@ -65,7 +65,7 @@ def _make_state_machine(scale: bool) -> dict:
 @patch.object(TrainingPipeline, "scale_weather_features", return_value=_SUCCESS)
 @patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
 def test_xgboost_uses_scaled_dir_when_scale_enabled(mock_xgb, mock_scale, tmp_path):
-    """When scale_weather_features=True, XGBoost should receive the 503 (scaled) directory."""
+    """When scale_weather_features=True, XGBoost should receive the 505 (scaled) directory."""
     pipeline = _make_pipeline(tmp_path)
     mock_xgb.return_value = _XGBOOST_SUCCESS
 
@@ -81,7 +81,7 @@ def test_xgboost_uses_scaled_dir_when_scale_enabled(mock_xgb, mock_scale, tmp_pa
 
 @patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
 def test_xgboost_uses_selected_dir_when_scale_disabled(mock_xgb, tmp_path):
-    """When scale_weather_features=False, XGBoost should receive the 501 (selected) directory."""
+    """When scale_weather_features=False, XGBoost should receive the 502 (selected) directory."""
     pipeline = _make_pipeline(tmp_path)
     mock_xgb.return_value = _XGBOOST_SUCCESS
 
@@ -116,7 +116,7 @@ def test_xgboost_uses_balanced_dir_when_balance_enabled_and_scale_disabled(mock_
 
 @patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
 def test_xgboost_uses_outlier_filtered_dir_when_filter_enabled_and_balance_scale_select_disabled(mock_xgb, tmp_path):
-    """When filter_delay_outliers=True, balance=False, scale=False, select=False, XGBoost reads from 502."""
+    """When filter_delay_outliers=True, balance=False, scale=False, select=False, XGBoost reads from 501."""
     from config.const_training import MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
     pipeline = _make_pipeline(tmp_path)
     mock_xgb.return_value = _XGBOOST_SUCCESS
@@ -139,7 +139,7 @@ def test_xgboost_uses_outlier_filtered_dir_when_filter_enabled_and_balance_scale
 @patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
 @patch.object(TrainingPipeline, "split_dataset")
 def test_xgboost_reads_from_split_dataset_folder_when_split_enabled(mock_split, mock_xgb, tmp_path):
-    """When split_dataset=True, XGBoost should read from 505-split_dataset regardless of other flags."""
+    """When split_dataset=True, XGBoost should read from 503-split_dataset regardless of other flags."""
     pipeline = _make_pipeline(tmp_path)
     mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 400, "total_test_rows": 100}
     mock_xgb.return_value = _XGBOOST_SUCCESS
@@ -159,7 +159,7 @@ def test_xgboost_reads_from_split_dataset_folder_when_split_enabled(mock_split, 
 
 @patch.object(TrainingPipeline, "split_dataset")
 def test_split_dataset_writes_to_505_folder(mock_split, tmp_path):
-    """split_dataset state machine block should pass output_dir pointing to 505-split_dataset."""
+    """split_dataset state machine block should pass output_dir pointing to 503-split_dataset."""
     pipeline = _make_pipeline(tmp_path)
     mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 400, "total_test_rows": 100}
 
