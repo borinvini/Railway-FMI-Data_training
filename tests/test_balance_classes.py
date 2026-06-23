@@ -19,7 +19,7 @@ def test_balance_classes_after_split_dataset_in_state_machine():
 import numpy as np
 import pandas as pd
 import os
-from unittest.mock import patch
+import shutil
 
 from src.training_pipeline import TrainingPipeline
 
@@ -66,217 +66,124 @@ def _make_balanced_df(n=200, seed=42):
     })
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_nan_rows_are_dropped_before_resampling(mock_save, tmp_path):
-    pipeline = _make_pipeline(tmp_path)
-    df = _make_imbalanced_df()
-    df.loc[df.index[:10], "feature_a"] = np.nan  # inject NaN into 10 rows
-    result = pipeline.balance_classes(data=df)
-    assert result["success"] is True
-    assert result["skipped"] is False
+def _write_train_test(tmp_path, train_df, test_df, subdir="split"):
+    """Write train and test parquet files into tmp_path/subdir, return the dir path."""
+    d = tmp_path / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    train_path = d / "merged_data_split_train.parquet"
+    test_path = d / "merged_data_split_test.parquet"
+    train_df.to_parquet(train_path, index=False)
+    test_df.to_parquet(test_path, index=False)
+    return str(d)
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_none_data_returns_failure(mock_save, tmp_path):
+def _make_test_df(n=50, seed=99):
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame({
+        "differenceInMinutes": rng.uniform(-4, 60, n),
+        "feature_a": rng.normal(0, 1, n),
+    })
+
+
+def test_none_data_dir_returns_failure(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    result = pipeline.balance_classes(data=None)
+    result = pipeline.balance_classes(data_dir=None)
     assert result["success"] is False
     assert "error" in result
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_missing_column_returns_data_unchanged(mock_save, tmp_path):
+def test_missing_train_file_returns_failure(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    df = pd.DataFrame({"feature_a": [1, 2, 3]})
-    result = pipeline.balance_classes(data=df)
-    assert result["success"] is True
-    assert result["skipped"] is True
-    assert len(result["data"]) == 3
+    d = tmp_path / "empty_split"
+    d.mkdir()
+    result = pipeline.balance_classes(data_dir=str(d))
+    assert result["success"] is False
+    assert "error" in result
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_skips_when_already_balanced(mock_save, tmp_path):
+def test_skips_when_already_balanced(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    df = _make_balanced_df()
-    result = pipeline.balance_classes(data=df)
+    train_df = _make_balanced_df(n=200)
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
     assert result["success"] is True
     assert result["skipped"] is True
     assert result["resampling_method"] == "NONE"
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_smote_tomek_increases_minority_count(mock_save, tmp_path):
+def test_smote_tomek_increases_minority_count(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
-    result = pipeline.balance_classes(data=df)
+    train_df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
     assert result["success"] is True
     assert result["skipped"] is False
     assert result["resampling_method"] == "SMOTE_TOMEK"
     assert result["minority_share_after"] > result["minority_share_before"]
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_rows_after_is_in_result(mock_save, tmp_path):
+def test_rows_before_and_after_in_result(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    df = _make_imbalanced_df()
-    result = pipeline.balance_classes(data=df)
-    assert result["rows_before"] == len(df)
-    assert result["rows_after"] == len(result["data"])
+    train_df = _make_imbalanced_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["rows_before"] == len(train_df)
+    assert result["rows_after"] > 0
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_non_numeric_columns_are_dropped(mock_save, tmp_path):
+def test_non_numeric_columns_are_dropped(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    df = _make_imbalanced_df()
-    df["causes"] = "weather"  # non-numeric column
-    result = pipeline.balance_classes(data=df)
+    train_df = _make_imbalanced_df()
+    train_df["causes"] = "weather"
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
     assert result["success"] is True
-    assert "causes" not in result["data"].columns
     assert "causes" in result["dropped_non_numeric_cols"]
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_saves_parquet_once(mock_save, tmp_path):
+def test_nan_rows_dropped_before_resampling(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    df = _make_imbalanced_df()
-    pipeline.balance_classes(data=df)
-    mock_save.assert_called_once()
+    train_df = _make_imbalanced_df()
+    train_df.loc[train_df.index[:10], "feature_a"] = np.nan
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["success"] is True
+    assert result["skipped"] is False
 
 
-@patch("src.training_pipeline.save_dataframe_to_parquet", return_value="/fake/balanced.parquet")
-def test_result_contains_required_keys(mock_save, tmp_path):
+def test_test_file_is_copied_to_output(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    df = _make_imbalanced_df()
-    result = pipeline.balance_classes(data=df)
-    for key in ("success", "data", "rows_before", "rows_after",
+    train_df = _make_imbalanced_df()
+    test_df = _make_test_df(n=80)
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["success"] is True
+    test_out = pd.read_parquet(result["test_output_path"])
+    assert len(test_out) == len(test_df)
+
+
+def test_result_contains_required_keys(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_imbalanced_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    for key in ("success", "rows_before", "rows_after",
                  "minority_share_before", "minority_share_after",
-                 "resampling_method", "skipped", "dropped_non_numeric_cols"):
+                 "resampling_method", "skipped", "dropped_non_numeric_cols",
+                 "train_output_path", "test_output_path"):
         assert key in result, f"Missing key: {key}"
 
 
-_MERGE_SUCCESS = {
-    "success": True,
-    "data": pd.DataFrame({
-        "differenceInMinutes": np.concatenate([
-            np.random.default_rng(0).uniform(-4, 5, 300),
-            np.random.default_rng(0).uniform(6, 60, 100),
-        ]),
-        "feature_a": np.arange(400, dtype=float),
-    }),
-    "processed_files": 1,
-    "total_rows": 400,
-    "total_columns": 2,
-}
-
-_BALANCE_SUCCESS = {
-    "success": True,
-    "data": _MERGE_SUCCESS["data"],
-    "rows_before": 400,
-    "rows_after": 420,
-    "minority_share_before": 25.0,
-    "minority_share_after": 48.0,
-    "resampling_method": "SMOTE_TOMEK",
-    "skipped": False,
-    "dropped_non_numeric_cols": [],
-}
-
-
-def _base_state_machine(**overrides):
-    sm = {
-        "merge_data_files": True,
-        "filter_delay_outliers": False,
-        "balance_classes": True,
-        "select_training_cols": False,
-        "split_dataset": False,
-        "scale_weather_features": False,
-        "numeric_correlation_analysis": False,
-        "data_distribution_analysis": False,
-        "target_feature_analysis": False,
-        "train_xgboost_with_randomized_search_cv": False,
-    }
-    sm.update(overrides)
-    return sm
-
-
-@patch.object(TrainingPipeline, "balance_classes")
-@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
-def test_state_machine_calls_balance_classes_when_enabled(mock_merge, mock_balance, tmp_path):
+def test_result_has_no_data_key(tmp_path):
     pipeline = _make_pipeline(tmp_path)
-    mock_balance.return_value = _BALANCE_SUCCESS
-
-    result = pipeline.execute_training_pipeline_steps([], state_machine=_base_state_machine())
-
-    mock_balance.assert_called_once()
-    _, kwargs = mock_balance.call_args
-    assert kwargs.get("data") is not None
-    assert "balance_classes" in result.get("steps_executed", [])
-
-
-@patch.object(TrainingPipeline, "balance_classes")
-@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
-def test_state_machine_skips_balance_classes_when_disabled(mock_merge, mock_balance, tmp_path):
-    pipeline = _make_pipeline(tmp_path)
-
-    pipeline.execute_training_pipeline_steps(
-        [], state_machine=_base_state_machine(balance_classes=False)
-    )
-
-    mock_balance.assert_not_called()
-
-
-@patch.object(TrainingPipeline, "split_dataset")
-@patch.object(TrainingPipeline, "balance_classes", return_value=_BALANCE_SUCCESS)
-@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
-def test_split_dataset_receives_balanced_folder_when_balance_enabled(mock_merge, mock_balance, mock_split, tmp_path):
-    from config.const_training import MERGED_BALANCED_OUTPUT_FOLDER
-    pipeline = _make_pipeline(tmp_path)
-    mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 336, "total_test_rows": 84}
-
-    pipeline.execute_training_pipeline_steps(
-        [], state_machine=_base_state_machine(split_dataset=True)
-    )
-
-    mock_split.assert_called_once()
-    _, kwargs = mock_split.call_args
-    assert kwargs.get("data_dir") is not None
-    assert MERGED_BALANCED_OUTPUT_FOLDER in kwargs["data_dir"]
-
-
-@patch.object(TrainingPipeline, "split_dataset")
-@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
-def test_split_dataset_receives_default_folder_when_balance_disabled(mock_merge, mock_split, tmp_path):
-    from config.const_training import MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
-    pipeline = _make_pipeline(tmp_path)
-    mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 320, "total_test_rows": 80}
-
-    pipeline.execute_training_pipeline_steps(
-        [], state_machine=_base_state_machine(balance_classes=False, split_dataset=True)
-    )
-
-    mock_split.assert_called_once()
-    _, kwargs = mock_split.call_args
-    data_dir = kwargs.get("data_dir", "")
-    assert data_dir is None or MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER in str(data_dir)
-
-
-@patch.object(TrainingPipeline, "split_dataset")
-@patch.object(TrainingPipeline, "merge_data_files", return_value=_MERGE_SUCCESS)
-def test_split_dataset_receives_outlier_filtered_folder_when_filter_enabled_and_balance_and_select_disabled(mock_merge, mock_split, tmp_path):
-    from config.const_training import MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
-    pipeline = _make_pipeline(tmp_path)
-    mock_split.return_value = {"success": True, "processed_files": 1, "total_train_rows": 320, "total_test_rows": 80}
-
-    pipeline.execute_training_pipeline_steps(
-        [],
-        state_machine=_base_state_machine(
-            balance_classes=False,
-            filter_delay_outliers=True,
-            select_training_cols=False,
-            split_dataset=True,
-        ),
-    )
-
-    mock_split.assert_called_once()
-    _, kwargs = mock_split.call_args
-    assert kwargs.get("data_dir") is not None
-    assert MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER in kwargs["data_dir"]
+    train_df = _make_imbalanced_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert "data" not in result, "balance_classes must not return an in-memory DataFrame"

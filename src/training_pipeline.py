@@ -1037,58 +1037,70 @@ class TrainingPipeline:
             "upper_bound": upper_bound,
         }
 
-    def balance_classes(self, data=None):
-        if data is None:
-            print("    balance_classes: data is None — skipping")
-            return {"success": False, "error": "data is None", "data": None}
+    def balance_classes(self, data_dir=None):
+        if data_dir is None:
+            print("    balance_classes: data_dir is None — skipping")
+            return {"success": False, "error": "data_dir is None"}
+
+        import glob as _glob
+        train_files = _glob.glob(os.path.join(data_dir, "*_train.parquet"))
+        test_files = _glob.glob(os.path.join(data_dir, "*_test.parquet"))
+
+        if not train_files:
+            msg = f"No *_train.parquet found in {data_dir}"
+            print(f"    balance_classes: {msg}")
+            return {"success": False, "error": msg}
+
+        train_path = train_files[0]
+        df = pd.read_parquet(train_path)
+        rows_before = len(df)
 
         target_col = "differenceInMinutes"
+        output_folder = os.path.join(self.project_root, MERGED_BALANCED_OUTPUT_FOLDER)
+        os.makedirs(output_folder, exist_ok=True)
 
-        if target_col not in data.columns:
-            print(f"    balance_classes: '{target_col}' not found — returning data unchanged")
+        # Copy test file(s) unchanged regardless of whether we resample
+        test_output_path = None
+        if test_files:
+            test_src = test_files[0]
+            test_output_path = os.path.join(output_folder, os.path.basename(test_src))
+            shutil.copy2(test_src, test_output_path)
+            print(f"    balance_classes: Copied test file to: {test_output_path}")
+
+        if target_col not in df.columns:
+            print(f"    balance_classes: '{target_col}' not found — saving train unchanged")
+            train_out = os.path.join(output_folder, os.path.basename(train_path))
+            df.to_parquet(train_out, index=False)
             return {
                 "success": True,
-                "data": data,
-                "rows_before": len(data),
-                "rows_after": len(data),
+                "rows_before": rows_before,
+                "rows_after": rows_before,
                 "minority_share_before": None,
                 "minority_share_after": None,
                 "resampling_method": "NONE",
                 "skipped": True,
                 "dropped_non_numeric_cols": [],
+                "train_output_path": train_out,
+                "test_output_path": test_output_path,
             }
-
-        df = data.copy()
-        rows_before = len(df)
 
         y = (df[target_col] > TRAIN_DELAY_MINUTES).astype(int)
         class_counts = y.value_counts()
         total = len(y)
-        minority_count = int(class_counts.min())
-        minority_share = minority_count / total * 100
+        minority_share = int(class_counts.min()) / total * 100
 
         print(f"\n    balance_classes: Class balance before resampling:")
         print(f"      Punctual (≤ {TRAIN_DELAY_MINUTES} min): {int(class_counts.get(0, 0)):,} ({int(class_counts.get(0, 0)) / total * 100:.1f}%)")
         print(f"      Delayed  (> {TRAIN_DELAY_MINUTES} min): {int(class_counts.get(1, 0)):,} ({int(class_counts.get(1, 0)) / total * 100:.1f}%)")
         print(f"      Minority share: {minority_share:.1f}% (threshold: {IMBALANCE_THRESHOLD}%)")
 
-        output_folder = os.path.join(self.project_root, MERGED_BALANCED_OUTPUT_FOLDER)
+        train_out = os.path.join(output_folder, os.path.basename(train_path))
 
         if minority_share >= IMBALANCE_THRESHOLD:
-            print(f"    balance_classes: Balance acceptable — skipping resampling")
-            try:
-                saved_path = save_dataframe_to_parquet(
-                    folder_path=output_folder,
-                    month_id="balanced",
-                    df=df,
-                    file_prefix="merged_data",
-                )
-                print(f"      Saved (unchanged) data to: {saved_path}")
-            except Exception as save_error:
-                print(f"      Warning: Failed to save data: {save_error}")
+            print(f"    balance_classes: Balance acceptable — saving train unchanged")
+            df.to_parquet(train_out, index=False)
             return {
                 "success": True,
-                "data": df,
                 "rows_before": rows_before,
                 "rows_after": rows_before,
                 "minority_share_before": minority_share,
@@ -1096,11 +1108,12 @@ class TrainingPipeline:
                 "resampling_method": "NONE",
                 "skipped": True,
                 "dropped_non_numeric_cols": [],
+                "train_output_path": train_out,
+                "test_output_path": test_output_path,
             }
 
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
-
         if non_numeric_cols:
             print(f"    balance_classes: Dropping {len(non_numeric_cols)} non-numeric column(s): {non_numeric_cols}")
 
@@ -1118,7 +1131,7 @@ class TrainingPipeline:
             X_res, y_res = resampler.fit_resample(X, y)
             used_method = "SMOTE_TOMEK"
         else:
-            print(f"    balance_classes: RESAMPLING_METHOD='{RESAMPLING_METHOD}' not handled — returning data unchanged")
+            print(f"    balance_classes: RESAMPLING_METHOD='{RESAMPLING_METHOD}' not handled — saving unchanged")
             X_res, y_res = X.values, y.values
             used_method = "NONE"
 
@@ -1134,21 +1147,11 @@ class TrainingPipeline:
         print(f"      Delayed  (> {TRAIN_DELAY_MINUTES} min): {int(counts_after.get(1, 0)):,} ({int(counts_after.get(1, 0)) / len(y_after) * 100:.1f}%)")
         print(f"      Rows: {rows_before:,} → {rows_after:,}")
 
-        try:
-            saved_path = save_dataframe_to_parquet(
-                folder_path=output_folder,
-                month_id="balanced",
-                df=df_balanced,
-                file_prefix="merged_data",
-            )
-            print(f"      Saved balanced data to: {saved_path}")
-        except Exception as save_error:
-            print(f"      Warning: Failed to save balanced data: {save_error}")
-            print("      Continuing with in-memory balanced data.")
+        df_balanced.to_parquet(train_out, index=False)
+        print(f"      Saved balanced train to: {train_out}")
 
         return {
             "success": True,
-            "data": df_balanced,
             "rows_before": rows_before,
             "rows_after": rows_after,
             "minority_share_before": minority_share,
@@ -1156,6 +1159,8 @@ class TrainingPipeline:
             "resampling_method": used_method,
             "skipped": False,
             "dropped_non_numeric_cols": non_numeric_cols,
+            "train_output_path": train_out,
+            "test_output_path": test_output_path,
         }
 
     def merge_data_files(self, csv_files):
