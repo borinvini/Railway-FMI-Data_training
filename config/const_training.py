@@ -5,7 +5,7 @@ TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
     "select_training_cols": True,
     "split_dataset": True,
-    "scale_weather_features": True,
+    "scale_weather_features": False,
     "numeric_correlation_analysis": False,
     "data_distribution_analysis": False,
     "target_feature_analysis": False,
@@ -104,7 +104,7 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
     'learning_rate': [0.01, 0.05, 0.1],
     'subsample': [0.7, 0.8, 0.9],
     'colsample_bytree': [0.7, 0.8, 1.0],
-    'scale_pos_weight': [3.9, 4.9, 5.9]
+    #'scale_pos_weight': [3.9, 4.9, 5.9]
 }
 
 # ===================================================================================================================
@@ -129,7 +129,7 @@ SCORE_METRIC = 'f1'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 30
+RANDOM_SEARCH_ITERATIONS = 50
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration

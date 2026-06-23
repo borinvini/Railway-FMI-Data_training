@@ -2008,20 +2008,27 @@ class TrainingPipeline:
                     eval_metric='mae'
                 )
                 scoring_metric = 'neg_mean_absolute_error'
-            
+                # Shift target so all values are positive, then log-transform to compress
+                # the extreme right tail (max 963 min) that deflates R² artificially.
+                y_shift = max(0.0, -float(y_train.min())) + 1.0
+                y_train_log = np.log1p(y_train + y_shift)
+                print(f"      Log-transform target: shift={y_shift:.2f}, "
+                      f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
+                      f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
+
             # Define iteration range: 10 to 100 (step=10)
             iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
             print(f"      Testing iteration values: {iteration_values}")
-            
+
             # Initialize tracking lists
             iteration_results = []
             test_f1_scores = []
             cv_scores = []
-            test_mae_scores = []  
-            test_mape_scores = []  
-            
+            test_mae_scores = []
+            test_mape_scores = []
+
             best_model = None
-            best_metric = -np.inf if is_classification else np.inf
+            best_metric = -np.inf  # CV score: higher is always better (F1 or neg_MAE)
             best_iteration = None
             
             # Train models with different iteration counts
@@ -2042,54 +2049,50 @@ class TrainingPipeline:
                     verbose=0  # Reduced verbosity for cleaner output
                 )
                 
-                # Fit with sample weights if available
+                # Fit with sample weights if available; use log-transformed y for regression
+                y_fit = y_train_log if not is_classification else y_train
                 if sample_weights is not None:
-                    randomized_search.fit(X_train, y_train, sample_weight=sample_weights)
+                    randomized_search.fit(X_train, y_fit, sample_weight=sample_weights)
                 else:
-                    randomized_search.fit(X_train, y_train)
+                    randomized_search.fit(X_train, y_fit)
                 
                 # Get best model for current iteration count
                 current_best_model = randomized_search.best_estimator_
                 current_cv_score = randomized_search.best_score_
                 
-                # Make predictions on test set
+                # Make predictions on test set; inverse-transform for regression
                 y_pred = current_best_model.predict(X_test)
-                
+                if not is_classification:
+                    y_pred = np.expm1(y_pred) - y_shift
+
                 # Calculate test metrics
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
-                    
+
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}")
-                    
-                    # Track best model based on F1 score
-                    if test_f1 > best_metric:
-                        best_metric = test_f1
-                        best_model = current_best_model
-                        best_iteration = n_iter
-                    
-                    test_f1_scores.append(test_f1)
-                    
+
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-                    test_mae = mean_absolute_error(y_test, y_pred) 
+                    test_mae = mean_absolute_error(y_test, y_pred)
                     test_r2 = r2_score(y_test, y_pred)
-
                     epsilon = 1e-8
                     test_mape = np.mean(np.abs((y_test - y_pred) / np.maximum(np.abs(y_test), epsilon))) * 100
-    
-                    
+
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test RMSE = {test_rmse:.4f}, Test R² = {test_r2:.4f}, Test MAE = {test_mae:.4f}, Test MAPE = {test_mape:.2f}%")
-                    
-                    # Track best model based on RMSE (lower is better)
-                    if test_rmse < best_metric:
-                        best_metric = test_rmse
-                        best_model = current_best_model
-                        best_iteration = n_iter
-                    
-                    test_f1_scores.append(test_rmse) 
-                    test_mae_scores.append(test_mae)      # ADD THIS
-                    test_mape_scores.append(test_mape)    # ADD THIS
+
+                # Select best model on CV score (not on test set) to avoid test-set overfitting
+                if current_cv_score > best_metric:
+                    best_metric = current_cv_score
+                    best_model = current_best_model
+                    best_iteration = n_iter
+
+                if is_classification:
+                    test_f1_scores.append(test_f1)
+                else:
+                    test_f1_scores.append(test_rmse)
+                    test_mae_scores.append(test_mae)
+                    test_mape_scores.append(test_mape)
                 
                 cv_scores.append(current_cv_score)
 
@@ -2106,6 +2109,8 @@ class TrainingPipeline:
             # Calculate final metrics once on the best model found across all iterations
             print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
             final_y_pred = best_model.predict(X_test)
+            if not is_classification:
+                final_y_pred = np.expm1(final_y_pred) - y_shift
 
             if is_classification:
                 final_test_accuracy = accuracy_score(y_test, final_y_pred)
