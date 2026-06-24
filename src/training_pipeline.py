@@ -1713,12 +1713,11 @@ class TrainingPipeline:
             stratify = None
             
             if target_column and target_column in df.columns:
-                unique_values = df[target_column].nunique()
-                is_classification = unique_values <= 10  # Assume classification if ≤ 10 unique values
-                
+                is_classification = target_column in CLASSIFICATION_PROBLEM
+
                 if is_classification:
                     stratify = df[target_column]
-                    print(f"      Detected classification problem with target '{target_column}' ({unique_values} classes)")
+                    print(f"      Detected classification problem with target '{target_column}'")
                     
                     # Calculate class distribution before split
                     class_distribution_before = {}
@@ -1814,7 +1813,7 @@ class TrainingPipeline:
             
             # Save summary information
             summary_filename = "split_summary.txt"
-            summary_path = os.path.join(merged_training_ready_dir, summary_filename)
+            summary_path = os.path.join(split_output_dir, summary_filename)
             
             with open(summary_path, 'w') as f:
                 f.write("Dataset Split Summary\n")
