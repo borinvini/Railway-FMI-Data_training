@@ -1388,53 +1388,45 @@ class TrainingPipeline:
             Results including success status, filtered data, and column selection info
         """
         try:
-            print(f"    select_training_cols: Starting interactive column selection...")
-            
-            # Determine file path to analyze
-            if original_file_path and os.path.exists(original_file_path):
+            print(f"    select_training_cols: Starting column selection...")
+
+            # Input source priority:
+            # 1. in-memory DataFrame (data=)
+            # 2. explicit file path (original_file_path=)
+            # 3. disk discovery: 501/ then 500/
+            if data is not None:
+                df = data.copy()
+                file_path = original_file_path  # may be None
+                print(f"    select_training_cols: Using in-memory DataFrame ({len(df):,} rows)")
+            elif original_file_path and os.path.exists(original_file_path):
                 file_path = original_file_path
                 print(f"    select_training_cols: Using specified file: {os.path.basename(file_path)}")
+                try:
+                    df = pd.read_parquet(file_path)
+                except Exception as e:
+                    return {"success": False, "error": f"Failed to load parquet file: {str(e)}", "file_path": file_path}
             else:
-                # Auto-discover merged files using the MERGED_TRAINING_READY_OUTPUT_FOLDER
-                merged_training_ready_dir = os.path.join(self.project_root, MERGED_TRAINING_READY_OUTPUT_FOLDER)
-                
-                # Create directory if it doesn't exist
-                os.makedirs(merged_training_ready_dir, exist_ok=True)
-                
-                # Find merged data files using glob pattern
-                merged_data_pattern = os.path.join(merged_training_ready_dir, "merged_data_*.parquet")
-                merged_data_files = glob.glob(merged_data_pattern)
-
-                # Filter out train/test files to get only the main merged files
-                merged_data_files = [f for f in merged_data_files if not (f.endswith('_train.parquet') or f.endswith('_test.parquet'))]
-
-                if merged_data_files:
-                    # Use the most recent merged file
-                    file_path = max(merged_data_files, key=os.path.getmtime)
-                    print(f"    select_training_cols: Found merged file: {os.path.basename(file_path)}")
-                else:
-                    error_msg = f"No merged data files found in directory: {merged_training_ready_dir}"
+                file_path = None
+                for folder_const in [MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER, MERGED_TRAINING_READY_OUTPUT_FOLDER]:
+                    search_dir = os.path.join(self.project_root, folder_const)
+                    if not os.path.isdir(search_dir):
+                        continue
+                    found = [
+                        f for f in glob.glob(os.path.join(search_dir, "merged_data_*.parquet"))
+                        if not (f.endswith("_train.parquet") or f.endswith("_test.parquet"))
+                    ]
+                    if found:
+                        file_path = max(found, key=os.path.getmtime)
+                        print(f"    select_training_cols: Found file: {os.path.basename(file_path)} (from {folder_const})")
+                        break
+                if file_path is None:
+                    error_msg = "No merged data files found in 501/ or 500/"
                     print(f"    select_training_cols: {error_msg}")
-                    return {
-                        "success": False,
-                        "error": error_msg,
-                        "searched_directory": merged_training_ready_dir,
-                        "search_pattern": "merged_data_*.parquet"
-                    }
-            
-            # Load the parquet file
-            print(f"    select_training_cols: Loading file: {file_path}")
-
-            try:
-                df = pd.read_parquet(file_path)
-            except Exception as e:
-                error_msg = f"Failed to load parquet file: {str(e)}"
-                print(f"    select_training_cols: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "file_path": file_path
-                }
+                    return {"success": False, "error": error_msg}
+                try:
+                    df = pd.read_parquet(file_path)
+                except Exception as e:
+                    return {"success": False, "error": f"Failed to load parquet file: {str(e)}", "file_path": file_path}
             
             original_shape = df.shape
             column_names = list(df.columns)
@@ -1482,56 +1474,67 @@ class TrainingPipeline:
             print(f"    ✓ Boolean: {len(boolean_cols)} columns")
             print(f"")
             
-            # Interactive column selection (simple comma-separated numbers only)
-            while True:
-                try:
-                    print(f"    💡 SELECTION INSTRUCTIONS:")
-                    print(f"    • Enter column numbers separated by commas (e.g., 1,3,5,8,12)")
-                    print(f"    • Example: To select columns 1, 5, 7, and 10, type: 1,5,7,10")
-                    print(f"")
-                    
-                    user_input = input("    Enter column numbers: ").strip()
-                    
-                    if not user_input:
-                        print(f"    ❌ Please enter at least one column number.")
-                        continue
-                    
-                    # Parse comma-separated numbers
-                    try:
-                        selected_indices = []
-                        numbers = [num.strip() for num in user_input.split(',')]
-                        
-                        for num_str in numbers:
-                            if num_str:  # Skip empty strings
-                                col_num = int(num_str)
-                                if 1 <= col_num <= total_columns:
-                                    selected_indices.append(col_num - 1)  # Convert to 0-based index
-                                else:
-                                    print(f"    ❌ Invalid column number: {col_num}. Must be between 1 and {total_columns}")
-                                    selected_indices = []
-                                    break
-                        
-                        if selected_indices:
-                            # Remove duplicates and sort
-                            selected_indices = sorted(list(set(selected_indices)))
-                            break
-                        else:
-                            print(f"    ❌ No valid columns selected. Please try again.")
-                            continue
-                            
-                    except ValueError:
-                        print(f"    ❌ Invalid input. Please enter only numbers separated by commas.")
-                        continue
-                        
-                except KeyboardInterrupt:
-                    print(f"\n    ⚠️  Operation cancelled by user.")
+            # Column selection — config bypass or interactive
+            if SELECTED_COLUMNS:
+                missing = [col for col in SELECTED_COLUMNS if col not in column_names]
+                if missing:
                     return {
                         "success": False,
-                        "error": "Operation cancelled by user"
+                        "error": f"SELECTED_COLUMNS references columns not in DataFrame: {missing}",
                     }
-                except Exception as e:
-                    print(f"    ❌ Error processing input: {str(e)}")
-                    continue
+                selected_indices = sorted([column_names.index(col) for col in SELECTED_COLUMNS])
+                print(f"    select_training_cols: Applying {len(SELECTED_COLUMNS)} columns from SELECTED_COLUMNS config")
+            else:
+                # Interactive selection
+                while True:
+                    try:
+                        print(f"    💡 SELECTION INSTRUCTIONS:")
+                        print(f"    • Enter column numbers separated by commas (e.g., 1,3,5,8,12)")
+                        print(f"    • Example: To select columns 1, 5, 7, and 10, type: 1,5,7,10")
+                        print(f"")
+
+                        user_input = input("    Enter column numbers: ").strip()
+
+                        if not user_input:
+                            print(f"    ❌ Please enter at least one column number.")
+                            continue
+
+                        # Parse comma-separated numbers
+                        try:
+                            selected_indices = []
+                            numbers = [num.strip() for num in user_input.split(',')]
+
+                            for num_str in numbers:
+                                if num_str:  # Skip empty strings
+                                    col_num = int(num_str)
+                                    if 1 <= col_num <= total_columns:
+                                        selected_indices.append(col_num - 1)  # Convert to 0-based index
+                                    else:
+                                        print(f"    ❌ Invalid column number: {col_num}. Must be between 1 and {total_columns}")
+                                        selected_indices = []
+                                        break
+
+                            if selected_indices:
+                                # Remove duplicates and sort
+                                selected_indices = sorted(list(set(selected_indices)))
+                                break
+                            else:
+                                print(f"    ❌ No valid columns selected. Please try again.")
+                                continue
+
+                        except ValueError:
+                            print(f"    ❌ Invalid input. Please enter only numbers separated by commas.")
+                            continue
+
+                    except KeyboardInterrupt:
+                        print(f"\n    ⚠️  Operation cancelled by user.")
+                        return {
+                            "success": False,
+                            "error": "Operation cancelled by user"
+                        }
+                    except Exception as e:
+                        print(f"    ❌ Error processing input: {str(e)}")
+                        continue
             
             # Apply column selection
             selected_columns = [column_names[i] for i in selected_indices]
@@ -1573,7 +1576,7 @@ class TrainingPipeline:
                 os.makedirs(selected_training_ready_dir, exist_ok=True)
                 
                 # Generate output filename based on original file
-                original_filename = os.path.basename(file_path)
+                original_filename = os.path.basename(file_path) if file_path else "merged_data_selected.parquet"
                 output_filename = original_filename  # already .parquet
                 output_path = os.path.join(selected_training_ready_dir, output_filename)
 
