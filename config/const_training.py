@@ -88,6 +88,7 @@ RANDOM_STATE = 42
 WEIGHT_DELAY_COLUMN = 'NONE' # Put 'NONE' to disable the weights
 MAX_SAMPLE_WEIGHT_CLASSIFICATION = 5.0  # Put 1 to disable the weights for classification
 MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Put 1 to disable the weights for regression
+DELAY_THRESHOLD_MINUTES = 5  # delay > 5 min = late (1), else on time (0)
 
 # Parameter distributions for RandomizedSearchCV
 DECISION_TREE_PARAM_DISTRIBUTIONS = {

@@ -114,6 +114,7 @@ from config.const_training import (
     SPLIT_DATASET_OUTPUT_FOLDER,
     SELECTED_COLUMNS,
     SCHEMA_MISMATCH_STRATEGY,
+    DELAY_THRESHOLD_MINUTES,
 )
 
 
@@ -2388,7 +2389,11 @@ class TrainingPipeline:
             test_f1_scores = []
             cv_scores = []
             test_mae_scores = []
-            test_mape_scores = []
+            test_wmape_scores = []
+            test_bin_precision_scores = []
+            test_bin_recall_scores = []
+            test_bin_f1_scores = []
+            test_bin_accuracy_scores = []
 
             best_model = None
             best_cv_score = -np.inf  # CV score: higher is always better (F1 or neg_MAE)
@@ -2441,10 +2446,17 @@ class TrainingPipeline:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
                     test_mae = mean_absolute_error(y_test, y_pred)
                     test_r2 = r2_score(y_test, y_pred)
-                    epsilon = 1e-8
-                    test_mape = np.mean(np.abs((y_test - y_pred) / np.maximum(np.abs(y_test), epsilon))) * 100
+                    denom = np.sum(np.abs(y_test))
+                    test_wmape = (np.sum(np.abs(y_test - y_pred)) / denom * 100) if denom > 0 else 0.0
 
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test RMSE = {test_rmse:.4f}, Test R² = {test_r2:.4f}, Test MAE = {test_mae:.4f}, Test MAPE = {test_mape:.2f}%")
+                    y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
+                    y_pred_binary = (y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
+                    test_bin_precision = precision_score(y_test_binary, y_pred_binary, zero_division=0)
+                    test_bin_recall    = recall_score(y_test_binary, y_pred_binary, zero_division=0)
+                    test_bin_f1        = f1_score(y_test_binary, y_pred_binary, zero_division=0)
+                    test_bin_accuracy  = accuracy_score(y_test_binary, y_pred_binary)
+
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
 
                 # Select best model on CV score (not on test set) to avoid test-set overfitting
                 if current_cv_score > best_cv_score:
@@ -2457,7 +2469,11 @@ class TrainingPipeline:
                 else:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
-                    test_mape_scores.append(test_mape)
+                    test_wmape_scores.append(test_wmape)
+                    test_bin_precision_scores.append(test_bin_precision)
+                    test_bin_recall_scores.append(test_bin_recall)
+                    test_bin_f1_scores.append(test_bin_f1)
+                    test_bin_accuracy_scores.append(test_bin_accuracy)
                 
                 cv_scores.append(current_cv_score)
 
@@ -2467,7 +2483,11 @@ class TrainingPipeline:
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
-                    'test_mape': test_mape_scores[-1] if not is_classification else None,
+                    'test_wmape': test_wmape_scores[-1] if not is_classification else None,
+                    'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
+                    'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
+                    'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
+                    'test_bin_accuracy': test_bin_accuracy_scores[-1] if not is_classification else None,
                     'best_params': randomized_search.best_params_
                 })
 
@@ -2493,8 +2513,15 @@ class TrainingPipeline:
                 final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
                 final_test_mae = mean_absolute_error(y_test, final_y_pred)
                 final_test_r2 = r2_score(y_test, final_y_pred)
-                epsilon = 1e-8
-                final_test_mape = np.mean(np.abs((y_test - final_y_pred) / np.maximum(np.abs(y_test), epsilon))) * 100
+                denom = np.sum(np.abs(y_test))
+                final_test_wmape = (np.sum(np.abs(y_test - final_y_pred)) / denom * 100) if denom > 0 else 0.0
+
+                y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
+                final_y_pred_binary = (final_y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
+                final_bin_precision = precision_score(y_test_binary, final_y_pred_binary, zero_division=0)
+                final_bin_recall    = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
+                final_bin_f1        = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
+                final_bin_accuracy  = accuracy_score(y_test_binary, final_y_pred_binary)
 
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
@@ -2642,24 +2669,33 @@ class TrainingPipeline:
                 else:
                     results["final_metrics"] = {
                         "test_rmse": float(final_test_rmse),
-                        "test_mae": float(final_test_mae),          # ADD THIS
-                        "test_mape": float(final_test_mape),        # ADD THIS
-                        "test_r2": float(final_test_r2)
+                        "test_mae": float(final_test_mae),
+                        "test_wmape": float(final_test_wmape),
+                        "test_r2": float(final_test_r2),
+                        "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
+                        "test_bin_precision": float(final_bin_precision),
+                        "test_bin_recall": float(final_bin_recall),
+                        "test_bin_f1": float(final_bin_f1),
+                        "test_bin_accuracy": float(final_bin_accuracy)
                     }
 
                 # Add iteration-wise metrics summary
                 if not is_classification:
                     results["iteration_metrics_summary"] = {
                         "rmse_values": [float(x) for x in test_f1_scores],
-                        "mae_values": [float(x) for x in test_mae_scores],      # ADD THIS
-                        "mape_values": [float(x) for x in test_mape_scores],    # ADD THIS
+                        "mae_values": [float(x) for x in test_mae_scores],
+                        "wmape_values": [float(x) for x in test_wmape_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_rmse": float(min(test_f1_scores)),
-                        "best_mae": float(min(test_mae_scores)),                # ADD THIS
-                        "best_mape": float(min(test_mape_scores)),              # ADD THIS
+                        "best_mae": float(min(test_mae_scores)),
+                        "best_wmape": float(min(test_wmape_scores)),
                         "average_rmse": float(np.mean(test_f1_scores)),
-                        "average_mae": float(np.mean(test_mae_scores)),         # ADD THIS
-                        "average_mape": float(np.mean(test_mape_scores))        # ADD THIS
+                        "average_mae": float(np.mean(test_mae_scores)),
+                        "average_wmape": float(np.mean(test_wmape_scores)),
+                        "bin_f1_values": [float(x) for x in test_bin_f1_scores],
+                        "bin_accuracy_values": [float(x) for x in test_bin_accuracy_scores],
+                        "bin_precision_values": [float(x) for x in test_bin_precision_scores],
+                        "bin_recall_values": [float(x) for x in test_bin_recall_scores]
                     }
             
             results_file = os.path.join(output_dir, f"xgboost_iteration_analysis_{file_identifier}.json")
@@ -2683,8 +2719,12 @@ class TrainingPipeline:
             print(f"      Training Summary:")
             print(f"        Problem Type: {problem_type}")
             print(f"        Best Iteration Count: {best_iteration}")
-            print(f"        Best Test Score: {best_cv_score:.4f}")
-            print(f"        Score Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+            print(f"        Best CV Score: {best_cv_score:.4f}")
+            print(f"        RMSE Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+            if not is_classification:
+                print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
+                print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
             
             if is_classification:
                 return {
@@ -2705,9 +2745,13 @@ class TrainingPipeline:
                     "target_feature": target_feature,
                     "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
                     "test_rmse": float(final_test_rmse),
-                    "test_mae": float(final_test_mae),         
-                    "test_mape": float(final_test_mape),        
+                    "test_mae": float(final_test_mae),
+                    "test_wmape": float(final_test_wmape),
                     "test_r2": float(final_test_r2),
+                    "test_bin_precision": float(final_bin_precision),
+                    "test_bin_recall": float(final_bin_recall),
+                    "test_bin_f1": float(final_bin_f1),
+                    "test_bin_accuracy": float(final_bin_accuracy),
                     "output_directory": output_dir,
                     "results_file": results_file
                 }
