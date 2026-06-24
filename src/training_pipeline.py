@@ -93,6 +93,7 @@ from config.const_training import (
     THRESHOLD_OPTIMIZATION_CONFIG,
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
     TEST_SIZE,
+    RANDOM_STATE,
     SCORE_METRIC,
     RANDOM_SEARCH_ITERATIONS,
     RANDOM_SEARCH_CV_FOLDS,
@@ -327,7 +328,6 @@ class TrainingPipeline:
                     else None
                 )
                 split_result = self.split_dataset(
-                    csv_files,
                     data_dir=_split_dir,
                     output_dir=os.path.join(self.project_root, SPLIT_DATASET_OUTPUT_FOLDER),
                 )
@@ -1627,7 +1627,7 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
-    def split_dataset(self, csv_files=None, data_dir=None, output_dir=None, test_size=TEST_SIZE, random_state=42, stratify_column=None):
+    def split_dataset(self, data_dir=None, output_dir=None, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify_column=None):
         """
         Split merged training dataset into train and test sets.
         
@@ -1637,8 +1637,6 @@ class TrainingPipeline:
         
         Parameters:
         -----------
-        csv_files : list, optional
-            List of CSV file paths (currently not used - method discovers files automatically)
         test_size : float, optional
             Proportion of the dataset to include in the test split. Defaults to 0.2.
         random_state : int, optional

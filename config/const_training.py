@@ -81,6 +81,7 @@ TOP_FEATURES_COUNT = 5
 
 # Test/train split configuration
 TEST_SIZE = 0.2
+RANDOM_STATE = 42
 
 # Sample weighting parameters for delay-based weighting
 WEIGHT_DELAY_COLUMN = 'NONE' # Put 'NONE' to disable the weights
