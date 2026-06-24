@@ -235,7 +235,7 @@ class TrainingPipeline:
                 )
                 
                 if cols_selection_result and cols_selection_result.get("success", False):
-                    # Note: This stage doesn't modify data, just displays column info
+                    result["data"] = cols_selection_result.get("data")
                     result["steps_executed"].append("select_training_cols")
                     result["column_analysis"] = {
                         "total_columns": cols_selection_result.get("total_columns", 0),
@@ -243,9 +243,9 @@ class TrainingPipeline:
                         "dataset_shape": cols_selection_result.get("dataset_shape", (0, 0)),
                         "column_types": cols_selection_result.get("column_types", {})
                     }
-                    print(f"      ✓ Successfully analyzed training columns")
+                    print(f"      ✓ Successfully selected training columns")
                     print(f"      ✓ Total columns found: {cols_selection_result.get('total_columns', 0)}")
-                    print(f"      ✓ File analyzed: {os.path.basename(cols_selection_result.get('file_path', ''))}")
+                    print(f"      ✓ File analyzed: {os.path.basename(cols_selection_result.get('file_path', '') or '')}")
                     result["success"] = True
                 else:
                     error_msg = cols_selection_result.get("error", "select_training_cols returned unsuccessful result")

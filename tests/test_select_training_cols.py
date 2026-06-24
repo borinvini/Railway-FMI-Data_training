@@ -89,3 +89,25 @@ def test_config_bypass_rejects_missing_column(tmp_path):
 
     assert result["success"] is False
     assert "nonexistent_col" in result["error"]
+
+
+def test_dispatcher_updates_result_data_after_select_cols(tmp_path):
+    """execute_training_pipeline_steps must set result['data'] from select_training_cols return."""
+    pipeline = _make_pipeline(tmp_path)
+    df_selected = pd.DataFrame({"col_a": [1, 2]})
+
+    fake_cols_result = {
+        "success": True,
+        "data": df_selected,
+        "total_columns": 2,
+        "file_path": "/fake/path.parquet",
+        "dataset_shape": (2, 2),
+        "column_types": {},
+    }
+
+    state_machine = {"select_training_cols": True}
+
+    with patch.object(pipeline, "select_training_cols", return_value=fake_cols_result):
+        result = pipeline.execute_training_pipeline_steps([], state_machine)
+
+    assert result["data"] is df_selected
