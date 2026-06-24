@@ -2946,6 +2946,8 @@ class TrainingPipeline:
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
 
             # Set up cross-validation strategy
+            y_train_log = None  # assigned in regression branch below
+            y_shift = 0.0       # assigned in regression branch below
             if is_classification:
                 cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = lgb.LGBMClassifier(
@@ -3270,61 +3272,65 @@ class TrainingPipeline:
                         "bin_recall_values": [float(x) for x in test_bin_recall_scores]
                     }
 
-            results_file = os.path.join(output_dir, f"lightgbm_iteration_analysis_{file_identifier}.json")
-            with open(results_file, 'w') as f:
-                results_str = json.loads(json.dumps(results, default=str))
-                json.dump(results_str, f, indent=2)
+                results_file = os.path.join(output_dir, f"lightgbm_iteration_analysis_{file_identifier}.json")
+                with open(results_file, 'w') as f:
+                    results_str = json.loads(json.dumps(results, default=str))
+                    json.dump(results_str, f, indent=2)
 
-            print(f"      Results saved to: {results_file}")
+                print(f"      Results saved to: {results_file}")
 
-            # Save the best model
-            if best_model:
+                # Save the best model
                 model_filename = os.path.join(output_dir, f'lightgbm_best_model_{file_identifier}.pkl')
                 joblib.dump(best_model, model_filename)
                 print(f"      Best model saved to: {model_filename}")
 
-            # Find the index of the best iteration in the results list
-            best_iteration_idx = iteration_values.index(best_iteration) if best_iteration else 0
+                # Find the index of the best iteration in the results list
+                best_iteration_idx = iteration_values.index(best_iteration) if best_iteration else 0
 
-            # Print summary
-            print(f"      Training Summary:")
-            print(f"        Problem Type: {problem_type}")
-            print(f"        Best Iteration Count: {best_iteration}")
-            print(f"        Best CV Score: {best_cv_score:.4f}")
-            print(f"        RMSE Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
-            if not is_classification:
-                print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
-                print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+                # Print summary
+                print(f"      Training Summary:")
+                print(f"        Problem Type: {problem_type}")
+                print(f"        Best Iteration Count: {best_iteration}")
+                print(f"        Best CV Score: {best_cv_score:.4f}")
+                print(f"        RMSE Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+                if not is_classification:
+                    print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
+                    print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                    print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
 
-            if is_classification:
-                return {
-                    "success": True,
-                    "models_trained": 1,
-                    "problem_type": problem_type,
-                    "target_feature": target_feature,
-                    "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
-                    "test_f1": float(final_test_f1),
-                    "output_directory": output_dir,
-                    "results_file": results_file
-                }
+                if is_classification:
+                    return {
+                        "success": True,
+                        "models_trained": 1,
+                        "problem_type": problem_type,
+                        "target_feature": target_feature,
+                        "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
+                        "test_f1": float(final_test_f1),
+                        "output_directory": output_dir,
+                        "results_file": results_file
+                    }
+                else:
+                    return {
+                        "success": True,
+                        "models_trained": 1,
+                        "problem_type": problem_type,
+                        "target_feature": target_feature,
+                        "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
+                        "test_rmse": float(final_test_rmse),
+                        "test_mae": float(final_test_mae),
+                        "test_wmape": float(final_test_wmape),
+                        "test_r2": float(final_test_r2),
+                        "test_bin_precision": float(final_bin_precision),
+                        "test_bin_recall": float(final_bin_recall),
+                        "test_bin_f1": float(final_bin_f1),
+                        "test_bin_accuracy": float(final_bin_accuracy),
+                        "output_directory": output_dir,
+                        "results_file": results_file
+                    }
             else:
                 return {
-                    "success": True,
-                    "models_trained": 1,
-                    "problem_type": problem_type,
-                    "target_feature": target_feature,
-                    "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
-                    "test_rmse": float(final_test_rmse),
-                    "test_mae": float(final_test_mae),
-                    "test_wmape": float(final_test_wmape),
-                    "test_r2": float(final_test_r2),
-                    "test_bin_precision": float(final_bin_precision),
-                    "test_bin_recall": float(final_bin_recall),
-                    "test_bin_f1": float(final_bin_f1),
-                    "test_bin_accuracy": float(final_bin_accuracy),
-                    "output_directory": output_dir,
-                    "results_file": results_file
+                    "success": False,
+                    "error": "No model was trained — all iterations failed to produce a best estimator"
                 }
 
         except Exception as e:
