@@ -2322,19 +2322,17 @@ class TrainingPipeline:
             
             # Set up cross-validation strategy
             if is_classification:
-                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
+                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = xgb.XGBClassifier(
-                    random_state=42,
-                    n_jobs=1,
-                    eval_metric='logloss'
+                    random_state=RANDOM_STATE,
+                    n_jobs=-1,
                 )
                 scoring_metric = SCORE_METRIC
             else:
-                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=42)
+                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = xgb.XGBRegressor(
-                    random_state=42,
-                    n_jobs=1,
-                    eval_metric='mae'
+                    random_state=RANDOM_STATE,
+                    n_jobs=-1,
                 )
                 scoring_metric = 'neg_mean_absolute_error'
                 # Shift target so all values are positive, then log-transform to compress
@@ -2357,12 +2355,14 @@ class TrainingPipeline:
             test_mape_scores = []
 
             best_model = None
-            best_metric = -np.inf  # CV score: higher is always better (F1 or neg_MAE)
+            best_cv_score = -np.inf  # CV score: higher is always better (F1 or neg_MAE)
             best_iteration = None
             
             # Train models with different iteration counts
             print(f"      Starting training with different iteration counts...")
-            
+
+            # Each run is an independent random draw — not cumulative. The curve shows
+            # search-budget sensitivity, not convergence toward a global optimum.
             for i, n_iter in enumerate(iteration_values):
                 print(f"      Progress: {i+1}/{len(iteration_values)} - Testing {n_iter} iterations...")
                 
@@ -2373,9 +2373,9 @@ class TrainingPipeline:
                     n_iter=n_iter,
                     scoring=scoring_metric,
                     cv=cv_splitter,
-                    random_state=42,
-                    n_jobs=1,
-                    verbose=0  # Reduced verbosity for cleaner output
+                    random_state=RANDOM_STATE,
+                    n_jobs=-1,
+                    verbose=0
                 )
                 
                 # Fit with sample weights if available; use log-transformed y for regression
@@ -2411,8 +2411,8 @@ class TrainingPipeline:
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test RMSE = {test_rmse:.4f}, Test R² = {test_r2:.4f}, Test MAE = {test_mae:.4f}, Test MAPE = {test_mape:.2f}%")
 
                 # Select best model on CV score (not on test set) to avoid test-set overfitting
-                if current_cv_score > best_metric:
-                    best_metric = current_cv_score
+                if current_cv_score > best_cv_score:
+                    best_cv_score = current_cv_score
                     best_model = current_best_model
                     best_iteration = n_iter
 
@@ -2647,7 +2647,7 @@ class TrainingPipeline:
             print(f"      Training Summary:")
             print(f"        Problem Type: {problem_type}")
             print(f"        Best Iteration Count: {best_iteration}")
-            print(f"        Best Test Score: {best_metric:.4f}")
+            print(f"        Best Test Score: {best_cv_score:.4f}")
             print(f"        Score Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
             
             if is_classification:
