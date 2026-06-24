@@ -1207,7 +1207,6 @@ class TrainingPipeline:
             file_info = []
             
             # Process each training-ready file
-            effective_strategy = SCHEMA_MISMATCH_STRATEGY
             for file_path in training_ready_files:
                 try:
                     filename = os.path.basename(file_path)
@@ -1232,44 +1231,6 @@ class TrainingPipeline:
                         continue
                     
                     print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
-
-                    # Schema consistency check
-                    if not all_dataframes:
-                        reference_cols = set(df.columns)
-                        reference_filename = filename
-                    else:
-                        current_cols = set(df.columns)
-                        missing = reference_cols - current_cols
-                        extra = current_cols - reference_cols
-                        if missing or extra:
-                            mismatch_msg = (
-                                f"Schema mismatch: {filename} differs from {reference_filename}.\n"
-                                f"  Missing columns (in reference, not in this file): {sorted(missing)}\n"
-                                f"  Extra columns (in this file, not in reference): {sorted(extra)}\n"
-                                f"Fix source files so all have identical columns before merging."
-                            )
-                            print(f"    merge_data_files: {mismatch_msg}")
-                            if effective_strategy == 'intersect':
-                                proceed = True
-                            elif effective_strategy == 'fail':
-                                proceed = False
-                            else:
-                                response = input("    Proceed with the column intersection? Extra/missing columns will be dropped. (y/n): ").strip().lower()
-                                proceed = response == 'y'
-                                if proceed:
-                                    effective_strategy = 'intersect'
-                            if proceed:
-                                common_cols = sorted(reference_cols & current_cols)
-                                all_dataframes = [df_prev[common_cols] for df_prev in all_dataframes]
-                                df = df[common_cols]
-                                reference_cols = set(common_cols)
-                                print(f"    merge_data_files: Proceeding with {len(common_cols)} common columns.")
-                            else:
-                                return {
-                                    "success": False,
-                                    "error": mismatch_msg,
-                                    "processed_files": 0
-                                }
 
                     # Store the dataframe and file info
                     all_dataframes.append(df)
@@ -1296,6 +1257,39 @@ class TrainingPipeline:
                     "error": error_msg,
                     "processed_files": 0
                 }
+
+            # Schema consistency check — find columns absent from at least one file
+            all_col_sets = [set(df.columns) for df in all_dataframes]
+            common_cols = sorted(set.intersection(*all_col_sets))
+            inconsistent_cols = sorted(set.union(*all_col_sets) - set(common_cols))
+
+            if inconsistent_cols:
+                print(f"    merge_data_files: The following {len(inconsistent_cols)} columns are not present in all files:")
+                for col in inconsistent_cols:
+                    print(f"      - {col}")
+                if SCHEMA_MISMATCH_STRATEGY == 'intersect':
+                    proceed = True
+                elif SCHEMA_MISMATCH_STRATEGY == 'fail':
+                    proceed = False
+                else:
+                    response = input(f"    Drop these columns and merge with {len(common_cols)} common columns? (y/n): ").strip().lower()
+                    proceed = response == 'y'
+                if proceed:
+                    all_dataframes = [df[common_cols] for df in all_dataframes]
+                    for info in file_info:
+                        info['columns'] = len(common_cols)
+                    print(f"    merge_data_files: Proceeding with {len(common_cols)} common columns.")
+                else:
+                    error_msg = (
+                        f"Schema mismatch: {len(inconsistent_cols)} columns not present in all files: "
+                        f"{inconsistent_cols}\n"
+                        f"Fix source files so all have identical columns before merging."
+                    )
+                    return {
+                        "success": False,
+                        "error": error_msg,
+                        "processed_files": 0
+                    }
 
             # Merge all dataframes
             print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")

@@ -56,8 +56,6 @@ def test_schema_check_fails_on_missing_column(tmp_path):
 
     assert result["success"] is False
     assert "b" in result["error"]
-    assert "training_ready_2024_02.parquet" in result["error"]
-    assert "training_ready_2024_01.parquet" in result["error"]
 
 
 @patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'fail')
@@ -73,7 +71,6 @@ def test_schema_check_fails_on_extra_column(tmp_path):
 
     assert result["success"] is False
     assert "extra" in result["error"]
-    assert "training_ready_2024_02.parquet" in result["error"]
 
 
 def test_schema_check_single_file_passes(tmp_path):
