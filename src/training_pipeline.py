@@ -111,6 +111,7 @@ from config.const_training import (
     IMBALANCE_THRESHOLD,
     SMOTE_RANDOM_STATE,
     SPLIT_DATASET_OUTPUT_FOLDER,
+    SELECTED_COLUMNS,
 )
 
 
@@ -176,7 +177,7 @@ class TrainingPipeline:
         if state_machine.get("merge_data_files", False):
             try:
                 print(f"    → merge_data_files")
-                merged_result = self.merge_data_files(csv_files)
+                merged_result = self.merge_data_files()
                 
                 if merged_result and merged_result.get("success", False):
                     result["data"] = merged_result.get("data")
@@ -1157,20 +1158,11 @@ class TrainingPipeline:
             "test_output_path": test_output_path,
         }
 
-    def merge_data_files(self, csv_files):
+    def merge_data_files(self):
         """
-        Merge multiple training-ready data files into a single dataset for training.
-        
-        This method loads all files from data/output/preprocessed_training_ready,
-        combines them into a unified dataset, and saves the result to 
-        data/output/merged_training_ready. It adds source tracking columns and 
-        creates detailed summary statistics.
-        
-        Parameters:
-        -----------
-        csv_files : list
-            List of CSV file paths to merge (currently not used - method discovers files automatically)
-            
+        Merge all training-ready parquet files from data/output/preprocessed_training_ready
+        into a single dataset and save it to data/output/merged_training_ready.
+
         Returns:
         --------
         dict
@@ -1256,6 +1248,28 @@ class TrainingPipeline:
                     "processed_files": 0
                 }
             
+            # Schema consistency check — find columns not present in every file
+            all_col_sets = [set(df.columns) for df in all_dataframes]
+            common_cols = set.intersection(*all_col_sets)
+            union_cols = set.union(*all_col_sets)
+            inconsistent_cols = sorted(union_cols - common_cols)
+
+            if inconsistent_cols:
+                print(f"\n    merge_data_files: Schema mismatch detected.")
+                print(f"    The following {len(inconsistent_cols)} column(s) are not present in every file:")
+                for col in inconsistent_cols:
+                    files_missing = [info_i['filename'] for df_i, info_i in zip(all_dataframes, file_info) if col not in df_i.columns]
+                    print(f"      - '{col}' (missing from {len(files_missing)} file(s): {files_missing})")
+                print()
+                answer = input("    Drop these columns from all files and continue with the merge? [y/N]: ").strip().lower()
+                if answer != "y":
+                    error_msg = f"Merge aborted by user — schema mismatch in columns: {inconsistent_cols}"
+                    print(f"    merge_data_files: {error_msg}")
+                    return {"success": False, "error": error_msg, "processed_files": 0}
+                ordered_common_cols = [c for c in all_dataframes[0].columns if c in common_cols]
+                all_dataframes = [df[ordered_common_cols] for df in all_dataframes]
+                print(f"    merge_data_files: Dropped {len(inconsistent_cols)} column(s). Proceeding with {len(ordered_common_cols)} columns.")
+
             # Merge all dataframes
             print(f"    merge_data_files: Merging {len(all_dataframes)} dataframes...")
             merged_df = pd.concat(all_dataframes, ignore_index=True)
