@@ -1207,6 +1207,7 @@ class TrainingPipeline:
             file_info = []
             
             # Process each training-ready file
+            effective_strategy = SCHEMA_MISMATCH_STRATEGY
             for file_path in training_ready_files:
                 try:
                     filename = os.path.basename(file_path)
@@ -1248,13 +1249,15 @@ class TrainingPipeline:
                                 f"Fix source files so all have identical columns before merging."
                             )
                             print(f"    merge_data_files: {mismatch_msg}")
-                            if SCHEMA_MISMATCH_STRATEGY == 'intersect':
+                            if effective_strategy == 'intersect':
                                 proceed = True
-                            elif SCHEMA_MISMATCH_STRATEGY == 'fail':
+                            elif effective_strategy == 'fail':
                                 proceed = False
                             else:
                                 response = input("    Proceed with the column intersection? Extra/missing columns will be dropped. (y/n): ").strip().lower()
                                 proceed = response == 'y'
+                                if proceed:
+                                    effective_strategy = 'intersect'
                             if proceed:
                                 common_cols = sorted(reference_cols & current_cols)
                                 all_dataframes = [df_prev[common_cols] for df_prev in all_dataframes]
