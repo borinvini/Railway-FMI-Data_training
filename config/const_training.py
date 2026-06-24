@@ -37,6 +37,7 @@ SPLIT_DATASET_OUTPUT_FOLDER = "data/output/503-split_dataset"
 MERGED_BALANCED_OUTPUT_FOLDER = "data/output/504-balance_classes"
 MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/505-scale_weather_features"
 SELECTED_COLUMNS = []  # Empty = interactive prompt; populate to skip prompt
+SCHEMA_MISMATCH_STRATEGY = ''  # '' = ask interactively; 'intersect' = auto-drop; 'fail' = auto-fail
 
 # Asymmetric quantile thresholds for delay outlier removal
 # Lower tail: conservative cut (few implausibly-early arrivals)

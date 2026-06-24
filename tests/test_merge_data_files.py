@@ -1,4 +1,5 @@
 import os
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -42,6 +43,7 @@ def test_schema_check_passes_when_all_files_match(tmp_path):
     assert result.get("files_merged") == 2
 
 
+@patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'fail')
 def test_schema_check_fails_on_missing_column(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     src = _make_source_dir(tmp_path)
@@ -58,6 +60,7 @@ def test_schema_check_fails_on_missing_column(tmp_path):
     assert "training_ready_2024_01.parquet" in result["error"]
 
 
+@patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'fail')
 def test_schema_check_fails_on_extra_column(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     src = _make_source_dir(tmp_path)
@@ -83,3 +86,58 @@ def test_schema_check_single_file_passes(tmp_path):
 
     assert result["success"] is True
     assert result.get("files_merged") == 1
+
+
+def test_schema_mismatch_constant_exists():
+    from config.const_training import SCHEMA_MISMATCH_STRATEGY
+    assert SCHEMA_MISMATCH_STRATEGY == ''
+
+
+@patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')
+def test_intersect_strategy_drops_extra_columns(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    src = _make_source_dir(tmp_path)
+    df1 = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+    df2 = pd.DataFrame({"a": [5, 6], "b": [7, 8], "extra": [9, 10]})
+    df1.to_parquet(src / "training_ready_2024_01.parquet", index=False)
+    df2.to_parquet(src / "training_ready_2024_02.parquet", index=False)
+
+    result = pipeline.merge_data_files([])
+
+    assert result["success"] is True
+    assert "extra" not in result["data"].columns
+    assert sorted(result["data"].columns) == ["a", "b"]
+
+
+@patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')
+def test_intersect_strategy_drops_missing_columns(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    src = _make_source_dir(tmp_path)
+    df1 = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+    df2 = pd.DataFrame({"a": [5, 6]})  # missing "b"
+    df1.to_parquet(src / "training_ready_2024_01.parquet", index=False)
+    df2.to_parquet(src / "training_ready_2024_02.parquet", index=False)
+
+    result = pipeline.merge_data_files([])
+
+    assert result["success"] is True
+    assert "b" not in result["data"].columns
+    assert list(result["data"].columns) == ["a"]
+
+
+@patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')
+def test_intersect_strategy_reselects_already_loaded_dfs(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    src = _make_source_dir(tmp_path)
+    df1 = pd.DataFrame({"a": [1], "b": [2]})
+    df2 = pd.DataFrame({"a": [3], "b": [4]})
+    df3 = pd.DataFrame({"a": [5], "b": [6], "extra": [7]})
+    df1.to_parquet(src / "training_ready_2024_01.parquet", index=False)
+    df2.to_parquet(src / "training_ready_2024_02.parquet", index=False)
+    df3.to_parquet(src / "training_ready_2024_03.parquet", index=False)
+
+    result = pipeline.merge_data_files([])
+
+    assert result["success"] is True
+    assert "extra" not in result["data"].columns
+    assert result.get("files_merged") == 3

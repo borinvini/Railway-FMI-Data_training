@@ -113,6 +113,7 @@ from config.const_training import (
     SMOTE_RANDOM_STATE,
     SPLIT_DATASET_OUTPUT_FOLDER,
     SELECTED_COLUMNS,
+    SCHEMA_MISMATCH_STRATEGY,
 )
 
 
@@ -1240,18 +1241,32 @@ class TrainingPipeline:
                         missing = reference_cols - current_cols
                         extra = current_cols - reference_cols
                         if missing or extra:
-                            error_msg = (
+                            mismatch_msg = (
                                 f"Schema mismatch: {filename} differs from {reference_filename}.\n"
                                 f"  Missing columns (in reference, not in this file): {sorted(missing)}\n"
                                 f"  Extra columns (in this file, not in reference): {sorted(extra)}\n"
                                 f"Fix source files so all have identical columns before merging."
                             )
-                            print(f"    merge_data_files: {error_msg}")
-                            return {
-                                "success": False,
-                                "error": error_msg,
-                                "processed_files": 0
-                            }
+                            print(f"    merge_data_files: {mismatch_msg}")
+                            if SCHEMA_MISMATCH_STRATEGY == 'intersect':
+                                proceed = True
+                            elif SCHEMA_MISMATCH_STRATEGY == 'fail':
+                                proceed = False
+                            else:
+                                response = input("    Proceed with the column intersection? Extra/missing columns will be dropped. (y/n): ").strip().lower()
+                                proceed = response == 'y'
+                            if proceed:
+                                common_cols = sorted(reference_cols & current_cols)
+                                all_dataframes = [df_prev[common_cols] for df_prev in all_dataframes]
+                                df = df[common_cols]
+                                reference_cols = set(common_cols)
+                                print(f"    merge_data_files: Proceeding with {len(common_cols)} common columns.")
+                            else:
+                                return {
+                                    "success": False,
+                                    "error": mismatch_msg,
+                                    "processed_files": 0
+                                }
 
                     # Store the dataframe and file info
                     all_dataframes.append(df)
