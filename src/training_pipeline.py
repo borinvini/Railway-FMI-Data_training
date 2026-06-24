@@ -1260,8 +1260,10 @@ class TrainingPipeline:
 
             # Schema consistency check — find columns absent from at least one file
             all_col_sets = [set(df.columns) for df in all_dataframes]
-            common_cols = sorted(set.intersection(*all_col_sets))
-            inconsistent_cols = sorted(set.union(*all_col_sets) - set(common_cols))
+            common_cols_set = set.intersection(*all_col_sets)
+            # Preserve original column order from the source files
+            common_cols = [col for col in all_dataframes[0].columns if col in common_cols_set]
+            inconsistent_cols = sorted(set.union(*all_col_sets) - common_cols_set)
 
             if inconsistent_cols:
                 print(f"    merge_data_files: The following {len(inconsistent_cols)} columns are not present in all files:")
