@@ -1230,7 +1230,29 @@ class TrainingPipeline:
                         continue
                     
                     print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
-                    
+
+                    # Schema consistency check
+                    if not all_dataframes:
+                        reference_cols = set(df.columns)
+                        reference_filename = filename
+                    else:
+                        current_cols = set(df.columns)
+                        missing = reference_cols - current_cols
+                        extra = current_cols - reference_cols
+                        if missing or extra:
+                            error_msg = (
+                                f"Schema mismatch: {filename} differs from {reference_filename}.\n"
+                                f"  Missing columns (in reference, not in this file): {sorted(missing)}\n"
+                                f"  Extra columns (in this file, not in reference): {sorted(extra)}\n"
+                                f"Fix source files so all have identical columns before merging."
+                            )
+                            print(f"    merge_data_files: {error_msg}")
+                            return {
+                                "success": False,
+                                "error": error_msg,
+                                "processed_files": 0
+                            }
+
                     # Store the dataframe and file info
                     all_dataframes.append(df)
                     file_info.append({
