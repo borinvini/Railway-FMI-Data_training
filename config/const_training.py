@@ -12,6 +12,7 @@ TRAINING_STATE_MACHINE = {
     "data_distribution_analysis": False,
     "target_feature_analysis": False,
     "train_xgboost_with_randomized_search_cv": True,
+    "train_lightgbm_with_randomized_search_cv": True,
 }
 
 #    "select_time_features": False,
@@ -49,6 +50,7 @@ RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_searc
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
 IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_search"
+LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1001-lightgbm_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
 DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_threshold_optimized"
 BORDERLINE_SMOTE_OUTPUT_FOLDER = "data/output/borderline_smote_synthetic"
@@ -120,6 +122,17 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
     'subsample': [0.7, 0.8, 0.9],
     'colsample_bytree': [0.7, 0.8, 1.0],
     # scale_pos_weight omitted: class imbalance handled upstream by balance_classes (SMOTE-Tomek)
+}
+
+LIGHTGBM_PARAM_DISTRIBUTIONS = {
+    'n_estimators':      randint(100, 500),
+    'num_leaves':        randint(20, 150),
+    'learning_rate':     [0.01, 0.05, 0.1],
+    'subsample':         [0.6, 0.7, 0.8, 0.9],
+    'colsample_bytree':  [0.6, 0.7, 0.8, 1.0],
+    'min_child_samples': randint(10, 100),
+    'reg_alpha':         [0.0, 0.1, 0.5, 1.0],
+    'reg_lambda':        [0.0, 0.1, 0.5, 1.0],
 }
 
 # ===================================================================================================================

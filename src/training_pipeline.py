@@ -17,6 +17,7 @@ from sklearn.model_selection import KFold, train_test_split
 from sklearn.preprocessing import RobustScaler
 
 import xgboost as xgb
+import lightgbm as lgb
 
 from imblearn.over_sampling import BorderlineSMOTE
 from imblearn.combine import SMOTETomek
@@ -104,6 +105,8 @@ from config.const_training import (
     BORDERLINE_SMOTE_OUTPUT_FOLDER,
     BORDERLINE_SMOTE_CONFIG,
     XGBOOST_PARAM_DISTRIBUTIONS,
+    LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    LIGHTGBM_PARAM_DISTRIBUTIONS,
     XGBOOST_METHODS_CONFIG,
     MAX_SAMPLE_WEIGHT_REGRESSION,
     XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER,
