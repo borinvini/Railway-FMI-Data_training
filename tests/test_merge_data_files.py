@@ -39,6 +39,7 @@ def test_schema_check_passes_when_all_files_match(tmp_path):
     result = pipeline.merge_data_files([])
 
     assert result["success"] is True
+    assert result.get("files_merged") == 2
 
 
 def test_schema_check_fails_on_missing_column(tmp_path):
@@ -81,3 +82,4 @@ def test_schema_check_single_file_passes(tmp_path):
     result = pipeline.merge_data_files([])
 
     assert result["success"] is True
+    assert result.get("files_merged") == 1
