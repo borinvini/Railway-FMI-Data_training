@@ -383,6 +383,7 @@ _BALANCE_SUCCESS = {
     "resampling_method": "SMOTE_TOMEK",
     "skipped": False,
     "dropped_non_numeric_cols": [],
+    "dropped_counterpart_col": "differenceInMinutes",
     "train_output_path": "/fake/train.parquet",
     "test_output_path": "/fake/test.parquet",
 }
@@ -439,7 +440,7 @@ def test_split_dataset_no_longer_routes_based_on_balance(mock_split, mock_balanc
     """split_dataset routing must NOT depend on balance_classes — balance runs after split."""
     pipeline = _make_pipeline(tmp_path)
     mock_split.return_value = _SPLIT_SUCCESS
-    mock_balance.return_value = {"success": True, "rows_before": 320, "rows_after": 380, "minority_share_before": 25.0, "minority_share_after": 48.0, "resampling_method": "SMOTE_TOMEK", "skipped": False, "dropped_non_numeric_cols": [], "train_output_path": "/fake/train.parquet", "test_output_path": "/fake/test.parquet"}
+    mock_balance.return_value = {"success": True, "rows_before": 320, "rows_after": 380, "minority_share_before": 25.0, "minority_share_after": 48.0, "resampling_method": "SMOTE_TOMEK", "skipped": False, "dropped_non_numeric_cols": [], "dropped_counterpart_col": "differenceInMinutes", "train_output_path": "/fake/train.parquet", "test_output_path": "/fake/test.parquet"}
 
     pipeline.execute_training_pipeline_steps(
         [], state_machine=_base_state_machine(balance_classes=True, split_dataset=True)
