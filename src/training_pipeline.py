@@ -20,7 +20,8 @@ import xgboost as xgb
 import lightgbm as lgb
 
 from imblearn.over_sampling import BorderlineSMOTE
-from imblearn.combine import SMOTETomek
+from imblearn.over_sampling import SMOTE, SMOTENC
+from imblearn.under_sampling import TomekLinks
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import (
@@ -1194,6 +1195,10 @@ class TrainingPipeline:
             }
 
         feature_source_cols = [c for c in df.columns if c != target_col] if is_classification else list(df.columns)
+        bool_cols = [c for c in feature_source_cols if df[c].dtype == bool]
+        for c in bool_cols:
+            df[c] = df[c].astype(int)
+
         numeric_cols = [c for c in feature_source_cols if c in df.select_dtypes(include=[np.number]).columns]
         non_numeric_cols = [c for c in feature_source_cols if c not in numeric_cols]
         if non_numeric_cols:
@@ -1208,9 +1213,27 @@ class TrainingPipeline:
             y = y[nan_mask]
 
         if RESAMPLING_METHOD == "SMOTE_TOMEK":
-            print(f"    balance_classes: Applying SMOTETomek (random_state={SMOTE_RANDOM_STATE})...")
-            resampler = SMOTETomek(random_state=SMOTE_RANDOM_STATE)
-            X_res, y_res = resampler.fit_resample(X, y)
+            categorical_cols = [
+                c for c in numeric_cols
+                if c in bool_cols
+                or c.startswith("weather_scenario_")
+                or c.endswith("_sin")
+                or c.endswith("_cos")
+            ]
+            categorical_indices = [numeric_cols.index(c) for c in categorical_cols]
+
+            if categorical_indices:
+                print(f"    balance_classes: Applying SMOTENC (random_state={SMOTE_RANDOM_STATE}, categorical_features={len(categorical_indices)})...")
+                smote_nc = SMOTENC(categorical_features=categorical_indices, random_state=SMOTE_RANDOM_STATE)
+                X_over, y_over = smote_nc.fit_resample(X, y)
+            else:
+                print(f"    balance_classes: No categorical/boolean columns detected — applying plain SMOTE (random_state={SMOTE_RANDOM_STATE})...")
+                smote = SMOTE(random_state=SMOTE_RANDOM_STATE)
+                X_over, y_over = smote.fit_resample(X, y)
+
+            print(f"    balance_classes: Applying TomekLinks cleaning...")
+            tomek = TomekLinks()
+            X_res, y_res = tomek.fit_resample(X_over, y_over)
             used_method = "SMOTE_TOMEK"
         else:
             print(f"    balance_classes: RESAMPLING_METHOD='{RESAMPLING_METHOD}' not handled — saving unchanged")

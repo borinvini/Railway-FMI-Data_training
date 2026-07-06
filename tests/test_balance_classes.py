@@ -82,6 +82,33 @@ def _write_train_test(tmp_path, train_df, test_df, subdir="split"):
     return str(d)
 
 
+def _make_categorical_df(n_punctual=300, n_delayed=100, seed=7):
+    rng = np.random.default_rng(seed)
+    punctual = rng.uniform(-4, 5, n_punctual)
+    delayed = rng.uniform(6, 60, n_delayed)
+    diff = np.concatenate([punctual, delayed])
+    n = n_punctual + n_delayed
+    hours = rng.integers(0, 24, n)
+    hour_sin = np.sin(2 * np.pi * hours / 24)
+    hour_cos = np.cos(2 * np.pi * hours / 24)
+    scenario_idx = rng.integers(0, 3, n)
+    weather_blizzard = (scenario_idx == 0).astype(int)
+    weather_clear = (scenario_idx == 1).astype(int)
+    weather_rain = (scenario_idx == 2).astype(int)
+    train_stopping = rng.integers(0, 2, n).astype(bool)
+    return pd.DataFrame({
+        "differenceInMinutes": diff,
+        "trainDelayed": diff > TRAIN_DELAY_MINUTES,
+        "feature_a": rng.normal(0, 1, n),
+        "hour_sin": hour_sin,
+        "hour_cos": hour_cos,
+        "weather_scenario_Blizzard": weather_blizzard,
+        "weather_scenario_Clear": weather_clear,
+        "weather_scenario_Rain": weather_rain,
+        "trainStopping": train_stopping,
+    })
+
+
 def _make_test_df(n=50, seed=99):
     rng = np.random.default_rng(seed)
     diff = rng.uniform(-4, 60, n)
@@ -270,6 +297,60 @@ def test_classification_target_excluded_from_features_and_matches_resampled_labe
     counts = saved["trainDelayed"].value_counts()
     minority_share = int(counts.min()) / len(saved) * 100
     assert abs(minority_share - result["minority_share_after"]) < 0.5
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_one_hot_columns_stay_binary(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_categorical_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    saved = pd.read_parquet(result["train_output_path"])
+    for col in ("weather_scenario_Blizzard", "weather_scenario_Clear", "weather_scenario_Rain"):
+        assert set(saved[col].unique()) <= {0, 1}, f"{col} was interpolated into a fractional value"
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_cyclical_columns_are_not_interpolated(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_categorical_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    saved = pd.read_parquet(result["train_output_path"])
+    existing_sin = set(np.round(train_df["hour_sin"], 6))
+    existing_cos = set(np.round(train_df["hour_cos"], 6))
+    saved_sin = set(np.round(saved["hour_sin"], 6))
+    saved_cos = set(np.round(saved["hour_cos"], 6))
+    assert saved_sin <= existing_sin, "hour_sin contains values not present in the original data (interpolated)"
+    assert saved_cos <= existing_cos, "hour_cos contains values not present in the original data (interpolated)"
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_bool_columns_survive_resampling(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_categorical_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    saved = pd.read_parquet(result["train_output_path"])
+    assert "trainStopping" in saved.columns
+    assert set(saved["trainStopping"].unique()) <= {0, 1}
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "differenceInMinutes")
+def test_regression_target_stays_continuous(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["success"] is True
+    assert result["skipped"] is False
+    saved = pd.read_parquet(result["train_output_path"])
+    assert saved["differenceInMinutes"].dtype.kind == "f"
+    assert saved["differenceInMinutes"].nunique() > 10
 
 
 @patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
