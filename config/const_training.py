@@ -7,29 +7,13 @@ TRAINING_STATE_MACHINE = {
     "select_training_cols": True,
     "split_dataset": True,
     "balance_classes": True,
-    "scale_weather_features": False,
+    "scale_weather_features": True,
     "numeric_correlation_analysis": False,
     "data_distribution_analysis": False,
     "target_feature_analysis": False,
     "train_xgboost_with_randomized_search_cv": True,
     "train_lightgbm_with_randomized_search_cv": True,
 }
-
-#    "select_time_features": False,
-#    "drop_nan_columns": False,
-#    "correlation_analysis": False,
-#    "non_weather_correlation_analysis": False,
-#    "correlation_analysis_by_station": False,
-#    "snow_depth_delay_analysis": False,
-#    "numeric_correlation_analysis": False,
-#    "train_decision_tree": False,
-#    "threshold_optimization_decision_tree": False,
-#    "generate_borderline_smote_data": False,
-#    "train_decision_tree_with_borderline_smote_data": False,
-#    "threshold_optimization_decision_tree_borderline_smote": False,
-#    "train_xgboost_with_randomized_search_cv": False,
-#    "threshold_optimization_xgboost": False,
-#    "train_xgboost_selected_features": False
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merge_data_files"
 MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER = "data/output/501-filter_delay_outliers"
