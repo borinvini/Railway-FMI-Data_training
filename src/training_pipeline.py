@@ -1118,6 +1118,13 @@ class TrainingPipeline:
             print(f"    balance_classes: {msg}")
             return {"success": False, "error": msg}
 
+        if target_col == "trainDelayed":
+            counterpart_col = "differenceInMinutes"
+        elif is_regression:
+            counterpart_col = "trainDelayed"
+        else:
+            counterpart_col = None
+
         output_folder = os.path.join(self.project_root, MERGED_BALANCED_OUTPUT_FOLDER)
         os.makedirs(output_folder, exist_ok=True)
 
@@ -1128,6 +1135,12 @@ class TrainingPipeline:
             test_output_path = os.path.join(output_folder, os.path.basename(test_src))
             shutil.copy2(test_src, test_output_path)
             print(f"    balance_classes: Copied test file to: {test_output_path}")
+
+        dropped_counterpart_col = None
+        if counterpart_col and counterpart_col in df.columns:
+            print(f"    balance_classes: Dropping counterpart column '{counterpart_col}' to prevent leakage")
+            df = df.drop(columns=[counterpart_col])
+            dropped_counterpart_col = counterpart_col
 
         if target_col not in df.columns:
             print(f"    balance_classes: '{target_col}' not found — saving train unchanged")
@@ -1142,6 +1155,7 @@ class TrainingPipeline:
                 "resampling_method": "NONE",
                 "skipped": True,
                 "dropped_non_numeric_cols": [],
+                "dropped_counterpart_col": dropped_counterpart_col,
                 "train_output_path": train_out,
                 "test_output_path": test_output_path,
             }
@@ -1174,6 +1188,7 @@ class TrainingPipeline:
                 "resampling_method": "NONE",
                 "skipped": True,
                 "dropped_non_numeric_cols": [],
+                "dropped_counterpart_col": dropped_counterpart_col,
                 "train_output_path": train_out,
                 "test_output_path": test_output_path,
             }
@@ -1225,6 +1240,7 @@ class TrainingPipeline:
             "resampling_method": used_method,
             "skipped": False,
             "dropped_non_numeric_cols": non_numeric_cols,
+            "dropped_counterpart_col": dropped_counterpart_col,
             "train_output_path": train_out,
             "test_output_path": test_output_path,
         }

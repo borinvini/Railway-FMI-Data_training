@@ -201,8 +201,60 @@ def test_result_contains_required_keys(tmp_path):
     for key in ("success", "rows_before", "rows_after",
                  "minority_share_before", "minority_share_after",
                  "resampling_method", "skipped", "dropped_non_numeric_cols",
+                 "dropped_counterpart_col",
                  "train_output_path", "test_output_path"):
         assert key in result, f"Missing key: {key}"
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_counterpart_dropped_on_skip_already_balanced(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_balanced_df(n=200)
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["dropped_counterpart_col"] == "differenceInMinutes"
+    saved = pd.read_parquet(result["train_output_path"])
+    assert "differenceInMinutes" not in saved.columns
+    assert "trainDelayed" in saved.columns
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_counterpart_dropped_on_skip_missing_target(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_imbalanced_df().drop(columns=["trainDelayed"])
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["skipped"] is True
+    assert result["dropped_counterpart_col"] == "differenceInMinutes"
+    saved = pd.read_parquet(result["train_output_path"])
+    assert "differenceInMinutes" not in saved.columns
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_counterpart_dropped_on_resample(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["dropped_counterpart_col"] == "differenceInMinutes"
+    saved = pd.read_parquet(result["train_output_path"])
+    assert "differenceInMinutes" not in saved.columns
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "differenceInMinutes")
+def test_counterpart_dropped_for_regression_target(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["dropped_counterpart_col"] == "trainDelayed"
+    saved = pd.read_parquet(result["train_output_path"])
+    assert "trainDelayed" not in saved.columns
+    assert "differenceInMinutes" in saved.columns
 
 
 @patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
