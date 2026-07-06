@@ -258,6 +258,21 @@ def test_counterpart_dropped_for_regression_target(tmp_path):
 
 
 @patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_classification_target_excluded_from_features_and_matches_resampled_labels(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    saved = pd.read_parquet(result["train_output_path"])
+    assert "trainDelayed" in saved.columns
+    assert set(saved["trainDelayed"].unique()) <= {0, 1}
+    counts = saved["trainDelayed"].value_counts()
+    minority_share = int(counts.min()) / len(saved) * 100
+    assert abs(minority_share - result["minority_share_after"]) < 0.5
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_result_has_no_data_key(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df()

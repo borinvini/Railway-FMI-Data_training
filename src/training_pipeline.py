@@ -1193,8 +1193,9 @@ class TrainingPipeline:
                 "test_output_path": test_output_path,
             }
 
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
+        feature_source_cols = [c for c in df.columns if c != target_col] if is_classification else list(df.columns)
+        numeric_cols = [c for c in feature_source_cols if c in df.select_dtypes(include=[np.number]).columns]
+        non_numeric_cols = [c for c in feature_source_cols if c not in numeric_cols]
         if non_numeric_cols:
             print(f"    balance_classes: Dropping {len(non_numeric_cols)} non-numeric column(s): {non_numeric_cols}")
 
@@ -1217,6 +1218,8 @@ class TrainingPipeline:
             used_method = "NONE"
 
         df_balanced = pd.DataFrame(X_res, columns=numeric_cols)
+        if is_classification:
+            df_balanced[target_col] = np.asarray(y_res)
         rows_after = len(df_balanced)
 
         y_after = pd.Series(y_res)
