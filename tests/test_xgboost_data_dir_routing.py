@@ -188,3 +188,39 @@ def test_split_dataset_writes_to_503_folder(mock_split, tmp_path):
     assert kwargs.get("output_dir") == expected, (
         f"Expected output_dir={expected!r}, got {kwargs.get('output_dir')!r}"
     )
+
+
+@patch.object(TrainingPipeline, "train_xgboost_with_randomized_search_cv")
+@patch.object(TrainingPipeline, "scale_weather_features")
+@patch.object(TrainingPipeline, "balance_classes")
+def test_xgboost_uses_scaled_dir_when_scale_and_balance_both_enabled(
+    mock_balance, mock_scale, mock_xgb, tmp_path
+):
+    """When both balance_classes and scale_weather_features are enabled, XGBoost
+    should receive the 505 (scaled) directory, not the 504 (balanced) one."""
+    pipeline = _make_pipeline(tmp_path)
+    mock_xgb.return_value = _XGBOOST_SUCCESS
+    mock_balance.return_value = {
+        "success": True, "rows_before": 400, "rows_after": 450,
+        "minority_share_before": 25.0, "minority_share_after": 45.0,
+        "resampling_method": "SMOTE_TOMEK", "skipped": False,
+        "dropped_non_numeric_cols": [], "dropped_counterpart_col": "differenceInMinutes",
+        "train_output_path": "/fake/train.parquet", "test_output_path": "/fake/test.parquet",
+    }
+    mock_scale.return_value = {
+        "success": True, "processed_files": 1,
+        "total_train_rows": 450, "total_test_rows": 100,
+        "weather_features_scaled": ["Air temperature"],
+    }
+
+    sm = _make_state_machine(scale=True)
+    sm["balance_classes"] = True
+
+    pipeline.execute_training_pipeline_steps([], state_machine=sm)
+
+    mock_xgb.assert_called_once()
+    _, kwargs = mock_xgb.call_args
+    expected = os.path.join(str(tmp_path), MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+    assert kwargs.get("data_dir") == expected, (
+        f"Expected data_dir={expected!r}, got {kwargs.get('data_dir')!r}"
+    )

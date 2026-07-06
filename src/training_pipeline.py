@@ -824,12 +824,12 @@ class TrainingPipeline:
                     and not state_machine.get("select_training_cols", False)
                 )
                 _data_folder = (
-                    MERGED_BALANCED_OUTPUT_FOLDER
+                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    if _use_scaled
+                    else MERGED_BALANCED_OUTPUT_FOLDER
                     if state_machine.get("balance_classes", False)
                     else SPLIT_DATASET_OUTPUT_FOLDER
                     if state_machine.get("split_dataset", False)
-                    else MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
-                    if _use_scaled
                     else MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
                     if _use_filtered
                     else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
@@ -879,12 +879,12 @@ class TrainingPipeline:
                     and not state_machine.get("select_training_cols", False)
                 )
                 _data_folder = (
-                    MERGED_BALANCED_OUTPUT_FOLDER
+                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    if _use_scaled
+                    else MERGED_BALANCED_OUTPUT_FOLDER
                     if state_machine.get("balance_classes", False)
                     else SPLIT_DATASET_OUTPUT_FOLDER
                     if state_machine.get("split_dataset", False)
-                    else MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
-                    if _use_scaled
                     else MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
                     if _use_filtered
                     else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
