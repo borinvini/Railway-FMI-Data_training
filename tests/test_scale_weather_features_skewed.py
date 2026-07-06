@@ -75,3 +75,31 @@ def test_scale_weather_features_applies_log1p_to_skewed_columns_only(tmp_path):
     scaled_max = scaled_train["Precipitation amount"].max()
     assert scaled_max == pytest.approx(np.log1p(raw_train_max), abs=1e-6)
     assert scaled_max < raw_train_max
+
+
+def test_scale_weather_features_handles_negative_sentinel_in_skewed_column(tmp_path):
+    """Raw FMI data uses negative sentinels (e.g. -1) for 'not applicable' readings in
+    Snow depth / Precipitation columns. log1p(-1) is -inf, which used to crash
+    RobustScaler.fit with 'Input X contains infinity'. Sentinels must be clipped to 0
+    before log1p so scaling succeeds and produces only finite values."""
+    pipeline = _make_pipeline(tmp_path)
+
+    source_dir = tmp_path / "input_data"
+    source_dir.mkdir(parents=True)
+    train_df = _make_zero_inflated_df(seed=1)
+    test_df = _make_zero_inflated_df(n=50, seed=2)
+    train_df.loc[0, "Precipitation amount"] = -1.0
+    test_df.loc[0, "Precipitation amount"] = -1.0
+    train_df.to_parquet(source_dir / "merged_data_x_train.parquet", index=False)
+    test_df.to_parquet(source_dir / "merged_data_x_test.parquet", index=False)
+
+    result = pipeline.scale_weather_features(data_dir=str(source_dir))
+
+    assert result["success"] is True
+
+    scaled_dir = os.path.join(str(tmp_path), MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+    scaled_train = pd.read_parquet(os.path.join(scaled_dir, "merged_data_x_train.parquet"))
+    scaled_test = pd.read_parquet(os.path.join(scaled_dir, "merged_data_x_test.parquet"))
+
+    assert np.isfinite(scaled_train["Precipitation amount"]).all()
+    assert np.isfinite(scaled_test["Precipitation amount"]).all()

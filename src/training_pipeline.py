@@ -2272,11 +2272,13 @@ class TrainingPipeline:
             test_weather_features = test_df[available_weather_features].copy()
 
             # Zero-inflated/right-skewed features get a log1p pre-transform (deterministic,
-            # not fit on data) before RobustScaler
+            # not fit on data) before RobustScaler. These features are physically
+            # non-negative, but raw FMI data uses negative sentinels (e.g. -1) for
+            # "not applicable" readings; log1p(-1) is -inf, so clip to 0 first.
             if skewed_cols:
                 print(f"    scale_weather_features: Applying log1p to {len(skewed_cols)} skewed feature(s): {skewed_cols}")
-                train_weather_features[skewed_cols] = np.log1p(train_weather_features[skewed_cols])
-                test_weather_features[skewed_cols] = np.log1p(test_weather_features[skewed_cols])
+                train_weather_features[skewed_cols] = np.log1p(train_weather_features[skewed_cols].clip(lower=0))
+                test_weather_features[skewed_cols] = np.log1p(test_weather_features[skewed_cols].clip(lower=0))
 
             # Create and fit scaler on training data only
             scaler = RobustScaler()
