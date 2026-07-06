@@ -110,6 +110,7 @@ def test_xgboost_uses_balanced_dir_when_balance_enabled_and_scale_disabled(mock_
         "resampling_method": "SMOTE_TOMEK",
         "skipped": False,
         "dropped_non_numeric_cols": [],
+        "dropped_counterpart_col": "differenceInMinutes",
         "train_output_path": "/fake/train.parquet",
         "test_output_path": "/fake/test.parquet",
     }
