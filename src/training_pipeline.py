@@ -389,8 +389,24 @@ class TrainingPipeline:
         if state_machine.get("scale_weather_features", False):
             try:
                 print(f"    → scale_weather_features")
-                scaling_result = self.scale_weather_features(csv_files)
-                
+                _use_filtered_for_scale = (
+                    state_machine.get("filter_delay_outliers", False)
+                    and not state_machine.get("select_training_cols", False)
+                )
+                _scale_data_folder = (
+                    MERGED_BALANCED_OUTPUT_FOLDER
+                    if state_machine.get("balance_classes", False)
+                    else SPLIT_DATASET_OUTPUT_FOLDER
+                    if state_machine.get("split_dataset", False)
+                    else MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+                    if _use_filtered_for_scale
+                    else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+                )
+                scaling_result = self.scale_weather_features(
+                    csv_files,
+                    data_dir=os.path.join(self.project_root, _scale_data_folder),
+                )
+
                 if scaling_result and scaling_result.get("success", False):
                     result["steps_executed"].append("scale_weather_features")
                     result["file_info"]["processed_files"] = scaling_result.get("processed_files", 0)
@@ -2036,7 +2052,7 @@ class TrainingPipeline:
                 "processed_files": 0
             }
 
-    def scale_weather_features(self, csv_files=None):
+    def scale_weather_features(self, csv_files=None, data_dir=None):
         """
         Scale and normalize weather features using RobustScaler.
         
@@ -2070,7 +2086,10 @@ class TrainingPipeline:
             scaled_training_ready_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
             os.makedirs(scaled_training_ready_dir, exist_ok=True)
             
-            merged_selected_training_ready_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+            merged_selected_training_ready_dir = (
+                data_dir if data_dir is not None
+                else os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+            )
             train_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_train.parquet")
             test_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_test.parquet")
             
@@ -2202,7 +2221,7 @@ class TrainingPipeline:
                     
                     f.write(f"Scaling timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"Scaler type: None (No weather features found)\n")
-                    f.write(f"Source directory: {MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER}\n")
+                    f.write(f"Source directory: {merged_selected_training_ready_dir}\n")
                     f.write(f"Output directory: {MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER}\n\n")
                     
                     f.write(f"Files processed:\n")
@@ -2304,7 +2323,7 @@ class TrainingPipeline:
                 
                 f.write(f"Scaling timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Scaler type: RobustScaler\n")
-                f.write(f"Source directory: {MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER}\n")
+                f.write(f"Source directory: {merged_selected_training_ready_dir}\n")
                 f.write(f"Output directory: {MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER}\n\n")
                 
                 f.write(f"Files processed:\n")
