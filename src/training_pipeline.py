@@ -1109,7 +1109,15 @@ class TrainingPipeline:
         df = pd.read_parquet(train_path)
         rows_before = len(df)
 
-        target_col = "differenceInMinutes"
+        target_col = DEFAULT_TARGET_FEATURE
+        is_classification = target_col in CLASSIFICATION_PROBLEM
+        is_regression = target_col in REGRESSION_PROBLEM
+
+        if not (is_classification or is_regression):
+            msg = f"Target feature '{target_col}' not recognized as classification or regression problem"
+            print(f"    balance_classes: {msg}")
+            return {"success": False, "error": msg}
+
         output_folder = os.path.join(self.project_root, MERGED_BALANCED_OUTPUT_FOLDER)
         os.makedirs(output_folder, exist_ok=True)
 
@@ -1138,7 +1146,11 @@ class TrainingPipeline:
                 "test_output_path": test_output_path,
             }
 
-        y = (df[target_col] > TRAIN_DELAY_MINUTES).astype(int)
+        if is_classification:
+            y = df[target_col].astype(int)
+        else:
+            y = (df[target_col] > TRAIN_DELAY_MINUTES).astype(int)
+
         class_counts = y.value_counts()
         total = len(y)
         minority_share = int(class_counts.min()) / total * 100

@@ -24,6 +24,7 @@ import pandas as pd
 import os
 
 from src.training_pipeline import TrainingPipeline
+from config.const_preprocessing import TRAIN_DELAY_MINUTES
 
 
 def _make_pipeline(tmp_path):
@@ -44,7 +45,7 @@ def _make_pipeline(tmp_path):
 
 
 def _make_imbalanced_df(n_punctual=300, n_delayed=100, seed=42):
-    """3:1 imbalanced DataFrame with differenceInMinutes and two numeric features."""
+    """3:1 imbalanced DataFrame with differenceInMinutes, trainDelayed, and two numeric features."""
     rng = np.random.default_rng(seed)
     punctual = rng.uniform(-4, 5, n_punctual)
     delayed = rng.uniform(6, 60, n_delayed)
@@ -53,6 +54,7 @@ def _make_imbalanced_df(n_punctual=300, n_delayed=100, seed=42):
     feat_b = rng.normal(5, 2, n_punctual + n_delayed)
     return pd.DataFrame({
         "differenceInMinutes": diff,
+        "trainDelayed": diff > TRAIN_DELAY_MINUTES,
         "feature_a": feat_a,
         "feature_b": feat_b,
     })
@@ -64,6 +66,7 @@ def _make_balanced_df(n=200, seed=42):
     diff = np.concatenate([rng.uniform(-4, 5, n // 2), rng.uniform(6, 60, n // 2)])
     return pd.DataFrame({
         "differenceInMinutes": diff,
+        "trainDelayed": diff > TRAIN_DELAY_MINUTES,
         "feature_a": rng.normal(0, 1, n),
     })
 
@@ -81,8 +84,10 @@ def _write_train_test(tmp_path, train_df, test_df, subdir="split"):
 
 def _make_test_df(n=50, seed=99):
     rng = np.random.default_rng(seed)
+    diff = rng.uniform(-4, 60, n)
     return pd.DataFrame({
-        "differenceInMinutes": rng.uniform(-4, 60, n),
+        "differenceInMinutes": diff,
+        "trainDelayed": diff > TRAIN_DELAY_MINUTES,
         "feature_a": rng.normal(0, 1, n),
     })
 
@@ -103,6 +108,18 @@ def test_missing_train_file_returns_failure(tmp_path):
     assert "error" in result
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "not_a_real_target")
+def test_misconfigured_target_returns_failure(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_imbalanced_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+    result = pipeline.balance_classes(data_dir=data_dir)
+    assert result["success"] is False
+    assert "not recognized" in result["error"]
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_skips_when_already_balanced(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_balanced_df(n=200)
@@ -114,6 +131,7 @@ def test_skips_when_already_balanced(tmp_path):
     assert result["resampling_method"] == "NONE"
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_smote_tomek_increases_minority_count(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
@@ -126,6 +144,7 @@ def test_smote_tomek_increases_minority_count(tmp_path):
     assert result["minority_share_after"] > result["minority_share_before"]
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_rows_before_and_after_in_result(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df()
@@ -136,6 +155,7 @@ def test_rows_before_and_after_in_result(tmp_path):
     assert result["rows_after"] > 0
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_non_numeric_columns_are_dropped(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df()
@@ -147,6 +167,7 @@ def test_non_numeric_columns_are_dropped(tmp_path):
     assert "causes" in result["dropped_non_numeric_cols"]
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_nan_rows_dropped_before_resampling(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df()
@@ -158,6 +179,7 @@ def test_nan_rows_dropped_before_resampling(tmp_path):
     assert result["skipped"] is False
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_test_file_is_copied_to_output(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df()
@@ -169,6 +191,7 @@ def test_test_file_is_copied_to_output(tmp_path):
     assert len(test_out) == len(test_df)
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_result_contains_required_keys(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df()
@@ -182,6 +205,7 @@ def test_result_contains_required_keys(tmp_path):
         assert key in result, f"Missing key: {key}"
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_result_has_no_data_key(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df()
