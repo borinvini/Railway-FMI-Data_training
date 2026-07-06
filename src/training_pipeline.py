@@ -71,6 +71,7 @@ from config.const_preprocessing import (
     DATA_FILE_PREFIX_FOR_TRAINING,
     DEFAULT_TARGET_FEATURE,
     ALL_WEATHER_FEATURES,
+    SKEWED_WEATHER_FEATURES,
     TRAINING_READY_OUTPUT_FOLDER,
     USE_SIN_COS_APPROACH,
     VALID_TARGET_FEATURES,
@@ -2168,7 +2169,15 @@ class TrainingPipeline:
             window_patterns = ('(12h', '(24h', '(72h')
             available_window_features = [col for col in train_df.columns if any(p in col for p in window_patterns)]
             available_weather_features = available_weather_features + available_window_features
-            
+
+            # Zero-inflated/right-skewed features (and their rolling-window derivatives,
+            # e.g. "Precipitation amount (24h cumulative)") get a log1p pre-transform
+            # before RobustScaler so the heavy right tail doesn't dominate the scale.
+            skewed_cols = [
+                col for col in available_weather_features
+                if any(col == base or col.startswith(base) for base in SKEWED_WEATHER_FEATURES)
+            ]
+
             # NEW LOGIC: Handle case when no weather features are found
             if not available_weather_features:
                 print(f"    scale_weather_features: No weather features found in {train_filename}")
@@ -2258,20 +2267,33 @@ class TrainingPipeline:
             print(f"    scale_weather_features: Found {len(available_weather_features)} weather features to scale")
             print(f"      Weather features: {available_weather_features}")
             
+            # Extract weather features for scaling
+            train_weather_features = train_df[available_weather_features].copy()
+            test_weather_features = test_df[available_weather_features].copy()
+
+            # Zero-inflated/right-skewed features get a log1p pre-transform (deterministic,
+            # not fit on data) before RobustScaler
+            if skewed_cols:
+                print(f"    scale_weather_features: Applying log1p to {len(skewed_cols)} skewed feature(s): {skewed_cols}")
+                train_weather_features[skewed_cols] = np.log1p(train_weather_features[skewed_cols])
+                test_weather_features[skewed_cols] = np.log1p(test_weather_features[skewed_cols])
+
             # Create and fit scaler on training data only
             scaler = RobustScaler()
-
-            # Extract weather features for scaling
-            train_weather_features = train_df[available_weather_features]
-            test_weather_features = test_df[available_weather_features]
-
-            # Fit scaler on training data only
             scaler.fit(train_weather_features)
 
-            # Save the fitted scaler so it can be applied to new data at inference time
+            # Save the fitted scaler (plus which columns need log1p) so it can be
+            # applied to new data at inference time
             scaler_filename = "weather_scaler.joblib"
             scaler_path = os.path.join(scaled_training_ready_dir, scaler_filename)
-            joblib.dump(scaler, scaler_path)
+            joblib.dump(
+                {
+                    "scaler": scaler,
+                    "weather_features": available_weather_features,
+                    "skewed_features": skewed_cols,
+                },
+                scaler_path,
+            )
             print(f"    scale_weather_features: ✓ Scaler saved to: {scaler_filename}")
 
             # Transform both train and test sets using training parameters
@@ -2310,6 +2332,7 @@ class TrainingPipeline:
                 "train_rows": len(train_df),
                 "test_rows": len(test_df),
                 "weather_features_scaled": available_weather_features,
+                "skewed_features_log1p": skewed_cols,
                 "scaling_method": "RobustScaler"
             }
             
@@ -2337,7 +2360,15 @@ class TrainingPipeline:
                 for feature in ALL_WEATHER_FEATURES:
                     status = "✓ Scaled" if feature in available_weather_features else "✗ Not found"
                     f.write(f"  {feature}: {status}\n")
-            
+
+                f.write("\nSkewed features (log1p applied before RobustScaler):\n")
+                f.write("-" * 25 + "\n")
+                if skewed_cols:
+                    for feature in skewed_cols:
+                        f.write(f"  {feature}\n")
+                else:
+                    f.write("  None\n")
+
             print(f"    scale_weather_features: Scaling summary saved to: {summary_filename}")
             
             # Return successful result
@@ -2347,6 +2378,7 @@ class TrainingPipeline:
                 "train_rows": len(train_df),
                 "test_rows": len(test_df),
                 "weather_features_scaled": available_weather_features,
+                "skewed_features_log1p": skewed_cols,
                 "scaler_path": scaler_path,
                 "scaling_summary": scaling_result,
                 "output_directory": scaled_training_ready_dir,

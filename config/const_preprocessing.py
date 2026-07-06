@@ -145,6 +145,12 @@ ALL_WEATHER_FEATURES = [
     'Cloud amount'
 ]
 
+SKEWED_WEATHER_FEATURES = [
+    'Precipitation amount',
+    'Precipitation intensity',
+    'Snow depth',
+]
+
 IMPORTANT_WEATHER_FEATURES = [
     'Air temperature', 
     'Wind speed', 
