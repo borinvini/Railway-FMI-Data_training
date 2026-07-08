@@ -13,6 +13,7 @@ TRAINING_STATE_MACHINE = {
     "target_feature_analysis": False,
     "train_xgboost_with_randomized_search_cv": True,
     "train_lightgbm_with_randomized_search_cv": True,
+    "train_random_forest_with_randomized_search_cv": True,
 }
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merge_data_files"
@@ -95,6 +96,19 @@ RANDOM_FOREST_PARAM_DISTRIBUTIONS = {
     'criterion': ['gini', 'entropy'],
     'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'class_weight': ['balanced', {False:1, True:5}, {False:1, True:10}, None],
+    'ccp_alpha': [0.0, 0.001, 0.01, 0.05]
+}
+
+# Parameter distributions for Random Forest regression (no class_weight; regression-valid criterion)
+RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION = {
+    'n_estimators': randint(50, 300),
+    'max_depth': randint(3, 20),
+    'min_samples_split': randint(2, 20),
+    'min_samples_leaf': randint(1, 15),
+    'max_features': ['sqrt', 'log2', 0.3, 0.5, 0.7, None],
+    'bootstrap': [True, False],
+    'criterion': ['squared_error', 'absolute_error', 'friedman_mse'],
+    'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'ccp_alpha': [0.0, 0.001, 0.01, 0.05]
 }
 
