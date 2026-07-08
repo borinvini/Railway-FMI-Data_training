@@ -95,3 +95,18 @@ def test_output_filenames_use_logistic_regression_prefix():
     assert 'logistic_regression_iteration_analysis_' in src
     assert 'logistic_regression_feature_importance_' in src
     assert 'logistic_regression_best_model_' in src
+
+
+def test_dispatcher_routes_logistic_regression_after_random_forest():
+    dispatcher_src = inspect.getsource(TrainingPipeline.execute_training_pipeline_steps)
+    random_forest_idx = dispatcher_src.index('train_random_forest_with_randomized_search_cv')
+    logistic_regression_idx = dispatcher_src.index(
+        'train_logistic_regression_with_randomized_search_cv', random_forest_idx
+    )
+    assert logistic_regression_idx > random_forest_idx
+
+
+def test_dispatcher_populates_logistic_regression_file_info_keys():
+    dispatcher_src = inspect.getsource(TrainingPipeline.execute_training_pipeline_steps)
+    assert 'logistic_regression_models_trained' in dispatcher_src
+    assert 'logistic_regression_problem_type' in dispatcher_src
