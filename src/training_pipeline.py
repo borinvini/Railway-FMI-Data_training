@@ -555,6 +555,60 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ train_lightgbm_with_randomized_search_cv (disabled)")
 
+        if state_machine.get("train_random_forest_with_randomized_search_cv", False):
+            try:
+                print(f"    → train_random_forest_with_randomized_search_cv")
+                _use_scaled = state_machine.get("scale_weather_features", False)
+                _use_filtered = (
+                    state_machine.get("filter_delay_outliers", False)
+                    and not state_machine.get("select_training_cols", False)
+                )
+                _data_folder = (
+                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    if _use_scaled
+                    else MERGED_BALANCED_OUTPUT_FOLDER
+                    if state_machine.get("balance_classes", False)
+                    else SPLIT_DATASET_OUTPUT_FOLDER
+                    if state_machine.get("split_dataset", False)
+                    else MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+                    if _use_filtered
+                    else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+                )
+                random_forest_result = self.train_random_forest_with_randomized_search_cv(
+                    data_dir=os.path.join(self.project_root, _data_folder)
+                )
+
+                if random_forest_result and random_forest_result.get("success", False):
+                    result["steps_executed"].append("train_random_forest_with_randomized_search_cv")
+                    result["file_info"]["random_forest_models_trained"] = random_forest_result.get("models_trained", 0)
+                    result["file_info"]["random_forest_problem_type"] = random_forest_result.get("problem_type", "unknown")
+                    print(f"      ✓ Successfully trained Random Forest models")
+                    print(f"      ✓ Problem type: {random_forest_result.get('problem_type', 'N/A')}")
+                    print(f"      ✓ Models trained: {random_forest_result.get('models_trained', 0)}")
+                    print(f"      ✓ Target feature: {random_forest_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ Average CV Score: {random_forest_result.get('cv_score', 0):.4f}")
+
+                    if random_forest_result.get('problem_type') == 'classification':
+                        print(f"      ✓ Average Test F1: {random_forest_result.get('test_f1', 0):.4f}")
+                    else:
+                        print(f"      ✓ Average Test RMSE: {random_forest_result.get('test_rmse', 0):.4f}")
+                        print(f"      ✓ Average Test R²: {random_forest_result.get('test_r2', 0):.4f}")
+
+                    print(f"      ✓ Results saved to: {random_forest_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = random_forest_result.get("error", "train_random_forest_with_randomized_search_cv returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+
+            except Exception as e:
+                result["errors"].append(f"train_random_forest_with_randomized_search_cv failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ train_random_forest_with_randomized_search_cv (disabled)")
+
         return result
 
     def filter_delay_outliers(self, data=None):

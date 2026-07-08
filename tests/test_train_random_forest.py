@@ -84,3 +84,18 @@ def test_output_filenames_use_random_forest_prefix():
     assert 'random_forest_iteration_analysis_' in src
     assert 'random_forest_feature_importance_' in src
     assert 'random_forest_best_model_' in src
+
+
+def test_dispatcher_routes_random_forest_after_lightgbm():
+    dispatcher_src = inspect.getsource(TrainingPipeline.execute_training_pipeline_steps)
+    lightgbm_idx = dispatcher_src.index('train_lightgbm_with_randomized_search_cv')
+    random_forest_idx = dispatcher_src.index(
+        'train_random_forest_with_randomized_search_cv', lightgbm_idx
+    )
+    assert random_forest_idx > lightgbm_idx
+
+
+def test_dispatcher_populates_random_forest_file_info_keys():
+    dispatcher_src = inspect.getsource(TrainingPipeline.execute_training_pipeline_steps)
+    assert 'random_forest_models_trained' in dispatcher_src
+    assert 'random_forest_problem_type' in dispatcher_src
