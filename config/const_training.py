@@ -14,6 +14,7 @@ TRAINING_STATE_MACHINE = {
     "train_xgboost_with_randomized_search_cv": True,
     "train_lightgbm_with_randomized_search_cv": True,
     "train_random_forest_with_randomized_search_cv": True,
+    "train_logistic_regression_with_randomized_search_cv": True,
 }
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merge_data_files"
@@ -110,6 +111,28 @@ RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION = {
     'criterion': ['squared_error', 'absolute_error', 'friedman_mse'],
     'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'ccp_alpha': [0.0, 0.001, 0.01, 0.05]
+}
+
+# Parameter distributions for Logistic Regression (classification branch).
+# solver='saga' is fixed in the constructor (NOT searched) because it is the only
+# solver supporting l1 / l2 / elasticnet penalties — this guarantees every sampled
+# penalty is valid, so no invalid solver/penalty pair can ever be drawn.
+# l1_ratio is only consulted by saga when penalty=='elasticnet'; it is silently
+# ignored (no error) for l1/l2, so it is safe to search unconditionally.
+LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS = {
+    'penalty': ['l1', 'l2', 'elasticnet'],
+    'C': [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],   # inverse reg strength, log-spaced
+    'l1_ratio': [0.0, 0.25, 0.5, 0.75, 1.0],     # used only when penalty=='elasticnet'
+    'class_weight': ['balanced', {False: 1, True: 5}, {False: 1, True: 10}, None],
+}
+
+# Parameter distributions for ElasticNet (regression branch — the "regularized
+# regression" pairing implied by REGULARIZED_REGRESSION_OUTPUT_FOLDER).
+# l1_ratio lower bound kept at 0.1 (not 0.0): sklearn ElasticNet warns and is
+# numerically unstable at l1_ratio==0 (pure Ridge) — use Ridge for that, not here.
+ELASTICNET_PARAM_DISTRIBUTIONS = {
+    'alpha': [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0],  # reg strength, log-spaced
+    'l1_ratio': [0.1, 0.25, 0.5, 0.75, 0.9, 1.0],    # 0=Ridge .. 1=Lasso
 }
 
 # Parameter distributions for XGBoost with RandomizedSearchCV
