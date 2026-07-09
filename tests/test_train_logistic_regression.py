@@ -9,13 +9,22 @@ from src.training_pipeline import TrainingPipeline
 
 
 def test_regularized_regression_output_folder_constant_exists():
-    assert REGULARIZED_REGRESSION_OUTPUT_FOLDER == "data/output/regularized_regression"
+    assert REGULARIZED_REGRESSION_OUTPUT_FOLDER == "data/output/1003-regularized_regression"
 
 
 def test_logistic_regression_param_distributions_constant_exists():
-    expected_keys = {'penalty', 'C', 'l1_ratio', 'class_weight'}
-    assert set(LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS.keys()) == expected_keys
-    assert set(LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS['penalty']) == {'l1', 'l2', 'elasticnet'}
+    # A list of two dicts (not one flat dict) so l1_ratio is only ever sampled
+    # alongside penalty='elasticnet' — avoids sklearn's UserWarning for l1/l2.
+    assert isinstance(LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS, list)
+    assert len(LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS) == 2
+
+    l1_l2_dict, elasticnet_dict = LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS
+    assert set(l1_l2_dict.keys()) == {'penalty', 'C', 'class_weight'}
+    assert set(l1_l2_dict['penalty']) == {'l1', 'l2'}
+    assert 'l1_ratio' not in l1_l2_dict
+
+    assert set(elasticnet_dict.keys()) == {'penalty', 'C', 'l1_ratio', 'class_weight'}
+    assert elasticnet_dict['penalty'] == ['elasticnet']
 
 
 def test_elasticnet_param_distributions_constant_exists():

@@ -58,13 +58,11 @@ from config.const_training import (
     MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER,
     FILTER_LOWER_QUANTILE,
     FILTER_UPPER_QUANTILE,
-    RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     RANDOM_FOREST_PARAM_DISTRIBUTIONS,
     RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION,
     LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS,
     ELASTICNET_PARAM_DISTRIBUTIONS,
-    IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
@@ -101,9 +99,7 @@ class TrainingPipeline:
         self.project_root = os.path.dirname(self.script_dir)
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
-        self.randomized_search_dir = os.path.join(self.project_root, RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER)
         self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
-        self.important_features_randomized_search_dir = os.path.join(self.project_root, IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.xgboost_rs_dir = os.path.join(self.project_root, XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)
         self.regularized_regression_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
 
@@ -2275,8 +2271,10 @@ class TrainingPipeline:
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
+                    test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
 
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}")
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
 
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -2556,7 +2554,9 @@ class TrainingPipeline:
             print(f"        Problem Type: {problem_type}")
             print(f"        Best Iteration Count: {best_iteration}")
             print(f"        Best CV Score: {best_cv_score:.4f}")
-            print(f"        RMSE Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+            print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+            if is_classification:
+                print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
             if not is_classification:
                 print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                 print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
@@ -2812,8 +2812,10 @@ class TrainingPipeline:
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
+                    test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
 
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}")
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
 
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -3071,7 +3073,9 @@ class TrainingPipeline:
                 print(f"        Problem Type: {problem_type}")
                 print(f"        Best Iteration Count: {best_iteration}")
                 print(f"        Best CV Score: {best_cv_score:.4f}")
-                print(f"        RMSE Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+                print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+                if is_classification:
+                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
                 if not is_classification:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")

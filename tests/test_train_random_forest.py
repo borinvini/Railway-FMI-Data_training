@@ -9,7 +9,7 @@ from src.training_pipeline import TrainingPipeline
 
 
 def test_random_forest_output_folder_constant_exists():
-    assert RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER == "data/output/random_forest_randomized_search"
+    assert RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER == "data/output/1002-random_forest_randomized_search"
 
 
 def test_random_forest_param_distributions_constant_exists():

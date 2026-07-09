@@ -28,21 +28,16 @@ SCHEMA_MISMATCH_STRATEGY = ''  # '' = ask interactively; 'intersect' = auto-drop
 
 # Asymmetric quantile thresholds for delay outlier removal
 # Lower tail: conservative cut (few implausibly-early arrivals)
+
 # Upper tail: more aggressive cut (heavy right tail has likely data errors)
 FILTER_LOWER_QUANTILE = 0.005
 FILTER_UPPER_QUANTILE = 0.995
 
-RANDOMIZED_SEARCH_CV_OUTPUT_FOLDER = "data/output/decision_tree_randomized_search_cv"
-RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/random_forest_randomized_search"
-IMPORTANT_FEATURES_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/decision_tree_important_features_randomized_search"
+
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_search"
 LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1001-lightgbm_randomized_search"
-REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/regularized_regression"
-DECISION_TREE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_threshold_optimized"
-BORDERLINE_SMOTE_OUTPUT_FOLDER = "data/output/borderline_smote_synthetic"
-DECISION_TREE_BORDERLINE_SMOTE_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/decision_tree_borderline_smote_threshold_optimized"
-XGBOOST_THRESHOLD_OPTIMIZED_OUTPUT_FOLDER = "data/output/xgboost_threshold_optimized"
-XGBOOST_SELECTED_FEATURES_OUTPUT_FOLDER = "data/output/xgboost_selected_features"
+RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1002-random_forest_randomized_search"
+REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/1003-regularized_regression"
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
     "threshold_step": 0.01,  # Step size for threshold scanning
@@ -80,7 +75,7 @@ DELAY_THRESHOLD_MINUTES = 5  # delay > 5 min = late (1), else on time (0)
 
 # Parameter distributions for RandomizedSearchCV
 DECISION_TREE_PARAM_DISTRIBUTIONS = {
-    'max_depth': randint(5, 12),  
+    'max_depth': randint(5, 12),
     'min_samples_split': randint(10, 30),
     'ccp_alpha': [0.0, 0.001, 0.01],
     'class_weight': ['balanced', {False:1, True:5}, {False:1, True:10}]
@@ -117,14 +112,23 @@ RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION = {
 # solver='saga' is fixed in the constructor (NOT searched) because it is the only
 # solver supporting l1 / l2 / elasticnet penalties — this guarantees every sampled
 # penalty is valid, so no invalid solver/penalty pair can ever be drawn.
-# l1_ratio is only consulted by saga when penalty=='elasticnet'; it is silently
-# ignored (no error) for l1/l2, so it is safe to search unconditionally.
-LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS = {
-    'penalty': ['l1', 'l2', 'elasticnet'],
-    'C': [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],   # inverse reg strength, log-spaced
-    'l1_ratio': [0.0, 0.25, 0.5, 0.75, 1.0],     # used only when penalty=='elasticnet'
-    'class_weight': ['balanced', {False: 1, True: 5}, {False: 1, True: 10}, None],
-}
+# A list of two dicts (not one flat dict) so l1_ratio is only ever sampled alongside
+# penalty='elasticnet' — sklearn's LogisticRegression emits a UserWarning (not an
+# error) whenever l1_ratio is set with penalty='l1'/'l2', and RandomizedSearchCV
+# supports a list of param-distribution dicts, sampling one dict per draw.
+LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS = [
+    {
+        'penalty': ['l1', 'l2'],
+        'C': [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],   # inverse reg strength, log-spaced
+        'class_weight': ['balanced', {False: 1, True: 5}, {False: 1, True: 10}, None],
+    },
+    {
+        'penalty': ['elasticnet'],
+        'C': [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],   # inverse reg strength, log-spaced
+        'l1_ratio': [0.0, 0.25, 0.5, 0.75, 1.0],
+        'class_weight': ['balanced', {False: 1, True: 5}, {False: 1, True: 10}, None],
+    },
+]
 
 # Parameter distributions for ElasticNet (regression branch — the "regularized
 # regression" pairing implied by REGULARIZED_REGRESSION_OUTPUT_FOLDER).
@@ -159,7 +163,7 @@ LIGHTGBM_PARAM_DISTRIBUTIONS = {
 # ===================================================================================================================
 # CHOOSING THE CLASSIFICATOR
 # ===================================================================================================================
-# 
+#
 # Scoring Option       | Best For                       | Requires           | Description
 # ---------------------|--------------------------------|--------------------|---------------------------------
 # 'accuracy'           | Balanced datasets              | predict()          | Standard accuracy (correct/total)
@@ -171,18 +175,18 @@ LIGHTGBM_PARAM_DISTRIBUTIONS = {
 #
 # RECOMMENDATIONS FOR TRAIN DELAY PREDICTION:
 # - If imbalanced binary: Use 'roc_auc' or 'balanced_accuracy'
-# - If balanced binary: Use 'accuracy' or 'f1' 
+# - If balanced binary: Use 'accuracy' or 'f1'
 # - If very rare events: Use 'average_precision'
 # ===================================================================================================================
 SCORE_METRIC = 'f1'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 50
+RANDOM_SEARCH_ITERATIONS = 10
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration
-RESAMPLING_METHOD = "SMOTE_TOMEK"  
+RESAMPLING_METHOD = "SMOTE_TOMEK"
 # Options: "SMOTE_TOMEK", "EDITED_NEAREST_NEIGHBORS", "NONE"
 # "SMOTE_TOMEK": Apply SMOTE-Tomek for oversampling + cleaning
 # "EDITED_NEAREST_NEIGHBORS": Apply EditedNearestNeighbors for undersampling
@@ -203,17 +207,17 @@ SMOTE_RANDOM_STATE = 42     # For reproducible resampling
 def stable_weighted_mse(y_pred, dtrain):
     """
     Custom XGBoost objective function for regression with weighted MSE.
-    
+
     Applies higher weights to samples with larger target values, making the model
     more sensitive to larger delays while maintaining numerical stability.
-    
+
     Parameters:
     -----------
     y_pred : array-like
         Predicted values from the model
     dtrain : xgboost.DMatrix
         Training data matrix containing true labels
-        
+
     Returns:
     --------
     tuple
