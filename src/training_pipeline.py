@@ -2161,7 +2161,17 @@ class TrainingPipeline:
             png_path = os.path.join(output_dir, "shap_correlation_heatmap.png")
             pdf_path = os.path.join(output_dir, "shap_correlation_heatmap.pdf")
             fig.savefig(png_path, dpi=300, bbox_inches='tight')
-            fig.savefig(pdf_path, bbox_inches='tight')
+            # matplotlib's PDF backend triggers a Pillow API deprecation warning
+            # ('mode' parameter is deprecated) that matplotlib hasn't yet updated for.
+            # Suppress this known noisy warning without silencing legitimate ones.
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"'mode' parameter is deprecated",
+                    category=DeprecationWarning,
+                    module=r"matplotlib\.backends\.backend_pdf",
+                )
+                fig.savefig(pdf_path, bbox_inches='tight')
             plt.close(fig)
 
             print(f"    shap_correlation_analysis: Saved heatmap to {png_path} and {pdf_path}")
