@@ -8,6 +8,7 @@ TRAINING_STATE_MACHINE = {
     "split_dataset": True,
     "balance_classes": True,
     "scale_weather_features": True,
+    "shap_correlation_analysis": True,
     "train_xgboost_with_randomized_search_cv": True,
     "train_lightgbm_with_randomized_search_cv": False,
     "train_random_forest_with_randomized_search_cv": False,
@@ -21,6 +22,7 @@ MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER = "data/output/502-select_training_
 SPLIT_DATASET_OUTPUT_FOLDER = "data/output/503-split_dataset"
 MERGED_BALANCED_OUTPUT_FOLDER = "data/output/504-balance_classes"
 MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/505-scale_weather_features"
+SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER = "data/output/700-shap_correlation_analysis"
 SELECTED_COLUMNS = []  # Empty = interactive prompt; populate to skip prompt
 SCHEMA_MISMATCH_STRATEGY = ''  # '' = ask interactively; 'intersect' = auto-drop; 'fail' = auto-fail
 
