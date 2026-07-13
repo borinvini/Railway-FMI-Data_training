@@ -181,3 +181,6 @@ Desktop.ini
 
 # Superpowers skill plans/specs
 docs/superpowers/
+
+# Git worktrees for isolated feature work
+.worktrees/
