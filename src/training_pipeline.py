@@ -358,6 +358,51 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ scale_weather_features (disabled)")
 
+        if state_machine.get("shap_correlation_analysis", False):
+            try:
+                print(f"    → shap_correlation_analysis")
+                _use_scaled_for_shap = state_machine.get("scale_weather_features", False)
+                _use_filtered_for_shap = (
+                    state_machine.get("filter_delay_outliers", False)
+                    and not state_machine.get("select_training_cols", False)
+                )
+                _shap_data_folder = (
+                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    if _use_scaled_for_shap
+                    else MERGED_BALANCED_OUTPUT_FOLDER
+                    if state_machine.get("balance_classes", False)
+                    else SPLIT_DATASET_OUTPUT_FOLDER
+                    if state_machine.get("split_dataset", False)
+                    else MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+                    if _use_filtered_for_shap
+                    else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+                )
+                shap_result = self.shap_correlation_analysis(
+                    data_dir=os.path.join(self.project_root, _shap_data_folder)
+                )
+
+                if shap_result and shap_result.get("success", False):
+                    result["steps_executed"].append("shap_correlation_analysis")
+                    print(f"      ✓ Successfully computed SHAP correlation analysis")
+                    print(f"      ✓ Features analyzed: {shap_result.get('num_features', 0)}")
+                    most_pair = shap_result.get('most_correlated_pair')
+                    if most_pair:
+                        print(f"      ✓ Most correlated pair: {most_pair[0]} <-> {most_pair[1]} (corr={most_pair[2]:.3f})")
+                    print(f"      ✓ Results saved to: {shap_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = shap_result.get("error", "shap_correlation_analysis returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+
+            except Exception as e:
+                result["errors"].append(f"shap_correlation_analysis failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ shap_correlation_analysis (disabled)")
+
         if state_machine.get("train_xgboost_with_randomized_search_cv", False):
             try:
                 print(f"    → train_xgboost_with_randomized_search_cv")
