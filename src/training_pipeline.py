@@ -666,6 +666,60 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ train_logistic_regression_with_randomized_search_cv (disabled)")
 
+        if state_machine.get("train_naive_bayes_with_randomized_search_cv", False):
+            try:
+                print(f"    → train_naive_bayes_with_randomized_search_cv")
+                _use_scaled = state_machine.get("scale_weather_features", False)
+                _use_filtered = (
+                    state_machine.get("filter_delay_outliers", False)
+                    and not state_machine.get("select_training_cols", False)
+                )
+                _data_folder = (
+                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    if _use_scaled
+                    else MERGED_BALANCED_OUTPUT_FOLDER
+                    if state_machine.get("balance_classes", False)
+                    else SPLIT_DATASET_OUTPUT_FOLDER
+                    if state_machine.get("split_dataset", False)
+                    else MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+                    if _use_filtered
+                    else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+                )
+                naive_bayes_result = self.train_naive_bayes_with_randomized_search_cv(
+                    data_dir=os.path.join(self.project_root, _data_folder)
+                )
+
+                if naive_bayes_result and naive_bayes_result.get("success", False):
+                    result["steps_executed"].append("train_naive_bayes_with_randomized_search_cv")
+                    result["file_info"]["naive_bayes_models_trained"] = naive_bayes_result.get("models_trained", 0)
+                    result["file_info"]["naive_bayes_problem_type"] = naive_bayes_result.get("problem_type", "unknown")
+                    print(f"      ✓ Successfully trained Naive Bayes models")
+                    print(f"      ✓ Problem type: {naive_bayes_result.get('problem_type', 'N/A')}")
+                    print(f"      ✓ Models trained: {naive_bayes_result.get('models_trained', 0)}")
+                    print(f"      ✓ Target feature: {naive_bayes_result.get('target_feature', 'N/A')}")
+                    print(f"      ✓ Average CV Score: {naive_bayes_result.get('cv_score', 0):.4f}")
+
+                    if naive_bayes_result.get('problem_type') == 'classification':
+                        print(f"      ✓ Average Test F1: {naive_bayes_result.get('test_f1', 0):.4f}")
+                    else:
+                        print(f"      ✓ Average Test RMSE: {naive_bayes_result.get('test_rmse', 0):.4f}")
+                        print(f"      ✓ Average Test R²: {naive_bayes_result.get('test_r2', 0):.4f}")
+
+                    print(f"      ✓ Results saved to: {naive_bayes_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = naive_bayes_result.get("error", "train_naive_bayes_with_randomized_search_cv returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+
+            except Exception as e:
+                result["errors"].append(f"train_naive_bayes_with_randomized_search_cv failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ train_naive_bayes_with_randomized_search_cv (disabled)")
+
         return result
 
     def filter_delay_outliers(self, data=None):

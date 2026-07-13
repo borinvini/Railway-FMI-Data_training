@@ -86,3 +86,18 @@ def test_output_filenames_use_naive_bayes_prefix():
     assert 'naive_bayes_iteration_analysis_' in src
     assert 'naive_bayes_feature_importance_' in src
     assert 'naive_bayes_best_model_' in src
+
+
+def test_dispatcher_routes_naive_bayes_after_logistic_regression():
+    dispatcher_src = inspect.getsource(TrainingPipeline.execute_training_pipeline_steps)
+    logistic_regression_idx = dispatcher_src.index('train_logistic_regression_with_randomized_search_cv')
+    naive_bayes_idx = dispatcher_src.index(
+        'train_naive_bayes_with_randomized_search_cv', logistic_regression_idx
+    )
+    assert naive_bayes_idx > logistic_regression_idx
+
+
+def test_dispatcher_populates_naive_bayes_file_info_keys():
+    dispatcher_src = inspect.getsource(TrainingPipeline.execute_training_pipeline_steps)
+    assert 'naive_bayes_models_trained' in dispatcher_src
+    assert 'naive_bayes_problem_type' in dispatcher_src
