@@ -44,9 +44,6 @@ def _make_state_machine(**overrides):
         "split_dataset": False,
         "balance_classes": False,
         "scale_weather_features": True,
-        "numeric_correlation_analysis": False,
-        "data_distribution_analysis": False,
-        "target_feature_analysis": False,
         "train_xgboost_with_randomized_search_cv": False,
     }
     sm.update(overrides)

@@ -44,9 +44,6 @@ def _make_state_machine(scale: bool, balance: bool) -> dict:
         "split_dataset": False,
         "balance_classes": balance,
         "scale_weather_features": scale,
-        "numeric_correlation_analysis": False,
-        "data_distribution_analysis": False,
-        "target_feature_analysis": False,
         "train_lightgbm_with_randomized_search_cv": True,
     }
 

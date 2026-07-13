@@ -397,9 +397,6 @@ def _base_state_machine(**overrides):
         "split_dataset": True,
         "balance_classes": True,
         "scale_weather_features": False,
-        "numeric_correlation_analysis": False,
-        "data_distribution_analysis": False,
-        "target_feature_analysis": False,
         "train_xgboost_with_randomized_search_cv": False,
     }
     sm.update(overrides)

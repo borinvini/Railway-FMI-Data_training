@@ -55,9 +55,6 @@ def _make_state_machine(scale: bool) -> dict:
         "select_training_cols": False,
         "split_dataset": False,
         "scale_weather_features": scale,
-        "numeric_correlation_analysis": False,
-        "data_distribution_analysis": False,
-        "target_feature_analysis": False,
         "train_xgboost_with_randomized_search_cv": True,
     }
 

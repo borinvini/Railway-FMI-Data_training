@@ -8,13 +8,10 @@ TRAINING_STATE_MACHINE = {
     "split_dataset": True,
     "balance_classes": True,
     "scale_weather_features": True,
-    "numeric_correlation_analysis": False,
-    "data_distribution_analysis": False,
-    "target_feature_analysis": False,
     "train_xgboost_with_randomized_search_cv": True,
-    "train_lightgbm_with_randomized_search_cv": True,
-    "train_random_forest_with_randomized_search_cv": True,
-    "train_logistic_regression_with_randomized_search_cv": True,
+    "train_lightgbm_with_randomized_search_cv": False,
+    "train_random_forest_with_randomized_search_cv": False,
+    "train_logistic_regression_with_randomized_search_cv": False,
     "train_naive_bayes_with_randomized_search_cv": True,
 }
 
