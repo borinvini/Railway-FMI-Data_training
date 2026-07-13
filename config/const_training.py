@@ -23,6 +23,8 @@ SPLIT_DATASET_OUTPUT_FOLDER = "data/output/503-split_dataset"
 MERGED_BALANCED_OUTPUT_FOLDER = "data/output/504-balance_classes"
 MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/505-scale_weather_features"
 SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER = "data/output/700-shap_correlation_analysis"
+SHAP_CORRELATION_TOP_N_PAIRS = 20     # Feature pairs shown in the top-correlated-pairs bar chart
+SHAP_CORRELATION_TOP_N_FEATURES = 15  # Features shown in the top-correlated-features sub-heatmap
 SELECTED_COLUMNS = []  # Empty = interactive prompt; populate to skip prompt
 SCHEMA_MISMATCH_STRATEGY = ''  # '' = ask interactively; 'intersect' = auto-drop; 'fail' = auto-fail
 

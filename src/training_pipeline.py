@@ -89,6 +89,8 @@ from config.const_training import (
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
     SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER,
+    SHAP_CORRELATION_TOP_N_PAIRS,
+    SHAP_CORRELATION_TOP_N_FEATURES,
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
     TEST_SIZE,
     RANDOM_STATE,
@@ -2079,6 +2081,26 @@ class TrainingPipeline:
                 "processed_files": 0
             }
 
+    def _save_figure_png_and_pdf(self, fig, png_path, pdf_path):
+        """
+        Save a matplotlib figure to both PNG and PDF, then close it.
+
+        matplotlib's PDF backend triggers a Pillow API deprecation warning
+        ('mode' parameter is deprecated) that matplotlib hasn't yet updated
+        for. Suppress this known noisy warning without silencing legitimate
+        ones.
+        """
+        fig.savefig(png_path, dpi=300, bbox_inches='tight')
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"'mode' parameter is deprecated",
+                category=DeprecationWarning,
+                module=r"matplotlib\.backends\.backend_pdf",
+            )
+            fig.savefig(pdf_path, bbox_inches='tight')
+        plt.close(fig)
+
     def shap_correlation_analysis(self, data_dir=None):
         """
         Diagnostic-only stage: fits a plain default XGBoost model, computes
@@ -2086,8 +2108,11 @@ class TrainingPipeline:
         of features' SHAP contributions correlate with each other.
 
         Nothing is dropped or modified based on the result — this stage only
-        reports which features carry redundant explanatory signal via a
-        heatmap (PNG + PDF) and a full correlation matrix CSV.
+        reports which features carry redundant explanatory signal via a full
+        correlation matrix CSV plus three chart pairs (PNG + PDF each): the
+        full feature x feature heatmap, a bar chart of the top correlated
+        feature pairs, and a smaller annotated sub-heatmap of the features
+        most involved in strong correlations.
         """
         try:
             print(f"    shap_correlation_analysis: Starting SHAP correlation analysis...")
@@ -2178,20 +2203,33 @@ class TrainingPipeline:
             corr_df.to_csv(csv_path)
             print(f"    shap_correlation_analysis: Saved correlation matrix to {csv_path}")
 
-            corr_no_diag = corr_df.copy()
-            np.fill_diagonal(corr_no_diag.values, np.nan)
-            abs_corr = corr_no_diag.abs()
+            num_features = len(feature_columns)
+
+            # Deduplicated, off-diagonal feature pairs ranked by |correlation|.
+            # Reused for both the console summary (most_correlated_pair) and
+            # the top-pairs bar chart, so the "most correlated" answer is
+            # always consistent between them.
+            feature_names_arr = np.array(feature_columns)
+            triu_i, triu_j = np.triu_indices(num_features, k=1)
+            pairs_df = pd.DataFrame({
+                "feature_1": feature_names_arr[triu_i],
+                "feature_2": feature_names_arr[triu_j],
+                "correlation": corr_df.values[triu_i, triu_j],
+            })
+            pairs_df = pairs_df.reindex(
+                pairs_df["correlation"].abs().sort_values(ascending=False, na_position="last").index
+            ).reset_index(drop=True)
+
             most_correlated_pair = None
-            stacked = abs_corr.stack()
-            if len(stacked) > 0:
-                max_idx = stacked.idxmax()
+            if len(pairs_df) > 0 and not pd.isna(pairs_df.loc[0, "correlation"]):
+                top_row = pairs_df.loc[0]
                 most_correlated_pair = (
-                    max_idx[0],
-                    max_idx[1],
-                    float(corr_df.loc[max_idx[0], max_idx[1]]),
+                    top_row["feature_1"],
+                    top_row["feature_2"],
+                    float(top_row["correlation"]),
                 )
 
-            num_features = len(feature_columns)
+            # --- Chart 1: full feature x feature heatmap ---
             fig_size = max(10, num_features * 0.15)
             fig, ax = plt.subplots(figsize=(fig_size, fig_size))
             im = ax.imshow(corr_df.values, cmap='coolwarm', vmin=-1, vmax=1)
@@ -2205,21 +2243,70 @@ class TrainingPipeline:
 
             png_path = os.path.join(output_dir, "shap_correlation_heatmap.png")
             pdf_path = os.path.join(output_dir, "shap_correlation_heatmap.pdf")
-            fig.savefig(png_path, dpi=300, bbox_inches='tight')
-            # matplotlib's PDF backend triggers a Pillow API deprecation warning
-            # ('mode' parameter is deprecated) that matplotlib hasn't yet updated for.
-            # Suppress this known noisy warning without silencing legitimate ones.
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"'mode' parameter is deprecated",
-                    category=DeprecationWarning,
-                    module=r"matplotlib\.backends\.backend_pdf",
-                )
-                fig.savefig(pdf_path, bbox_inches='tight')
-            plt.close(fig)
+            self._save_figure_png_and_pdf(fig, png_path, pdf_path)
+            print(f"    shap_correlation_analysis: Saved full heatmap to {png_path} and {pdf_path}")
 
-            print(f"    shap_correlation_analysis: Saved heatmap to {png_path} and {pdf_path}")
+            # --- Chart 2: top-N most correlated feature pairs (bar chart) ---
+            top_pairs_df = pairs_df.dropna(subset=["correlation"]).head(
+                min(SHAP_CORRELATION_TOP_N_PAIRS, len(pairs_df))
+            )
+            pair_labels = [
+                f"{row.feature_1} <-> {row.feature_2}" for row in top_pairs_df.itertuples()
+            ]
+            pair_values = top_pairs_df["correlation"].to_numpy()
+
+            fig2, ax2 = plt.subplots(figsize=(10, max(6, len(pair_labels) * 0.35)))
+            if len(pair_labels) > 0:
+                y_pos = np.arange(len(pair_labels))
+                bar_colors = plt.cm.coolwarm((pair_values + 1) / 2)
+                ax2.barh(y_pos, pair_values, color=bar_colors)
+                ax2.set_yticks(y_pos)
+                ax2.set_yticklabels(pair_labels, fontsize=8)
+                ax2.invert_yaxis()
+                ax2.axvline(0, color='black', linewidth=0.8)
+            ax2.set_xlim(-1, 1)
+            ax2.set_xlabel('SHAP value correlation')
+            ax2.set_title(f'Top {len(pair_labels)} Most Correlated Feature Pairs (by SHAP value)')
+            fig2.tight_layout()
+
+            top_pairs_png_path = os.path.join(output_dir, "shap_correlation_top_pairs.png")
+            top_pairs_pdf_path = os.path.join(output_dir, "shap_correlation_top_pairs.pdf")
+            self._save_figure_png_and_pdf(fig2, top_pairs_png_path, top_pairs_pdf_path)
+            print(f"    shap_correlation_analysis: Saved top-pairs chart to {top_pairs_png_path} and {top_pairs_pdf_path}")
+
+            # --- Chart 3: sub-heatmap of the features most involved in strong correlations ---
+            corr_no_diag = corr_df.copy()
+            np.fill_diagonal(corr_no_diag.values, np.nan)
+            max_abs_corr_per_feature = corr_no_diag.abs().max(axis=1)
+            top_k = min(SHAP_CORRELATION_TOP_N_FEATURES, num_features)
+            top_feature_names = max_abs_corr_per_feature.sort_values(
+                ascending=False, na_position="last"
+            ).head(top_k).index.tolist()
+            sub_corr_df = corr_df.loc[top_feature_names, top_feature_names]
+
+            fig3, ax3 = plt.subplots(figsize=(max(8, top_k * 0.6), max(8, top_k * 0.6)))
+            im3 = ax3.imshow(sub_corr_df.values, cmap='coolwarm', vmin=-1, vmax=1)
+            ax3.set_xticks(range(top_k))
+            ax3.set_xticklabels(top_feature_names, rotation=90, fontsize=8)
+            ax3.set_yticks(range(top_k))
+            ax3.set_yticklabels(top_feature_names, fontsize=8)
+            for i in range(top_k):
+                for j in range(top_k):
+                    val = sub_corr_df.values[i, j]
+                    if not np.isnan(val):
+                        ax3.text(
+                            j, i, f"{val:.2f}", ha='center', va='center', fontsize=6,
+                            color='white' if abs(val) > 0.5 else 'black',
+                        )
+            fig3.colorbar(im3, ax=ax3, label='SHAP value correlation')
+            ax3.set_title(f'Top {top_k} Features by Strongest SHAP Correlation')
+            fig3.tight_layout()
+
+            top_features_png_path = os.path.join(output_dir, "shap_correlation_top_features_heatmap.png")
+            top_features_pdf_path = os.path.join(output_dir, "shap_correlation_top_features_heatmap.pdf")
+            self._save_figure_png_and_pdf(fig3, top_features_png_path, top_features_pdf_path)
+            print(f"    shap_correlation_analysis: Saved top-features heatmap to {top_features_png_path} and {top_features_pdf_path}")
+
             print(f"    shap_correlation_analysis: Analysis completed successfully!")
 
             return {
@@ -2232,6 +2319,10 @@ class TrainingPipeline:
                 "csv_path": csv_path,
                 "png_path": png_path,
                 "pdf_path": pdf_path,
+                "top_pairs_png_path": top_pairs_png_path,
+                "top_pairs_pdf_path": top_pairs_pdf_path,
+                "top_features_heatmap_png_path": top_features_png_path,
+                "top_features_heatmap_pdf_path": top_features_pdf_path,
             }
 
         except Exception as e:

@@ -75,15 +75,35 @@ def test_end_to_end_produces_csv_and_charts(tmp_path):
     csv_path = os.path.join(output_dir, "shap_correlation_matrix.csv")
     png_path = os.path.join(output_dir, "shap_correlation_heatmap.png")
     pdf_path = os.path.join(output_dir, "shap_correlation_heatmap.pdf")
+    top_pairs_png_path = os.path.join(output_dir, "shap_correlation_top_pairs.png")
+    top_pairs_pdf_path = os.path.join(output_dir, "shap_correlation_top_pairs.pdf")
+    top_features_png_path = os.path.join(output_dir, "shap_correlation_top_features_heatmap.png")
+    top_features_pdf_path = os.path.join(output_dir, "shap_correlation_top_features_heatmap.pdf")
 
     assert os.path.isfile(csv_path)
     assert os.path.isfile(png_path)
     assert os.path.isfile(pdf_path)
+    assert os.path.isfile(top_pairs_png_path)
+    assert os.path.isfile(top_pairs_pdf_path)
+    assert os.path.isfile(top_features_png_path)
+    assert os.path.isfile(top_features_pdf_path)
+
+    assert result["top_pairs_png_path"] == top_pairs_png_path
+    assert result["top_pairs_pdf_path"] == top_pairs_pdf_path
+    assert result["top_features_heatmap_png_path"] == top_features_png_path
+    assert result["top_features_heatmap_pdf_path"] == top_features_pdf_path
 
     corr_df = pd.read_csv(csv_path, index_col=0)
     assert list(corr_df.columns) == ["feature_a", "feature_b", "feature_c"]
     assert list(corr_df.index) == ["feature_a", "feature_b", "feature_c"]
     assert corr_df.shape == (3, 3)
+
+    most_correlated_pair = result["most_correlated_pair"]
+    assert most_correlated_pair is not None
+    feature_1, feature_2, corr_value = most_correlated_pair
+    assert feature_1 != feature_2
+    assert {feature_1, feature_2}.issubset({"feature_a", "feature_b", "feature_c"})
+    assert -1.0 <= corr_value <= 1.0
 
 
 from unittest.mock import patch
@@ -121,6 +141,10 @@ _SHAP_SUCCESS = {
     "csv_path": "/fake/output/shap_correlation_matrix.csv",
     "png_path": "/fake/output/shap_correlation_heatmap.png",
     "pdf_path": "/fake/output/shap_correlation_heatmap.pdf",
+    "top_pairs_png_path": "/fake/output/shap_correlation_top_pairs.png",
+    "top_pairs_pdf_path": "/fake/output/shap_correlation_top_pairs.pdf",
+    "top_features_heatmap_png_path": "/fake/output/shap_correlation_top_features_heatmap.png",
+    "top_features_heatmap_pdf_path": "/fake/output/shap_correlation_top_features_heatmap.pdf",
 }
 
 
