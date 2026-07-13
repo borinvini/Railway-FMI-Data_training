@@ -38,6 +38,7 @@ from sklearn.naive_bayes import GaussianNB
 
 import xgboost as xgb
 import lightgbm as lgb
+import shap
 
 from imblearn.over_sampling import SMOTE, SMOTENC
 from imblearn.under_sampling import TomekLinks
@@ -87,6 +88,7 @@ from config.const_training import (
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
+    SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER,
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
     TEST_SIZE,
     RANDOM_STATE,
@@ -2030,6 +2032,85 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg,
                 "processed_files": 0
+            }
+
+    def shap_correlation_analysis(self, data_dir=None):
+        """
+        Diagnostic-only stage: fits a plain default XGBoost model, computes
+        SHAP values on the training data, and reports how strongly each pair
+        of features' SHAP contributions correlate with each other.
+
+        Nothing is dropped or modified based on the result — this stage only
+        reports which features carry redundant explanatory signal via a
+        heatmap (PNG + PDF) and a full correlation matrix CSV.
+        """
+        try:
+            print(f"    shap_correlation_analysis: Starting SHAP correlation analysis...")
+
+            output_dir = os.path.join(self.project_root, SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"    shap_correlation_analysis: Output directory: {output_dir}")
+
+            if data_dir is None:
+                data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+
+            train_pattern = os.path.join(data_dir, "merged_data_*_train.parquet")
+            train_files = glob.glob(train_pattern)
+
+            if not train_files:
+                error_msg = f"Training file not found in {data_dir}. Train files: {len(train_files)}"
+                print(f"    shap_correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+            if len(train_files) != 1:
+                error_msg = f"Expected exactly one train file. Found {len(train_files)} train files"
+                print(f"    shap_correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+            train_file = train_files[0]
+            print(f"    shap_correlation_analysis: Loading training data from {train_file}")
+            train_df = pd.read_parquet(train_file)
+
+            target_feature = DEFAULT_TARGET_FEATURE
+            is_classification = target_feature in CLASSIFICATION_PROBLEM
+            is_regression = target_feature in REGRESSION_PROBLEM
+
+            if not (is_classification or is_regression):
+                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
+                print(f"    shap_correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+            if target_feature not in train_df.columns:
+                error_msg = f"Target feature '{target_feature}' not found in dataset"
+                print(f"    shap_correlation_analysis: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+            problem_type = "classification" if is_classification else "regression"
+            print(f"    shap_correlation_analysis: Detected {problem_type} problem for target '{target_feature}'")
+
+            # Task 3 fills in model fit, SHAP computation, and outputs here.
+            raise NotImplementedError("SHAP computation not yet implemented")
+
+        except Exception as e:
+            error_msg = f"shap_correlation_analysis failed: {str(e)}"
+            print(f"    shap_correlation_analysis: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": error_msg
             }
 
     def train_xgboost_with_randomized_search_cv(self, data_dir=None):
