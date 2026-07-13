@@ -178,3 +178,6 @@ Desktop.ini
 
 *.txt
 *.png
+
+# Superpowers skill plans/specs
+docs/superpowers/
