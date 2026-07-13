@@ -1,4 +1,4 @@
-from scipy.stats import randint
+from scipy.stats import randint, loguniform
 import numpy as np
 
 TRAINING_STATE_MACHINE = {
@@ -15,6 +15,7 @@ TRAINING_STATE_MACHINE = {
     "train_lightgbm_with_randomized_search_cv": True,
     "train_random_forest_with_randomized_search_cv": True,
     "train_logistic_regression_with_randomized_search_cv": True,
+    "train_naive_bayes_with_randomized_search_cv": True,
 }
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merge_data_files"
@@ -38,6 +39,7 @@ XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_s
 LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1001-lightgbm_randomized_search"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1002-random_forest_randomized_search"
 REGULARIZED_REGRESSION_OUTPUT_FOLDER = "data/output/1003-regularized_regression"
+NAIVE_BAYES_OUTPUT_FOLDER = "data/output/1004-naive_bayes"
 
 THRESHOLD_OPTIMIZATION_CONFIG = {
     "threshold_step": 0.01,  # Step size for threshold scanning
@@ -137,6 +139,27 @@ LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS = [
 ELASTICNET_PARAM_DISTRIBUTIONS = {
     'alpha': [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0],  # reg strength, log-spaced
     'l1_ratio': [0.1, 0.25, 0.5, 0.75, 0.9, 1.0],    # 0=Ridge .. 1=Lasso
+}
+
+# Parameter distribution for GaussianNB (classification branch). var_smoothing is
+# GaussianNB's one real hyperparameter — a variance-floor added to all feature
+# variances for numerical stability. Log-spaced because it spans many orders of
+# magnitude around sklearn's default (1e-9).
+NAIVE_BAYES_PARAM_DISTRIBUTIONS = {
+    'var_smoothing': loguniform(1e-12, 1e-6),
+}
+
+# Parameter distributions for BayesianRidge (regression branch — paired with
+# GaussianNB the way ElasticNet is paired with LogisticRegression: both models
+# are Bayesian in spirit, and BayesianRidge exposes a coef_ array shaped like
+# ElasticNet's). alpha_1/alpha_2 and lambda_1/lambda_2 are the Gamma-prior
+# hyperparameters on the noise precision and weight precision respectively;
+# swept as a multiplicative range around sklearn's default (1e-6) for each.
+BAYESIAN_RIDGE_PARAM_DISTRIBUTIONS = {
+    'alpha_1': [1e-7, 1e-6, 1e-5, 1e-4],
+    'alpha_2': [1e-7, 1e-6, 1e-5, 1e-4],
+    'lambda_1': [1e-7, 1e-6, 1e-5, 1e-4],
+    'lambda_2': [1e-7, 1e-6, 1e-5, 1e-4],
 }
 
 # Parameter distributions for XGBoost with RandomizedSearchCV
