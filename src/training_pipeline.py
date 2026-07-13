@@ -2100,8 +2100,84 @@ class TrainingPipeline:
             problem_type = "classification" if is_classification else "regression"
             print(f"    shap_correlation_analysis: Detected {problem_type} problem for target '{target_feature}'")
 
-            # Task 3 fills in model fit, SHAP computation, and outputs here.
-            raise NotImplementedError("SHAP computation not yet implemented")
+            feature_columns = [col for col in train_df.columns if col != target_feature]
+            X_train = train_df[feature_columns]
+            y_train = train_df[target_feature]
+
+            print(f"    shap_correlation_analysis: Dataset info - Train: {X_train.shape}")
+            print(f"    shap_correlation_analysis: Fitting plain default XGBoost ({problem_type})...")
+
+            if is_classification:
+                model = xgb.XGBClassifier(random_state=RANDOM_STATE, n_jobs=-1)
+            else:
+                model = xgb.XGBRegressor(random_state=RANDOM_STATE, n_jobs=-1)
+
+            model.fit(X_train, y_train)
+
+            print(f"    shap_correlation_analysis: Computing SHAP values...")
+            explainer = shap.TreeExplainer(model)
+            raw_shap_values = explainer.shap_values(X_train)
+
+            if isinstance(raw_shap_values, list):
+                shap_array = raw_shap_values[-1]
+            elif isinstance(raw_shap_values, np.ndarray) and raw_shap_values.ndim == 3:
+                shap_array = raw_shap_values[:, :, -1]
+            else:
+                shap_array = raw_shap_values
+
+            print(f"    shap_correlation_analysis: Computing SHAP correlation matrix...")
+            corr_matrix = np.corrcoef(shap_array, rowvar=False)
+            corr_df = pd.DataFrame(corr_matrix, index=feature_columns, columns=feature_columns)
+
+            csv_path = os.path.join(output_dir, "shap_correlation_matrix.csv")
+            corr_df.to_csv(csv_path)
+            print(f"    shap_correlation_analysis: Saved correlation matrix to {csv_path}")
+
+            corr_no_diag = corr_df.copy()
+            np.fill_diagonal(corr_no_diag.values, np.nan)
+            abs_corr = corr_no_diag.abs()
+            most_correlated_pair = None
+            stacked = abs_corr.stack()
+            if len(stacked) > 0:
+                max_idx = stacked.idxmax()
+                most_correlated_pair = (
+                    max_idx[0],
+                    max_idx[1],
+                    float(corr_df.loc[max_idx[0], max_idx[1]]),
+                )
+
+            num_features = len(feature_columns)
+            fig_size = max(10, num_features * 0.15)
+            fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+            im = ax.imshow(corr_df.values, cmap='coolwarm', vmin=-1, vmax=1)
+            ax.set_xticks(range(num_features))
+            ax.set_xticklabels(feature_columns, rotation=90, fontsize=6)
+            ax.set_yticks(range(num_features))
+            ax.set_yticklabels(feature_columns, fontsize=6)
+            fig.colorbar(im, ax=ax, label='SHAP value correlation')
+            ax.set_title('SHAP Value Correlation Between Features')
+            fig.tight_layout()
+
+            png_path = os.path.join(output_dir, "shap_correlation_heatmap.png")
+            pdf_path = os.path.join(output_dir, "shap_correlation_heatmap.pdf")
+            fig.savefig(png_path, dpi=300, bbox_inches='tight')
+            fig.savefig(pdf_path, bbox_inches='tight')
+            plt.close(fig)
+
+            print(f"    shap_correlation_analysis: Saved heatmap to {png_path} and {pdf_path}")
+            print(f"    shap_correlation_analysis: Analysis completed successfully!")
+
+            return {
+                "success": True,
+                "output_directory": output_dir,
+                "num_features": num_features,
+                "target_feature": target_feature,
+                "problem_type": problem_type,
+                "most_correlated_pair": most_correlated_pair,
+                "csv_path": csv_path,
+                "png_path": png_path,
+                "pdf_path": pdf_path,
+            }
 
         except Exception as e:
             error_msg = f"shap_correlation_analysis failed: {str(e)}"
