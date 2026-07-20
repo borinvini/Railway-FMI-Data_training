@@ -45,7 +45,7 @@ from imblearn.under_sampling import TomekLinks
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import (
     accuracy_score, mean_absolute_error, mean_squared_error, precision_score, recall_score, roc_auc_score,
-    f1_score, r2_score
+    f1_score, r2_score, confusion_matrix
 )
 
 import matplotlib
@@ -94,6 +94,8 @@ from config.const_training import (
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
     TEST_SIZE,
     RANDOM_STATE,
+    HOLDOUT_LAST_YEAR,
+    HOLDOUT_YEAR_COLUMN,
     SCORE_METRIC,
     RANDOM_SEARCH_ITERATIONS,
     RANDOM_SEARCH_CV_FOLDS,
@@ -799,6 +801,7 @@ class TrainingPipeline:
 
         train_files = glob.glob(os.path.join(data_dir, "*_train.parquet"))
         test_files = glob.glob(os.path.join(data_dir, "*_test.parquet"))
+        holdout_files = glob.glob(os.path.join(data_dir, "*_holdout.parquet"))
 
         if not train_files:
             msg = f"No *_train.parquet found in {data_dir}"
@@ -836,6 +839,15 @@ class TrainingPipeline:
             shutil.copy2(test_src, test_output_path)
             print(f"    balance_classes: Copied test file to: {test_output_path}")
 
+        # Copy the out-of-time hold-out file unchanged too — it must never be
+        # resampled (SMOTE/Tomek would distort its real-world class distribution).
+        holdout_output_path = None
+        if holdout_files:
+            holdout_src = holdout_files[0]
+            holdout_output_path = os.path.join(output_folder, os.path.basename(holdout_src))
+            shutil.copy2(holdout_src, holdout_output_path)
+            print(f"    balance_classes: Copied hold-out file to: {holdout_output_path}")
+
         dropped_counterpart_col = None
         if counterpart_col and counterpart_col in df.columns:
             print(f"    balance_classes: Dropping counterpart column '{counterpart_col}' to prevent leakage")
@@ -858,6 +870,7 @@ class TrainingPipeline:
                 "dropped_counterpart_col": dropped_counterpart_col,
                 "train_output_path": train_out,
                 "test_output_path": test_output_path,
+                "holdout_output_path": holdout_output_path,
             }
 
         if is_classification:
@@ -891,6 +904,7 @@ class TrainingPipeline:
                 "dropped_counterpart_col": dropped_counterpart_col,
                 "train_output_path": train_out,
                 "test_output_path": test_output_path,
+                "holdout_output_path": holdout_output_path,
             }
 
         feature_source_cols = [c for c in df.columns if c != target_col] if is_classification else list(df.columns)
@@ -968,6 +982,7 @@ class TrainingPipeline:
             "dropped_counterpart_col": dropped_counterpart_col,
             "train_output_path": train_out,
             "test_output_path": test_output_path,
+            "holdout_output_path": holdout_output_path,
         }
 
     def merge_data_files(self, csv_files):
@@ -1036,11 +1051,17 @@ class TrainingPipeline:
 
                     # Read the parquet file
                     df = pd.read_parquet(file_path)
-                    
+
                     if df.empty:
                         print(f"    merge_data_files: Warning - File {filename} is empty. Skipping.")
                         continue
-                    
+
+                    # Stamp each row with its source year (derived from the filename, not a
+                    # per-row timestamp — no such column survives preprocessing). This gives
+                    # split_dataset a real per-row year signal for the out-of-time hold-out;
+                    # it is dropped again right after the split so it never becomes a feature.
+                    df[HOLDOUT_YEAR_COLUMN] = year
+
                     print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
 
                     # Store the dataframe and file info
@@ -1385,8 +1406,16 @@ class TrainingPipeline:
             
             # Apply column selection
             selected_columns = [column_names[i] for i in selected_indices]
+
+            # Force-keep the hold-out year column even if not explicitly selected, so
+            # split_dataset can carve out the out-of-time hold-out downstream. It is
+            # dropped again right after the split — never reaches balancing/scaling/training.
+            if HOLDOUT_LAST_YEAR and HOLDOUT_YEAR_COLUMN in column_names and HOLDOUT_YEAR_COLUMN not in selected_columns:
+                selected_columns.append(HOLDOUT_YEAR_COLUMN)
+                print(f"    select_training_cols: Force-keeping '{HOLDOUT_YEAR_COLUMN}' for the out-of-time hold-out split")
+
             dropped_columns = [col for col in column_names if col not in selected_columns]
-            
+
             print(f"")
             print(f"    ✅ COLUMN SELECTION SUMMARY:")
             print(f"    " + "="*60)
@@ -1584,23 +1613,48 @@ class TrainingPipeline:
                     print(f"      Detected regression problem with target '{target_column}'")
             else:
                 print(f"      No target column detected - using simple random split")
-            
-           
+
+            # --- Out-of-time hold-out: carve out the most recent calendar year BEFORE
+            # the regular train/test split, so it is never involved in training or
+            # tuning — it exists only to measure performance on genuinely new/future
+            # data. This also fixes temporal leakage in the train/test split itself,
+            # since it now only ever draws from earlier years. ---
+            holdout_df = None
+            holdout_year = None
+            dev_df = df
+            if HOLDOUT_LAST_YEAR:
+                if HOLDOUT_YEAR_COLUMN in df.columns:
+                    year_series = df[HOLDOUT_YEAR_COLUMN]
+                    holdout_year = int(year_series.max())
+                    holdout_mask = year_series == holdout_year
+                    holdout_df = df[holdout_mask].drop(columns=[HOLDOUT_YEAR_COLUMN])
+                    dev_df = df[~holdout_mask].drop(columns=[HOLDOUT_YEAR_COLUMN])
+                    print(f"      Out-of-time hold-out: year {holdout_year} -> {len(holdout_df):,} rows reserved "
+                          f"(never trained/tuned on)")
+                    print(f"      Remaining for train/test split: {len(dev_df):,} rows (years < {holdout_year})")
+                    # Recompute stratify on dev_df only — hold-out rows must not affect the split
+                    if is_classification and target_column:
+                        stratify = dev_df[target_column]
+                else:
+                    print(f"      HOLDOUT_LAST_YEAR is enabled but '{HOLDOUT_YEAR_COLUMN}' column was not found "
+                          f"— skipping hold-out (falling back to a 2-way train/test split)")
+
             train_df, test_df = train_test_split(
-                df,
+                dev_df,
                 test_size=test_size,
                 random_state=random_state,
                 stratify=stratify
             )
-            
+
             print(f"      Split results:")
-            print(f"        Train set: {len(train_df):,} samples ({(len(train_df) / len(df)) * 100:.1f}%)")
-            print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(df)) * 100:.1f}%)")
-            
+            print(f"        Train set: {len(train_df):,} samples ({(len(train_df) / len(dev_df)) * 100:.1f}%)")
+            print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(dev_df)) * 100:.1f}%)")
+
             # Generate output filenames
             base_name = csv_filename.replace('.parquet', '')
             train_filename = f"{base_name}_train.parquet"
             test_filename = f"{base_name}_test.parquet"
+            holdout_filename = f"{base_name}_holdout.parquet" if holdout_df is not None else None
 
             split_output_dir = output_dir if output_dir is not None else merged_training_ready_dir
             os.makedirs(split_output_dir, exist_ok=True)
@@ -1611,14 +1665,20 @@ class TrainingPipeline:
             # Save train and test sets
             train_df.to_parquet(train_path, index=False)
             test_df.to_parquet(test_path, index=False)
-            
+
             print(f"      Saved train set to: {train_filename}")
             print(f"      Saved test set to: {test_filename}")
+
+            if holdout_df is not None:
+                holdout_path = os.path.join(split_output_dir, holdout_filename)
+                holdout_df.to_parquet(holdout_path, index=False)
+                print(f"      Saved hold-out set to: {holdout_filename}")
             
             # Calculate class distribution after split for classification problems
             class_distribution_train = {}
             class_distribution_test = {}
-            
+            class_distribution_holdout = {}
+
             if is_classification and target_column:
                 # Train set distribution
                 train_value_counts = train_df[target_column].value_counts()
@@ -1627,7 +1687,7 @@ class TrainingPipeline:
                         'count': int(count),
                         'percentage': (count / len(train_df)) * 100
                     }
-                
+
                 # Test set distribution
                 test_value_counts = test_df[target_column].value_counts()
                 for class_value, count in test_value_counts.items():
@@ -1635,93 +1695,128 @@ class TrainingPipeline:
                         'count': int(count),
                         'percentage': (count / len(test_df)) * 100
                     }
-            
+
+                # Hold-out set distribution
+                if holdout_df is not None:
+                    holdout_value_counts = holdout_df[target_column].value_counts()
+                    for class_value, count in holdout_value_counts.items():
+                        class_distribution_holdout[class_value] = {
+                            'count': int(count),
+                            'percentage': (count / len(holdout_df)) * 100
+                        }
+
             # Prepare result data
             result_data = {
                 'filename': csv_filename,
                 'original_rows': len(df),
+                'dev_rows': len(dev_df),
+                'holdout_rows': len(holdout_df) if holdout_df is not None else 0,
+                'holdout_year': holdout_year,
                 'train_rows': len(train_df),
                 'test_rows': len(test_df),
                 'train_file': train_filename,
                 'test_file': test_filename,
+                'holdout_file': holdout_filename,
                 'test_size_requested': test_size,
-                'test_size_actual': len(test_df) / len(df),
+                'test_size_actual': len(test_df) / len(dev_df),
                 'target_column': target_column,
                 'is_classification': is_classification
             }
-            
+
             # Add class distribution data for classification problems
             if is_classification:
                 result_data['class_distribution_before'] = class_distribution_before
                 result_data['class_distribution_train'] = class_distribution_train
                 result_data['class_distribution_test'] = class_distribution_test
-            
+                if holdout_df is not None:
+                    result_data['class_distribution_holdout'] = class_distribution_holdout
+
             print(f"      Successfully processed {csv_filename}")
-            
+
             # Save summary information
             summary_filename = "split_summary.txt"
             summary_path = os.path.join(split_output_dir, summary_filename)
-            
+
             with open(summary_path, 'w') as f:
                 f.write("Dataset Split Summary\n")
                 f.write("=" * 40 + "\n\n")
-                
+
                 f.write(f"Split timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Input file: {csv_filename}\n")
                 f.write(f"Test size: {test_size}\n")
                 f.write(f"Random state: {random_state}\n")
-                f.write(f"Stratify column: {target_column}\n\n")
-                
+                f.write(f"Stratify column: {target_column}\n")
+                if holdout_df is not None:
+                    f.write(f"Out-of-time hold-out year: {holdout_year} (never trained/tuned on)\n")
+                f.write("\n")
+
                 f.write(f"Dataset Information:\n")
                 f.write(f"  Original rows: {result_data['original_rows']:,}\n")
+                f.write(f"  Rows used for train/test split: {result_data['dev_rows']:,}\n")
                 f.write(f"  Columns: {df.shape[1]}\n")
                 f.write(f"  Problem type: {'Classification' if is_classification else 'Regression'}\n\n")
-                
+
                 f.write(f"Split Results:\n")
-                f.write(f"  Train set: {result_data['train_rows']:,} samples ({(result_data['train_rows'] / result_data['original_rows']) * 100:.1f}%)\n")
-                f.write(f"  Test set: {result_data['test_rows']:,} samples ({(result_data['test_rows'] / result_data['original_rows']) * 100:.1f}%)\n")
-                f.write(f"  Actual test size: {result_data['test_size_actual']:.3f}\n\n")
-                
+                f.write(f"  Train set: {result_data['train_rows']:,} samples ({(result_data['train_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
+                f.write(f"  Test set: {result_data['test_rows']:,} samples ({(result_data['test_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
+                f.write(f"  Actual test size: {result_data['test_size_actual']:.3f}\n")
+                if holdout_df is not None:
+                    f.write(f"  Hold-out set (year {holdout_year}): {result_data['holdout_rows']:,} samples "
+                            f"({(result_data['holdout_rows'] / result_data['original_rows']) * 100:.1f}% of original)\n")
+                f.write("\n")
+
                 f.write(f"Output Files:\n")
                 f.write(f"  Train: {result_data['train_file']}\n")
-                f.write(f"  Test: {result_data['test_file']}\n\n")
-                
+                f.write(f"  Test: {result_data['test_file']}\n")
+                if holdout_filename:
+                    f.write(f"  Hold-out: {holdout_filename}\n")
+                f.write("\n")
+
                 # Add class distribution info for classification
                 if is_classification:
                     f.write(f"Class Distribution Analysis:\n")
                     f.write(f"  Target column: {target_column}\n\n")
-                    
+
                     # Before split
                     f.write(f"  Before Split ({result_data['original_rows']:,} samples):\n")
                     for class_value, stats in class_distribution_before.items():
                         f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-                    
+
                     # After split - Train set
                     f.write(f"\n  After Split - Train Set ({result_data['train_rows']:,} samples):\n")
                     for class_value, stats in class_distribution_train.items():
                         f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-                    
+
                     # After split - Test set
                     f.write(f"\n  After Split - Test Set ({result_data['test_rows']:,} samples):\n")
                     for class_value, stats in class_distribution_test.items():
                         f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
-            
+
+                    # Hold-out set
+                    if holdout_df is not None:
+                        f.write(f"\n  Hold-out Set - year {holdout_year} ({result_data['holdout_rows']:,} samples):\n")
+                        for class_value, stats in class_distribution_holdout.items():
+                            f.write(f"    Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)\n")
+
             print(f"    split_dataset: Summary saved to {summary_filename}")
-            
+
             # Return success result
             result = {
                 "success": True,
                 "processed_files": 1,
                 "total_train_rows": len(train_df),
                 "total_test_rows": len(test_df),
+                "total_holdout_rows": len(holdout_df) if holdout_df is not None else 0,
+                "holdout_year": holdout_year,
                 "test_size": test_size,
                 "split_details": [result_data],
                 "summary_path": summary_path,
-                "message": f"Successfully split dataset {csv_filename} into train/test sets"
+                "message": f"Successfully split dataset {csv_filename} into train/test"
+                           f"{'/holdout' if holdout_df is not None else ''} sets"
             }
-            
+
             print(f"    split_dataset: Completed successfully - dataset split")
-            
+
             return result
             
         except Exception as e:
@@ -1775,9 +1870,13 @@ class TrainingPipeline:
             )
             train_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_train.parquet")
             test_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_test.parquet")
-            
+            holdout_pattern = os.path.join(merged_selected_training_ready_dir, "merged_data_*_holdout.parquet")
+
             train_files = glob.glob(train_pattern)
             test_files = glob.glob(test_pattern)
+            # Out-of-time hold-out is optional (HOLDOUT_LAST_YEAR toggle / missing year column
+            # upstream) — scale it the same way as test if present, but never error if absent.
+            holdout_files = glob.glob(holdout_pattern)
             
             if len(train_files) == 0:
                 error_msg = "No training files found to scale"
@@ -1823,15 +1922,21 @@ class TrainingPipeline:
             
             train_filename = os.path.basename(train_file_path)
             test_filename = os.path.basename(test_file_path)
-            
+
+            holdout_file_path = holdout_files[0] if holdout_files else None
+            holdout_filename = os.path.basename(holdout_file_path) if holdout_file_path else None
+
             print(f"    scale_weather_features: Processing file pair:")
             print(f"      Train: {train_filename}")
             print(f"      Test: {test_filename}")
-            
+            if holdout_filename:
+                print(f"      Hold-out: {holdout_filename}")
+
             # Load datasets
             try:
                 train_df = pd.read_parquet(train_file_path)
                 test_df = pd.read_parquet(test_file_path)
+                holdout_df = pd.read_parquet(holdout_file_path) if holdout_file_path else None
             except Exception as e:
                 error_msg = f"Error loading datasets: {str(e)}"
                 print(f"    scale_weather_features: {error_msg}")
@@ -1840,9 +1945,11 @@ class TrainingPipeline:
                     "error": error_msg,
                     "processed_files": 0
                 }
-            
+
             print(f"    scale_weather_features: Train dataset shape: {train_df.shape}")
             print(f"    scale_weather_features: Test dataset shape: {test_df.shape}")
+            if holdout_df is not None:
+                print(f"    scale_weather_features: Hold-out dataset shape: {holdout_df.shape}")
             
             # Identify weather features that exist in the dataset
             available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in train_df.columns]
@@ -1868,19 +1975,26 @@ class TrainingPipeline:
                 # Generate output filenames (keep same naming convention)
                 scaled_train_filename = train_filename  # already .parquet
                 scaled_test_filename = test_filename    # already .parquet
-                
+                scaled_holdout_filename = holdout_filename  # already .parquet, or None
+
                 scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
                 scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
-                
+
                 try:
                     # Copy train file
                     shutil.copy2(train_file_path, scaled_train_path)
                     print(f"    scale_weather_features: ✓ Copied train file to: {scaled_train_filename}")
-                    
+
                     # Copy test file
                     shutil.copy2(test_file_path, scaled_test_path)
                     print(f"    scale_weather_features: ✓ Copied test file to: {scaled_test_filename}")
-                    
+
+                    # Copy hold-out file, if present
+                    if holdout_file_path:
+                        scaled_holdout_path = os.path.join(scaled_training_ready_dir, scaled_holdout_filename)
+                        shutil.copy2(holdout_file_path, scaled_holdout_path)
+                        print(f"    scale_weather_features: ✓ Copied hold-out file to: {scaled_holdout_filename}")
+
                 except Exception as e:
                     error_msg = f"Error copying files: {str(e)}"
                     print(f"    scale_weather_features: {error_msg}")
@@ -1889,15 +2003,18 @@ class TrainingPipeline:
                         "error": error_msg,
                         "processed_files": 0
                     }
-                
+
                 # Prepare result for no weather features case
                 no_scaling_result = {
                     "original_train_file": train_filename,
                     "original_test_file": test_filename,
+                    "original_holdout_file": holdout_filename,
                     "scaled_train_file": scaled_train_filename,
                     "scaled_test_file": scaled_test_filename,
+                    "scaled_holdout_file": scaled_holdout_filename,
                     "train_rows": len(train_df),
                     "test_rows": len(test_df),
+                    "holdout_rows": len(holdout_df) if holdout_df is not None else 0,
                     "weather_features_scaled": [],  # Empty list - no features scaled
                     "scaling_method": "None - Files copied as-is"
                 }
@@ -1938,10 +2055,12 @@ class TrainingPipeline:
                     "processed_files": 1,
                     "train_rows": len(train_df),
                     "test_rows": len(test_df),
+                    "holdout_rows": len(holdout_df) if holdout_df is not None else 0,
                     "weather_features_scaled": [],  # Empty list
                     "scaling_summary": no_scaling_result,
                     "output_directory": scaled_training_ready_dir,
-                    "message": f"No weather features found. Files copied as-is: {train_filename}, {test_filename}",
+                    "message": f"No weather features found. Files copied as-is: {train_filename}, {test_filename}"
+                               + (f", {holdout_filename}" if holdout_filename else ""),
                     "scaling_applied": False  # Flag to indicate no scaling was applied
                 }
             
@@ -1952,6 +2071,9 @@ class TrainingPipeline:
             # Extract weather features for scaling
             train_weather_features = train_df[available_weather_features].copy()
             test_weather_features = test_df[available_weather_features].copy()
+            holdout_weather_features = (
+                holdout_df[available_weather_features].copy() if holdout_df is not None else None
+            )
 
             # Zero-inflated/right-skewed features get a log1p pre-transform (deterministic,
             # not fit on data) before RobustScaler. These features are physically
@@ -1961,6 +2083,8 @@ class TrainingPipeline:
                 print(f"    scale_weather_features: Applying log1p to {len(skewed_cols)} skewed feature(s): {skewed_cols}")
                 train_weather_features[skewed_cols] = np.log1p(train_weather_features[skewed_cols].clip(lower=0))
                 test_weather_features[skewed_cols] = np.log1p(test_weather_features[skewed_cols].clip(lower=0))
+                if holdout_weather_features is not None:
+                    holdout_weather_features[skewed_cols] = np.log1p(holdout_weather_features[skewed_cols].clip(lower=0))
 
             # Create and fit scaler on training data only
             scaler = RobustScaler()
@@ -1983,18 +2107,27 @@ class TrainingPipeline:
             # Transform both train and test sets using training parameters
             train_weather_scaled = scaler.transform(train_weather_features)
             test_weather_scaled = scaler.transform(test_weather_features)
-            
+
             # Create scaled DataFrames
             train_scaled_df = train_df.copy()
             test_scaled_df = test_df.copy()
-            
+
             # Replace weather feature columns with scaled versions
             train_scaled_df[available_weather_features] = train_weather_scaled
             test_scaled_df[available_weather_features] = test_weather_scaled
-            
+
+            # Transform the out-of-time hold-out with the SAME fitted scaler (never
+            # re-fit) — it must be scaled exactly like production/new data would be.
+            holdout_scaled_df = None
+            if holdout_df is not None:
+                holdout_weather_scaled = scaler.transform(holdout_weather_features)
+                holdout_scaled_df = holdout_df.copy()
+                holdout_scaled_df[available_weather_features] = holdout_weather_scaled
+
             # Generate output filenames
             scaled_train_filename = train_filename  # already .parquet
             scaled_test_filename = test_filename    # already .parquet
+            scaled_holdout_filename = holdout_filename  # already .parquet, or None
 
             scaled_train_path = os.path.join(scaled_training_ready_dir, scaled_train_filename)
             scaled_test_path = os.path.join(scaled_training_ready_dir, scaled_test_filename)
@@ -2002,19 +2135,27 @@ class TrainingPipeline:
             # Save scaled datasets
             train_scaled_df.to_parquet(scaled_train_path, index=False)
             test_scaled_df.to_parquet(scaled_test_path, index=False)
-            
+
             print(f"    scale_weather_features: ✓ Scaled train dataset saved to: {scaled_train_filename}")
             print(f"    scale_weather_features: ✓ Scaled test dataset saved to: {scaled_test_filename}")
-            
+
+            if holdout_scaled_df is not None:
+                scaled_holdout_path = os.path.join(scaled_training_ready_dir, scaled_holdout_filename)
+                holdout_scaled_df.to_parquet(scaled_holdout_path, index=False)
+                print(f"    scale_weather_features: ✓ Scaled hold-out dataset saved to: {scaled_holdout_filename}")
+
             # Prepare scaling result
             scaling_result = {
                 "original_train_file": train_filename,
                 "original_test_file": test_filename,
+                "original_holdout_file": holdout_filename,
                 "scaled_train_file": scaled_train_filename,
                 "scaled_test_file": scaled_test_filename,
+                "scaled_holdout_file": scaled_holdout_filename,
                 "scaler_file": scaler_filename,
                 "train_rows": len(train_df),
                 "test_rows": len(test_df),
+                "holdout_rows": len(holdout_df) if holdout_df is not None else 0,
                 "weather_features_scaled": available_weather_features,
                 "skewed_features_log1p": skewed_cols,
                 "scaling_method": "RobustScaler"
@@ -2036,8 +2177,13 @@ class TrainingPipeline:
                 f.write(f"Files processed:\n")
                 f.write(f"  Train file: {train_filename} ({len(train_df):,} rows)\n")
                 f.write(f"  Test file: {test_filename} ({len(test_df):,} rows)\n")
+                if holdout_filename:
+                    f.write(f"  Hold-out file: {holdout_filename} ({len(holdout_df):,} rows)\n")
                 f.write(f"  Scaled train file: {scaled_train_filename}\n")
-                f.write(f"  Scaled test file: {scaled_test_filename}\n\n")
+                f.write(f"  Scaled test file: {scaled_test_filename}\n")
+                if scaled_holdout_filename:
+                    f.write(f"  Scaled hold-out file: {scaled_holdout_filename}\n")
+                f.write("\n")
                 
                 f.write("Weather features scaled:\n")
                 f.write("-" * 25 + "\n")
@@ -2061,12 +2207,16 @@ class TrainingPipeline:
                 "processed_files": 1,
                 "train_rows": len(train_df),
                 "test_rows": len(test_df),
+                "holdout_rows": len(holdout_df) if holdout_df is not None else 0,
                 "weather_features_scaled": available_weather_features,
                 "skewed_features_log1p": skewed_cols,
                 "scaler_path": scaler_path,
                 "scaling_summary": scaling_result,
                 "output_directory": scaled_training_ready_dir,
-                "message": f"Successfully scaled weather features for single train/test file pair: {train_filename}, {test_filename}",
+                "message": f"Successfully scaled weather features for train/test"
+                           f"{'/holdout' if holdout_df is not None else ''} file"
+                           f"{'s' if holdout_df is not None else ' pair'}: {train_filename}, {test_filename}"
+                           + (f", {holdout_filename}" if holdout_filename else ""),
                 "scaling_applied": True
             }
             
@@ -2099,6 +2249,35 @@ class TrainingPipeline:
                 module=r"matplotlib\.backends\.backend_pdf",
             )
             fig.savefig(pdf_path, bbox_inches='tight')
+        plt.close(fig)
+
+    def _save_confusion_matrix_plot(self, cm, class_labels, title, png_path):
+        """
+        Render a confusion matrix (list of lists or ndarray) as an annotated
+        heatmap PNG — used for the best model's confusion matrix in every
+        train_* method (raw classes for classification, on-time/delayed for
+        the regression branch's binarized threshold).
+        """
+        cm_arr = np.array(cm)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(cm_arr, cmap='Blues')
+        fig.colorbar(im, ax=ax)
+        ax.set(
+            xticks=np.arange(cm_arr.shape[1]),
+            yticks=np.arange(cm_arr.shape[0]),
+            xticklabels=class_labels,
+            yticklabels=class_labels,
+            ylabel='True label',
+            xlabel='Predicted label',
+            title=title
+        )
+        thresh = cm_arr.max() / 2.0 if cm_arr.max() > 0 else 0.5
+        for i in range(cm_arr.shape[0]):
+            for j in range(cm_arr.shape[1]):
+                ax.text(j, i, format(cm_arr[i, j], 'd'), ha='center', va='center',
+                        color='white' if cm_arr[i, j] > thresh else 'black')
+        fig.tight_layout()
+        fig.savefig(png_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
 
     def shap_correlation_analysis(self, data_dir=None):
@@ -2335,6 +2514,86 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
+    def _load_holdout_set(self, scaled_data_dir, feature_columns, target_feature, method_label):
+        """
+        Load the optional out-of-time hold-out file (*_holdout.parquet), if one was
+        produced by split_dataset (HOLDOUT_LAST_YEAR). Shared by every train_* method
+        so each also scores the hold-out — never fits/tunes on it — alongside test.
+
+        Returns (X_holdout, y_holdout) or (None, None) if no hold-out file exists.
+        """
+        holdout_pattern = os.path.join(scaled_data_dir, "merged_data_*_holdout.parquet")
+        holdout_files = glob.glob(holdout_pattern)
+        if not holdout_files:
+            print(f"    {method_label}: No hold-out file found in {scaled_data_dir} — skipping hold-out evaluation")
+            return None, None
+        if len(holdout_files) > 1:
+            print(f"    {method_label}: Multiple hold-out files found ({len(holdout_files)}) — skipping hold-out evaluation")
+            return None, None
+
+        holdout_file = holdout_files[0]
+        print(f"      Loading hold-out data from {holdout_file}")
+        holdout_df = pd.read_parquet(holdout_file)
+        if target_feature not in holdout_df.columns:
+            print(f"    {method_label}: Target feature '{target_feature}' not found in hold-out file — skipping")
+            return None, None
+
+        X_holdout = holdout_df[feature_columns]
+        y_holdout = holdout_df[target_feature]
+        print(f"      Hold-out set: {X_holdout.shape}")
+        return X_holdout, y_holdout
+
+    def _score_predictions(self, y_true, y_pred, is_classification):
+        """
+        Compute the same metric set used for final test evaluation, given raw-scale
+        (already inverse-transformed) predictions and true values. Shared so the
+        out-of-time hold-out is scored identically to the test set in every train_*
+        method — see the final_test_* blocks this mirrors.
+        """
+        metrics = {}
+        if is_classification:
+            metrics['accuracy'] = accuracy_score(y_true, y_pred)
+            metrics['f1'] = f1_score(y_true, y_pred, average='binary' if len(np.unique(y_true)) == 2 else 'weighted')
+            metrics['precision'] = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+            metrics['recall'] = recall_score(y_true, y_pred, average='weighted')
+            metrics['confusion_matrix'] = confusion_matrix(y_true, y_pred).tolist()
+        else:
+            metrics['rmse'] = np.sqrt(mean_squared_error(y_true, y_pred))
+            metrics['mae'] = mean_absolute_error(y_true, y_pred)
+            metrics['r2'] = r2_score(y_true, y_pred)
+            denom = np.sum(np.abs(y_true))
+            metrics['wmape'] = (np.sum(np.abs(y_true - y_pred)) / denom * 100) if denom > 0 else 0.0
+
+            y_true_binary = (y_true > DELAY_THRESHOLD_MINUTES).astype(int)
+            y_pred_binary = (y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
+            metrics['bin_precision'] = precision_score(y_true_binary, y_pred_binary, zero_division=0)
+            metrics['bin_recall'] = recall_score(y_true_binary, y_pred_binary, zero_division=0)
+            metrics['bin_f1'] = f1_score(y_true_binary, y_pred_binary, zero_division=0)
+            metrics['bin_accuracy'] = accuracy_score(y_true_binary, y_pred_binary)
+            metrics['bin_confusion_matrix'] = confusion_matrix(y_true_binary, y_pred_binary).tolist()
+        return metrics
+
+    def _evaluate_holdout(self, model, X_holdout, y_holdout, is_classification, y_shift, method_label):
+        """
+        Score the already-trained best_model on the out-of-time hold-out — no fit(),
+        no tuning. Mirrors the final_test_* metric computation (including the
+        log1p/y_shift inverse transform for regression targets) so hold-out and test
+        metrics are directly comparable.
+        """
+        y_pred = model.predict(X_holdout)
+        if not is_classification:
+            y_pred = np.expm1(y_pred) - y_shift
+
+        metrics = self._score_predictions(y_holdout, y_pred, is_classification)
+
+        if is_classification and hasattr(model, 'predict_proba'):
+            y_pred_proba = model.predict_proba(X_holdout)[:, 1]
+            metrics['auc'] = roc_auc_score(y_holdout, y_pred_proba) if len(np.unique(y_holdout)) > 1 else 0.0
+
+        # Not printed here — the caller prints a formatted "Hold-out Summary" block
+        # (mirroring "Training Summary") once these metrics are in hand.
+        return metrics
+
     def train_xgboost_with_randomized_search_cv(self, data_dir=None):
         """
         Modified XGBoost training method that tests different iteration counts and plots performance curve.
@@ -2431,14 +2690,19 @@ class TrainingPipeline:
                     "success": False,
                     "error": error_msg
                 }
-            
+
             # Prepare features and target
             feature_columns = [col for col in train_df.columns if col != target_feature]
-            
+
             X_train = train_df[feature_columns]
             y_train = train_df[target_feature]
             X_test = test_df[feature_columns]
             y_test = test_df[target_feature]
+
+            # Out-of-time hold-out (optional) — never trained/tuned on, scored later
+            X_holdout, y_holdout = self._load_holdout_set(
+                scaled_data_dir, feature_columns, target_feature, "train_xgboost_with_randomized_search_cv"
+            )
             
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
@@ -2458,6 +2722,8 @@ class TrainingPipeline:
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
             
             # Set up cross-validation strategy
+            y_train_log = None  # assigned in regression branch below
+            y_shift = 0.0       # assigned in regression branch below
             if is_classification:
                 cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = xgb.XGBClassifier(
@@ -2488,17 +2754,21 @@ class TrainingPipeline:
             iteration_results = []
             test_f1_scores = []
             cv_scores = []
+            test_accuracy_scores = []
+            test_precision_scores = []
+            test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
             test_bin_accuracy_scores = []
+            holdout_metrics_per_iteration = []
 
             best_model = None
             best_cv_score = -np.inf  # CV score: higher is always better (F1 or neg_MAE)
             best_iteration = None
-            
+
             # Train models with different iteration counts
             print(f"      Starting training with different iteration counts...")
 
@@ -2506,7 +2776,7 @@ class TrainingPipeline:
             # search-budget sensitivity, not convergence toward a global optimum.
             for i, n_iter in enumerate(iteration_values):
                 print(f"      Progress: {i+1}/{len(iteration_values)} - Testing {n_iter} iterations...")
-                
+
                 # Create RandomizedSearchCV with current iteration count
                 randomized_search = RandomizedSearchCV(
                     estimator=base_model,
@@ -2541,6 +2811,7 @@ class TrainingPipeline:
                     test_accuracy = accuracy_score(y_test, y_pred)
                     test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
 
@@ -2557,8 +2828,19 @@ class TrainingPipeline:
                     test_bin_recall    = recall_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_f1        = f1_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_accuracy  = accuracy_score(y_test_binary, y_pred_binary)
+                    test_bin_confusion_matrix = confusion_matrix(y_test_binary, y_pred_binary).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
+
+                # Score this iteration's model on the out-of-time hold-out too (tracking only —
+                # model selection below stays keyed on CV score, never on hold-out performance).
+                current_holdout_metrics = None
+                if X_holdout is not None:
+                    current_holdout_metrics = self._evaluate_holdout(
+                        current_best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_xgboost_with_randomized_search_cv"
+                    )
+                holdout_metrics_per_iteration.append(current_holdout_metrics)
 
                 # Select best model on CV score (not on test set) to avoid test-set overfitting
                 if current_cv_score > best_cv_score:
@@ -2568,6 +2850,9 @@ class TrainingPipeline:
 
                 if is_classification:
                     test_f1_scores.append(test_f1)
+                    test_accuracy_scores.append(test_accuracy)
+                    test_precision_scores.append(test_precision)
+                    test_recall_scores.append(test_recall)
                 else:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
@@ -2576,7 +2861,7 @@ class TrainingPipeline:
                     test_bin_recall_scores.append(test_bin_recall)
                     test_bin_f1_scores.append(test_bin_f1)
                     test_bin_accuracy_scores.append(test_bin_accuracy)
-                
+
                 cv_scores.append(current_cv_score)
 
                 # Store detailed results
@@ -2584,12 +2869,18 @@ class TrainingPipeline:
                     'n_iter': n_iter,
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
+                    'test_accuracy': test_accuracy_scores[-1] if is_classification else None,
+                    'test_precision': test_precision_scores[-1] if is_classification else None,
+                    'test_recall': test_recall_scores[-1] if is_classification else None,
+                    'test_confusion_matrix': test_confusion_matrix if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
                     'test_bin_accuracy': test_bin_accuracy_scores[-1] if not is_classification else None,
+                    'test_bin_confusion_matrix': test_bin_confusion_matrix if not is_classification else None,
+                    'holdout_metrics': current_holdout_metrics,
                     'best_params': randomized_search.best_params_
                 })
 
@@ -2604,6 +2895,7 @@ class TrainingPipeline:
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                 final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
                 final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
@@ -2624,6 +2916,7 @@ class TrainingPipeline:
                 final_bin_recall    = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_f1        = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_accuracy  = accuracy_score(y_test_binary, final_y_pred_binary)
+                final_bin_confusion_matrix = confusion_matrix(y_test_binary, final_y_pred_binary).tolist()
 
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
@@ -2739,7 +3032,14 @@ class TrainingPipeline:
                 importance_csv_filename = os.path.join(output_dir, f'xgboost_feature_importance_{file_identifier}.csv')
                 importance_df.sort_values('importance', ascending=False).to_csv(importance_csv_filename, index=False)
                 print(f"      Feature importance data saved to: {importance_csv_filename}")
-        
+
+                # Save confusion matrix plot for the best model
+                cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
+                cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                cm_title = f'XGBoost Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
+                cm_plot_filename = os.path.join(output_dir, f'xgboost_confusion_matrix_{file_identifier}.png')
+                self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
+                print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
 
                 # Create comprehensive results dictionary
                 results = {
@@ -2766,7 +3066,8 @@ class TrainingPipeline:
                         "test_f1": float(final_test_f1),
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
-                        "test_auc": float(final_test_auc)
+                        "test_auc": float(final_test_auc),
+                        "confusion_matrix": final_confusion_matrix
                     }
                 else:
                     results["final_metrics"] = {
@@ -2778,11 +3079,28 @@ class TrainingPipeline:
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
                         "test_bin_f1": float(final_bin_f1),
-                        "test_bin_accuracy": float(final_bin_accuracy)
+                        "test_bin_accuracy": float(final_bin_accuracy),
+                        "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
 
                 # Add iteration-wise metrics summary
-                if not is_classification:
+                if is_classification:
+                    results["iteration_metrics_summary"] = {
+                        "f1_values": [float(x) for x in test_f1_scores],
+                        "accuracy_values": [float(x) for x in test_accuracy_scores],
+                        "precision_values": [float(x) for x in test_precision_scores],
+                        "recall_values": [float(x) for x in test_recall_scores],
+                        "cv_scores": [float(x) for x in cv_scores],
+                        "best_f1": float(max(test_f1_scores)),
+                        "best_accuracy": float(max(test_accuracy_scores)),
+                        "best_precision": float(max(test_precision_scores)),
+                        "best_recall": float(max(test_recall_scores)),
+                        "average_f1": float(np.mean(test_f1_scores)),
+                        "average_accuracy": float(np.mean(test_accuracy_scores)),
+                        "average_precision": float(np.mean(test_precision_scores)),
+                        "average_recall": float(np.mean(test_recall_scores))
+                    }
+                else:
                     results["iteration_metrics_summary"] = {
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
@@ -2799,7 +3117,63 @@ class TrainingPipeline:
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
                         "bin_recall_values": [float(x) for x in test_bin_recall_scores]
                     }
-            
+
+                # Add out-of-time hold-out metrics (never trained/tuned on) if available
+                if X_holdout is not None:
+                    results["holdout_metrics"] = self._evaluate_holdout(
+                        best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_xgboost_with_randomized_search_cv"
+                    )
+                    results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    # Per-iteration hold-out metrics plus a summary mirroring
+                    # iteration_metrics_summary above.
+                    results["holdout_iteration_analysis"] = holdout_metrics_per_iteration
+                    valid_holdout = [h for h in holdout_metrics_per_iteration if h is not None]
+                    if valid_holdout:
+                        if is_classification:
+                            h_acc = [float(h['accuracy']) for h in valid_holdout]
+                            h_f1 = [float(h['f1']) for h in valid_holdout]
+                            h_prec = [float(h['precision']) for h in valid_holdout]
+                            h_rec = [float(h['recall']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "accuracy_values": h_acc,
+                                "f1_values": h_f1,
+                                "precision_values": h_prec,
+                                "recall_values": h_rec,
+                                "best_accuracy": float(max(h_acc)),
+                                "best_f1": float(max(h_f1)),
+                                "best_precision": float(max(h_prec)),
+                                "best_recall": float(max(h_rec)),
+                                "average_accuracy": float(np.mean(h_acc)),
+                                "average_f1": float(np.mean(h_f1)),
+                                "average_precision": float(np.mean(h_prec)),
+                                "average_recall": float(np.mean(h_rec))
+                            }
+                        else:
+                            h_rmse = [float(h['rmse']) for h in valid_holdout]
+                            h_mae = [float(h['mae']) for h in valid_holdout]
+                            h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
+                            h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
+                            h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
+                            h_bin_acc = [float(h['bin_accuracy']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "rmse_values": h_rmse,
+                                "mae_values": h_mae,
+                                "wmape_values": h_wmape,
+                                "best_rmse": float(min(h_rmse)),
+                                "best_mae": float(min(h_mae)),
+                                "best_wmape": float(min(h_wmape)),
+                                "average_rmse": float(np.mean(h_rmse)),
+                                "average_mae": float(np.mean(h_mae)),
+                                "average_wmape": float(np.mean(h_wmape)),
+                                "bin_f1_values": h_bin_f1,
+                                "bin_precision_values": h_bin_prec,
+                                "bin_recall_values": h_bin_rec,
+                                "bin_accuracy_values": h_bin_acc
+                            }
+
             results_file = os.path.join(output_dir, f"xgboost_iteration_analysis_{file_identifier}.json")
             with open(results_file, 'w') as f:
                 results_str = json.loads(json.dumps(results, default=str))
@@ -2830,6 +3204,16 @@ class TrainingPipeline:
                 print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
                 print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
 
+            if results.get("holdout_metrics"):
+                hm = results["holdout_metrics"]
+                print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
+                if is_classification:
+                    print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                else:
+                    print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+                    print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                    print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
+
             if is_classification:
                 return {
                     "success": True,
@@ -2859,7 +3243,7 @@ class TrainingPipeline:
                     "output_directory": output_dir,
                     "results_file": results_file
                 }
-            
+
         except Exception as e:
             error_msg = f"Error in train_xgboost_with_randomized_search_cv: {str(e)}"
             print(f"    train_xgboost_with_randomized_search_cv: {error_msg}")
@@ -2975,6 +3359,11 @@ class TrainingPipeline:
             X_test = test_df[feature_columns]
             y_test = test_df[target_feature]
 
+            # Out-of-time hold-out (optional) — never trained/tuned on, scored later
+            X_holdout, y_holdout = self._load_holdout_set(
+                scaled_data_dir, feature_columns, target_feature, "train_lightgbm_with_randomized_search_cv"
+            )
+
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
 
@@ -3029,12 +3418,16 @@ class TrainingPipeline:
             iteration_results = []
             test_f1_scores = []
             cv_scores = []
+            test_accuracy_scores = []
+            test_precision_scores = []
+            test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
             test_bin_accuracy_scores = []
+            holdout_metrics_per_iteration = []
 
             best_model = None
             best_cv_score = -np.inf
@@ -3082,6 +3475,7 @@ class TrainingPipeline:
                     test_accuracy = accuracy_score(y_test, y_pred)
                     test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
 
@@ -3098,8 +3492,19 @@ class TrainingPipeline:
                     test_bin_recall    = recall_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_f1        = f1_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_accuracy  = accuracy_score(y_test_binary, y_pred_binary)
+                    test_bin_confusion_matrix = confusion_matrix(y_test_binary, y_pred_binary).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
+
+                # Score this iteration's model on the out-of-time hold-out too (tracking only —
+                # model selection below stays keyed on CV score, never on hold-out performance).
+                current_holdout_metrics = None
+                if X_holdout is not None:
+                    current_holdout_metrics = self._evaluate_holdout(
+                        current_best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_lightgbm_with_randomized_search_cv"
+                    )
+                holdout_metrics_per_iteration.append(current_holdout_metrics)
 
                 # Select best model on CV score (not on test set) to avoid test-set overfitting
                 if current_cv_score > best_cv_score:
@@ -3109,6 +3514,9 @@ class TrainingPipeline:
 
                 if is_classification:
                     test_f1_scores.append(test_f1)
+                    test_accuracy_scores.append(test_accuracy)
+                    test_precision_scores.append(test_precision)
+                    test_recall_scores.append(test_recall)
                 else:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
@@ -3125,12 +3533,18 @@ class TrainingPipeline:
                     'n_iter': n_iter,
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
+                    'test_accuracy': test_accuracy_scores[-1] if is_classification else None,
+                    'test_precision': test_precision_scores[-1] if is_classification else None,
+                    'test_recall': test_recall_scores[-1] if is_classification else None,
+                    'test_confusion_matrix': test_confusion_matrix if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
                     'test_bin_accuracy': test_bin_accuracy_scores[-1] if not is_classification else None,
+                    'test_bin_confusion_matrix': test_bin_confusion_matrix if not is_classification else None,
+                    'holdout_metrics': current_holdout_metrics,
                     'best_params': randomized_search.best_params_
                 })
 
@@ -3145,6 +3559,7 @@ class TrainingPipeline:
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                 final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
                 final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
@@ -3165,6 +3580,7 @@ class TrainingPipeline:
                 final_bin_recall    = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_f1        = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_accuracy  = accuracy_score(y_test_binary, final_y_pred_binary)
+                final_bin_confusion_matrix = confusion_matrix(y_test_binary, final_y_pred_binary).tolist()
 
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
@@ -3262,6 +3678,14 @@ class TrainingPipeline:
                 importance_df.sort_values('importance', ascending=False).to_csv(importance_csv_filename, index=False)
                 print(f"      Feature importance data saved to: {importance_csv_filename}")
 
+                # Save confusion matrix plot for the best model
+                cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
+                cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                cm_title = f'LightGBM Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
+                cm_plot_filename = os.path.join(output_dir, f'lightgbm_confusion_matrix_{file_identifier}.png')
+                self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
+                print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
+
                 # Create comprehensive results dictionary
                 results = {
                     "file_identifier": file_identifier,
@@ -3287,7 +3711,8 @@ class TrainingPipeline:
                         "test_f1": float(final_test_f1),
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
-                        "test_auc": float(final_test_auc)
+                        "test_auc": float(final_test_auc),
+                        "confusion_matrix": final_confusion_matrix
                     }
                 else:
                     results["final_metrics"] = {
@@ -3299,11 +3724,28 @@ class TrainingPipeline:
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
                         "test_bin_f1": float(final_bin_f1),
-                        "test_bin_accuracy": float(final_bin_accuracy)
+                        "test_bin_accuracy": float(final_bin_accuracy),
+                        "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
 
                 # Add iteration-wise metrics summary
-                if not is_classification:
+                if is_classification:
+                    results["iteration_metrics_summary"] = {
+                        "f1_values": [float(x) for x in test_f1_scores],
+                        "accuracy_values": [float(x) for x in test_accuracy_scores],
+                        "precision_values": [float(x) for x in test_precision_scores],
+                        "recall_values": [float(x) for x in test_recall_scores],
+                        "cv_scores": [float(x) for x in cv_scores],
+                        "best_f1": float(max(test_f1_scores)),
+                        "best_accuracy": float(max(test_accuracy_scores)),
+                        "best_precision": float(max(test_precision_scores)),
+                        "best_recall": float(max(test_recall_scores)),
+                        "average_f1": float(np.mean(test_f1_scores)),
+                        "average_accuracy": float(np.mean(test_accuracy_scores)),
+                        "average_precision": float(np.mean(test_precision_scores)),
+                        "average_recall": float(np.mean(test_recall_scores))
+                    }
+                else:
                     results["iteration_metrics_summary"] = {
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
@@ -3320,6 +3762,62 @@ class TrainingPipeline:
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
                         "bin_recall_values": [float(x) for x in test_bin_recall_scores]
                     }
+
+                # Add out-of-time hold-out metrics (never trained/tuned on) if available
+                if X_holdout is not None:
+                    results["holdout_metrics"] = self._evaluate_holdout(
+                        best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_lightgbm_with_randomized_search_cv"
+                    )
+                    results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    # Per-iteration hold-out metrics plus a summary mirroring
+                    # iteration_metrics_summary above.
+                    results["holdout_iteration_analysis"] = holdout_metrics_per_iteration
+                    valid_holdout = [h for h in holdout_metrics_per_iteration if h is not None]
+                    if valid_holdout:
+                        if is_classification:
+                            h_acc = [float(h['accuracy']) for h in valid_holdout]
+                            h_f1 = [float(h['f1']) for h in valid_holdout]
+                            h_prec = [float(h['precision']) for h in valid_holdout]
+                            h_rec = [float(h['recall']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "accuracy_values": h_acc,
+                                "f1_values": h_f1,
+                                "precision_values": h_prec,
+                                "recall_values": h_rec,
+                                "best_accuracy": float(max(h_acc)),
+                                "best_f1": float(max(h_f1)),
+                                "best_precision": float(max(h_prec)),
+                                "best_recall": float(max(h_rec)),
+                                "average_accuracy": float(np.mean(h_acc)),
+                                "average_f1": float(np.mean(h_f1)),
+                                "average_precision": float(np.mean(h_prec)),
+                                "average_recall": float(np.mean(h_rec))
+                            }
+                        else:
+                            h_rmse = [float(h['rmse']) for h in valid_holdout]
+                            h_mae = [float(h['mae']) for h in valid_holdout]
+                            h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
+                            h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
+                            h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
+                            h_bin_acc = [float(h['bin_accuracy']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "rmse_values": h_rmse,
+                                "mae_values": h_mae,
+                                "wmape_values": h_wmape,
+                                "best_rmse": float(min(h_rmse)),
+                                "best_mae": float(min(h_mae)),
+                                "best_wmape": float(min(h_wmape)),
+                                "average_rmse": float(np.mean(h_rmse)),
+                                "average_mae": float(np.mean(h_mae)),
+                                "average_wmape": float(np.mean(h_wmape)),
+                                "bin_f1_values": h_bin_f1,
+                                "bin_precision_values": h_bin_prec,
+                                "bin_recall_values": h_bin_rec,
+                                "bin_accuracy_values": h_bin_acc
+                            }
 
                 results_file = os.path.join(output_dir, f"lightgbm_iteration_analysis_{file_identifier}.json")
                 with open(results_file, 'w') as f:
@@ -3348,6 +3846,16 @@ class TrainingPipeline:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
                     print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+
+                if results.get("holdout_metrics"):
+                    hm = results["holdout_metrics"]
+                    print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
+                    if is_classification:
+                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                    else:
+                        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+                        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
 
                 if is_classification:
                     return {
@@ -3499,6 +4007,11 @@ class TrainingPipeline:
             X_test = test_df[feature_columns]
             y_test = test_df[target_feature]
 
+            # Out-of-time hold-out (optional) — never trained/tuned on, scored later
+            X_holdout, y_holdout = self._load_holdout_set(
+                scaled_data_dir, feature_columns, target_feature, "train_random_forest_with_randomized_search_cv"
+            )
+
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
 
@@ -3551,12 +4064,16 @@ class TrainingPipeline:
             iteration_results = []
             test_f1_scores = []
             cv_scores = []
+            test_accuracy_scores = []
+            test_precision_scores = []
+            test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
             test_bin_accuracy_scores = []
+            holdout_metrics_per_iteration = []
 
             best_model = None
             best_cv_score = -np.inf
@@ -3604,6 +4121,7 @@ class TrainingPipeline:
                     test_accuracy = accuracy_score(y_test, y_pred)
                     test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
 
@@ -3620,8 +4138,19 @@ class TrainingPipeline:
                     test_bin_recall    = recall_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_f1        = f1_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_accuracy  = accuracy_score(y_test_binary, y_pred_binary)
+                    test_bin_confusion_matrix = confusion_matrix(y_test_binary, y_pred_binary).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
+
+                # Score this iteration's model on the out-of-time hold-out too (tracking only —
+                # model selection below stays keyed on CV score, never on hold-out performance).
+                current_holdout_metrics = None
+                if X_holdout is not None:
+                    current_holdout_metrics = self._evaluate_holdout(
+                        current_best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_random_forest_with_randomized_search_cv"
+                    )
+                holdout_metrics_per_iteration.append(current_holdout_metrics)
 
                 # Select best model on CV score (not on test set) to avoid test-set overfitting
                 if current_cv_score > best_cv_score:
@@ -3631,6 +4160,9 @@ class TrainingPipeline:
 
                 if is_classification:
                     test_f1_scores.append(test_f1)
+                    test_accuracy_scores.append(test_accuracy)
+                    test_precision_scores.append(test_precision)
+                    test_recall_scores.append(test_recall)
                 else:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
@@ -3647,12 +4179,18 @@ class TrainingPipeline:
                     'n_iter': n_iter,
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
+                    'test_accuracy': test_accuracy_scores[-1] if is_classification else None,
+                    'test_precision': test_precision_scores[-1] if is_classification else None,
+                    'test_recall': test_recall_scores[-1] if is_classification else None,
+                    'test_confusion_matrix': test_confusion_matrix if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
                     'test_bin_accuracy': test_bin_accuracy_scores[-1] if not is_classification else None,
+                    'test_bin_confusion_matrix': test_bin_confusion_matrix if not is_classification else None,
+                    'holdout_metrics': current_holdout_metrics,
                     'best_params': randomized_search.best_params_
                 })
 
@@ -3667,6 +4205,7 @@ class TrainingPipeline:
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                 final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
                 final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
@@ -3687,6 +4226,7 @@ class TrainingPipeline:
                 final_bin_recall    = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_f1        = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_accuracy  = accuracy_score(y_test_binary, final_y_pred_binary)
+                final_bin_confusion_matrix = confusion_matrix(y_test_binary, final_y_pred_binary).tolist()
 
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
@@ -3784,6 +4324,14 @@ class TrainingPipeline:
                 importance_df.sort_values('importance', ascending=False).to_csv(importance_csv_filename, index=False)
                 print(f"      Feature importance data saved to: {importance_csv_filename}")
 
+                # Save confusion matrix plot for the best model
+                cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
+                cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                cm_title = f'Random Forest Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
+                cm_plot_filename = os.path.join(output_dir, f'random_forest_confusion_matrix_{file_identifier}.png')
+                self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
+                print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
+
                 # Create comprehensive results dictionary
                 results = {
                     "file_identifier": file_identifier,
@@ -3809,7 +4357,8 @@ class TrainingPipeline:
                         "test_f1": float(final_test_f1),
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
-                        "test_auc": float(final_test_auc)
+                        "test_auc": float(final_test_auc),
+                        "confusion_matrix": final_confusion_matrix
                     }
                 else:
                     results["final_metrics"] = {
@@ -3821,11 +4370,28 @@ class TrainingPipeline:
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
                         "test_bin_f1": float(final_bin_f1),
-                        "test_bin_accuracy": float(final_bin_accuracy)
+                        "test_bin_accuracy": float(final_bin_accuracy),
+                        "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
 
                 # Add iteration-wise metrics summary
-                if not is_classification:
+                if is_classification:
+                    results["iteration_metrics_summary"] = {
+                        "f1_values": [float(x) for x in test_f1_scores],
+                        "accuracy_values": [float(x) for x in test_accuracy_scores],
+                        "precision_values": [float(x) for x in test_precision_scores],
+                        "recall_values": [float(x) for x in test_recall_scores],
+                        "cv_scores": [float(x) for x in cv_scores],
+                        "best_f1": float(max(test_f1_scores)),
+                        "best_accuracy": float(max(test_accuracy_scores)),
+                        "best_precision": float(max(test_precision_scores)),
+                        "best_recall": float(max(test_recall_scores)),
+                        "average_f1": float(np.mean(test_f1_scores)),
+                        "average_accuracy": float(np.mean(test_accuracy_scores)),
+                        "average_precision": float(np.mean(test_precision_scores)),
+                        "average_recall": float(np.mean(test_recall_scores))
+                    }
+                else:
                     results["iteration_metrics_summary"] = {
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
@@ -3842,6 +4408,62 @@ class TrainingPipeline:
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
                         "bin_recall_values": [float(x) for x in test_bin_recall_scores]
                     }
+
+                # Add out-of-time hold-out metrics (never trained/tuned on) if available
+                if X_holdout is not None:
+                    results["holdout_metrics"] = self._evaluate_holdout(
+                        best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_random_forest_with_randomized_search_cv"
+                    )
+                    results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    # Per-iteration hold-out metrics plus a summary mirroring
+                    # iteration_metrics_summary above.
+                    results["holdout_iteration_analysis"] = holdout_metrics_per_iteration
+                    valid_holdout = [h for h in holdout_metrics_per_iteration if h is not None]
+                    if valid_holdout:
+                        if is_classification:
+                            h_acc = [float(h['accuracy']) for h in valid_holdout]
+                            h_f1 = [float(h['f1']) for h in valid_holdout]
+                            h_prec = [float(h['precision']) for h in valid_holdout]
+                            h_rec = [float(h['recall']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "accuracy_values": h_acc,
+                                "f1_values": h_f1,
+                                "precision_values": h_prec,
+                                "recall_values": h_rec,
+                                "best_accuracy": float(max(h_acc)),
+                                "best_f1": float(max(h_f1)),
+                                "best_precision": float(max(h_prec)),
+                                "best_recall": float(max(h_rec)),
+                                "average_accuracy": float(np.mean(h_acc)),
+                                "average_f1": float(np.mean(h_f1)),
+                                "average_precision": float(np.mean(h_prec)),
+                                "average_recall": float(np.mean(h_rec))
+                            }
+                        else:
+                            h_rmse = [float(h['rmse']) for h in valid_holdout]
+                            h_mae = [float(h['mae']) for h in valid_holdout]
+                            h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
+                            h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
+                            h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
+                            h_bin_acc = [float(h['bin_accuracy']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "rmse_values": h_rmse,
+                                "mae_values": h_mae,
+                                "wmape_values": h_wmape,
+                                "best_rmse": float(min(h_rmse)),
+                                "best_mae": float(min(h_mae)),
+                                "best_wmape": float(min(h_wmape)),
+                                "average_rmse": float(np.mean(h_rmse)),
+                                "average_mae": float(np.mean(h_mae)),
+                                "average_wmape": float(np.mean(h_wmape)),
+                                "bin_f1_values": h_bin_f1,
+                                "bin_precision_values": h_bin_prec,
+                                "bin_recall_values": h_bin_rec,
+                                "bin_accuracy_values": h_bin_acc
+                            }
 
                 results_file = os.path.join(output_dir, f"random_forest_iteration_analysis_{file_identifier}.json")
                 with open(results_file, 'w') as f:
@@ -3870,6 +4492,16 @@ class TrainingPipeline:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
                     print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+
+                if results.get("holdout_metrics"):
+                    hm = results["holdout_metrics"]
+                    print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
+                    if is_classification:
+                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                    else:
+                        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+                        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
 
                 if is_classification:
                     return {
@@ -4025,6 +4657,11 @@ class TrainingPipeline:
             X_test = test_df[feature_columns]
             y_test = test_df[target_feature]
 
+            # Out-of-time hold-out (optional) — never trained/tuned on, scored later
+            X_holdout, y_holdout = self._load_holdout_set(
+                scaled_data_dir, feature_columns, target_feature, "train_logistic_regression_with_randomized_search_cv"
+            )
+
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
 
@@ -4080,12 +4717,16 @@ class TrainingPipeline:
             iteration_results = []
             test_f1_scores = []
             cv_scores = []
+            test_accuracy_scores = []
+            test_precision_scores = []
+            test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
             test_bin_accuracy_scores = []
+            holdout_metrics_per_iteration = []
 
             best_model = None
             best_cv_score = -np.inf
@@ -4133,6 +4774,7 @@ class TrainingPipeline:
                     test_accuracy = accuracy_score(y_test, y_pred)
                     test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
 
@@ -4149,8 +4791,19 @@ class TrainingPipeline:
                     test_bin_recall    = recall_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_f1        = f1_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_accuracy  = accuracy_score(y_test_binary, y_pred_binary)
+                    test_bin_confusion_matrix = confusion_matrix(y_test_binary, y_pred_binary).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
+
+                # Score this iteration's model on the out-of-time hold-out too (tracking only —
+                # model selection below stays keyed on CV score, never on hold-out performance).
+                current_holdout_metrics = None
+                if X_holdout is not None:
+                    current_holdout_metrics = self._evaluate_holdout(
+                        current_best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_logistic_regression_with_randomized_search_cv"
+                    )
+                holdout_metrics_per_iteration.append(current_holdout_metrics)
 
                 # Select best model on CV score (not on test set) to avoid test-set overfitting
                 if current_cv_score > best_cv_score:
@@ -4160,6 +4813,9 @@ class TrainingPipeline:
 
                 if is_classification:
                     test_f1_scores.append(test_f1)
+                    test_accuracy_scores.append(test_accuracy)
+                    test_precision_scores.append(test_precision)
+                    test_recall_scores.append(test_recall)
                 else:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
@@ -4176,12 +4832,18 @@ class TrainingPipeline:
                     'n_iter': n_iter,
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
+                    'test_accuracy': test_accuracy_scores[-1] if is_classification else None,
+                    'test_precision': test_precision_scores[-1] if is_classification else None,
+                    'test_recall': test_recall_scores[-1] if is_classification else None,
+                    'test_confusion_matrix': test_confusion_matrix if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
                     'test_bin_accuracy': test_bin_accuracy_scores[-1] if not is_classification else None,
+                    'test_bin_confusion_matrix': test_bin_confusion_matrix if not is_classification else None,
+                    'holdout_metrics': current_holdout_metrics,
                     'best_params': randomized_search.best_params_
                 })
 
@@ -4196,6 +4858,7 @@ class TrainingPipeline:
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                 final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
                 final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
@@ -4216,6 +4879,7 @@ class TrainingPipeline:
                 final_bin_recall    = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_f1        = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_accuracy  = accuracy_score(y_test_binary, final_y_pred_binary)
+                final_bin_confusion_matrix = confusion_matrix(y_test_binary, final_y_pred_binary).tolist()
 
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
@@ -4318,6 +4982,14 @@ class TrainingPipeline:
                 importance_df.sort_values('importance', ascending=False).to_csv(importance_csv_filename, index=False)
                 print(f"      Feature importance data saved to: {importance_csv_filename}")
 
+                # Save confusion matrix plot for the best model
+                cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
+                cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                cm_title = f'Logistic Regression Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
+                cm_plot_filename = os.path.join(output_dir, f'logistic_regression_confusion_matrix_{file_identifier}.png')
+                self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
+                print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
+
                 # Create comprehensive results dictionary
                 results = {
                     "file_identifier": file_identifier,
@@ -4343,7 +5015,8 @@ class TrainingPipeline:
                         "test_f1": float(final_test_f1),
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
-                        "test_auc": float(final_test_auc)
+                        "test_auc": float(final_test_auc),
+                        "confusion_matrix": final_confusion_matrix
                     }
                 else:
                     results["final_metrics"] = {
@@ -4355,11 +5028,28 @@ class TrainingPipeline:
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
                         "test_bin_f1": float(final_bin_f1),
-                        "test_bin_accuracy": float(final_bin_accuracy)
+                        "test_bin_accuracy": float(final_bin_accuracy),
+                        "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
 
                 # Add iteration-wise metrics summary
-                if not is_classification:
+                if is_classification:
+                    results["iteration_metrics_summary"] = {
+                        "f1_values": [float(x) for x in test_f1_scores],
+                        "accuracy_values": [float(x) for x in test_accuracy_scores],
+                        "precision_values": [float(x) for x in test_precision_scores],
+                        "recall_values": [float(x) for x in test_recall_scores],
+                        "cv_scores": [float(x) for x in cv_scores],
+                        "best_f1": float(max(test_f1_scores)),
+                        "best_accuracy": float(max(test_accuracy_scores)),
+                        "best_precision": float(max(test_precision_scores)),
+                        "best_recall": float(max(test_recall_scores)),
+                        "average_f1": float(np.mean(test_f1_scores)),
+                        "average_accuracy": float(np.mean(test_accuracy_scores)),
+                        "average_precision": float(np.mean(test_precision_scores)),
+                        "average_recall": float(np.mean(test_recall_scores))
+                    }
+                else:
                     results["iteration_metrics_summary"] = {
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
@@ -4376,6 +5066,62 @@ class TrainingPipeline:
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
                         "bin_recall_values": [float(x) for x in test_bin_recall_scores]
                     }
+
+                # Add out-of-time hold-out metrics (never trained/tuned on) if available
+                if X_holdout is not None:
+                    results["holdout_metrics"] = self._evaluate_holdout(
+                        best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_logistic_regression_with_randomized_search_cv"
+                    )
+                    results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    # Per-iteration hold-out metrics plus a summary mirroring
+                    # iteration_metrics_summary above.
+                    results["holdout_iteration_analysis"] = holdout_metrics_per_iteration
+                    valid_holdout = [h for h in holdout_metrics_per_iteration if h is not None]
+                    if valid_holdout:
+                        if is_classification:
+                            h_acc = [float(h['accuracy']) for h in valid_holdout]
+                            h_f1 = [float(h['f1']) for h in valid_holdout]
+                            h_prec = [float(h['precision']) for h in valid_holdout]
+                            h_rec = [float(h['recall']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "accuracy_values": h_acc,
+                                "f1_values": h_f1,
+                                "precision_values": h_prec,
+                                "recall_values": h_rec,
+                                "best_accuracy": float(max(h_acc)),
+                                "best_f1": float(max(h_f1)),
+                                "best_precision": float(max(h_prec)),
+                                "best_recall": float(max(h_rec)),
+                                "average_accuracy": float(np.mean(h_acc)),
+                                "average_f1": float(np.mean(h_f1)),
+                                "average_precision": float(np.mean(h_prec)),
+                                "average_recall": float(np.mean(h_rec))
+                            }
+                        else:
+                            h_rmse = [float(h['rmse']) for h in valid_holdout]
+                            h_mae = [float(h['mae']) for h in valid_holdout]
+                            h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
+                            h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
+                            h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
+                            h_bin_acc = [float(h['bin_accuracy']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "rmse_values": h_rmse,
+                                "mae_values": h_mae,
+                                "wmape_values": h_wmape,
+                                "best_rmse": float(min(h_rmse)),
+                                "best_mae": float(min(h_mae)),
+                                "best_wmape": float(min(h_wmape)),
+                                "average_rmse": float(np.mean(h_rmse)),
+                                "average_mae": float(np.mean(h_mae)),
+                                "average_wmape": float(np.mean(h_wmape)),
+                                "bin_f1_values": h_bin_f1,
+                                "bin_precision_values": h_bin_prec,
+                                "bin_recall_values": h_bin_rec,
+                                "bin_accuracy_values": h_bin_acc
+                            }
 
                 results_file = os.path.join(output_dir, f"logistic_regression_iteration_analysis_{file_identifier}.json")
                 with open(results_file, 'w') as f:
@@ -4404,6 +5150,16 @@ class TrainingPipeline:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
                     print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+
+                if results.get("holdout_metrics"):
+                    hm = results["holdout_metrics"]
+                    print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
+                    if is_classification:
+                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                    else:
+                        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+                        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
 
                 if is_classification:
                     return {
@@ -4559,6 +5315,11 @@ class TrainingPipeline:
             X_test = test_df[feature_columns]
             y_test = test_df[target_feature]
 
+            # Out-of-time hold-out (optional) — never trained/tuned on, scored later
+            X_holdout, y_holdout = self._load_holdout_set(
+                scaled_data_dir, feature_columns, target_feature, "train_naive_bayes_with_randomized_search_cv"
+            )
+
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
 
@@ -4608,12 +5369,16 @@ class TrainingPipeline:
             iteration_results = []
             test_f1_scores = []
             cv_scores = []
+            test_accuracy_scores = []
+            test_precision_scores = []
+            test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
             test_bin_accuracy_scores = []
+            holdout_metrics_per_iteration = []
 
             best_model = None
             best_cv_score = -np.inf
@@ -4661,6 +5426,7 @@ class TrainingPipeline:
                     test_accuracy = accuracy_score(y_test, y_pred)
                     test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
 
@@ -4677,8 +5443,19 @@ class TrainingPipeline:
                     test_bin_recall    = recall_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_f1        = f1_score(y_test_binary, y_pred_binary, zero_division=0)
                     test_bin_accuracy  = accuracy_score(y_test_binary, y_pred_binary)
+                    test_bin_confusion_matrix = confusion_matrix(y_test_binary, y_pred_binary).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
+
+                # Score this iteration's model on the out-of-time hold-out too (tracking only —
+                # model selection below stays keyed on CV score, never on hold-out performance).
+                current_holdout_metrics = None
+                if X_holdout is not None:
+                    current_holdout_metrics = self._evaluate_holdout(
+                        current_best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_naive_bayes_with_randomized_search_cv"
+                    )
+                holdout_metrics_per_iteration.append(current_holdout_metrics)
 
                 # Select best model on CV score (not on test set) to avoid test-set overfitting
                 if current_cv_score > best_cv_score:
@@ -4688,6 +5465,9 @@ class TrainingPipeline:
 
                 if is_classification:
                     test_f1_scores.append(test_f1)
+                    test_accuracy_scores.append(test_accuracy)
+                    test_precision_scores.append(test_precision)
+                    test_recall_scores.append(test_recall)
                 else:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
@@ -4704,12 +5484,18 @@ class TrainingPipeline:
                     'n_iter': n_iter,
                     'cv_score': current_cv_score,
                     'test_metric': test_f1_scores[-1],
+                    'test_accuracy': test_accuracy_scores[-1] if is_classification else None,
+                    'test_precision': test_precision_scores[-1] if is_classification else None,
+                    'test_recall': test_recall_scores[-1] if is_classification else None,
+                    'test_confusion_matrix': test_confusion_matrix if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
                     'test_bin_accuracy': test_bin_accuracy_scores[-1] if not is_classification else None,
+                    'test_bin_confusion_matrix': test_bin_confusion_matrix if not is_classification else None,
+                    'holdout_metrics': current_holdout_metrics,
                     'best_params': randomized_search.best_params_
                 })
 
@@ -4724,6 +5510,7 @@ class TrainingPipeline:
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                 final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
                 final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
@@ -4744,6 +5531,7 @@ class TrainingPipeline:
                 final_bin_recall    = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_f1        = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
                 final_bin_accuracy  = accuracy_score(y_test_binary, final_y_pred_binary)
+                final_bin_confusion_matrix = confusion_matrix(y_test_binary, final_y_pred_binary).tolist()
 
             # Create performance curve plot
             print(f"      Creating performance curve plot...")
@@ -4855,6 +5643,14 @@ class TrainingPipeline:
                 importance_df.sort_values('importance', ascending=False).to_csv(importance_csv_filename, index=False)
                 print(f"      Feature importance data saved to: {importance_csv_filename}")
 
+                # Save confusion matrix plot for the best model
+                cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
+                cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                cm_title = f'{model_name} Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
+                cm_plot_filename = os.path.join(output_dir, f'naive_bayes_confusion_matrix_{file_identifier}.png')
+                self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
+                print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
+
                 # Create comprehensive results dictionary
                 results = {
                     "file_identifier": file_identifier,
@@ -4880,7 +5676,8 @@ class TrainingPipeline:
                         "test_f1": float(final_test_f1),
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
-                        "test_auc": float(final_test_auc)
+                        "test_auc": float(final_test_auc),
+                        "confusion_matrix": final_confusion_matrix
                     }
                 else:
                     results["final_metrics"] = {
@@ -4892,11 +5689,28 @@ class TrainingPipeline:
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
                         "test_bin_f1": float(final_bin_f1),
-                        "test_bin_accuracy": float(final_bin_accuracy)
+                        "test_bin_accuracy": float(final_bin_accuracy),
+                        "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
 
                 # Add iteration-wise metrics summary
-                if not is_classification:
+                if is_classification:
+                    results["iteration_metrics_summary"] = {
+                        "f1_values": [float(x) for x in test_f1_scores],
+                        "accuracy_values": [float(x) for x in test_accuracy_scores],
+                        "precision_values": [float(x) for x in test_precision_scores],
+                        "recall_values": [float(x) for x in test_recall_scores],
+                        "cv_scores": [float(x) for x in cv_scores],
+                        "best_f1": float(max(test_f1_scores)),
+                        "best_accuracy": float(max(test_accuracy_scores)),
+                        "best_precision": float(max(test_precision_scores)),
+                        "best_recall": float(max(test_recall_scores)),
+                        "average_f1": float(np.mean(test_f1_scores)),
+                        "average_accuracy": float(np.mean(test_accuracy_scores)),
+                        "average_precision": float(np.mean(test_precision_scores)),
+                        "average_recall": float(np.mean(test_recall_scores))
+                    }
+                else:
                     results["iteration_metrics_summary"] = {
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
@@ -4913,6 +5727,62 @@ class TrainingPipeline:
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
                         "bin_recall_values": [float(x) for x in test_bin_recall_scores]
                     }
+
+                # Add out-of-time hold-out metrics (never trained/tuned on) if available
+                if X_holdout is not None:
+                    results["holdout_metrics"] = self._evaluate_holdout(
+                        best_model, X_holdout, y_holdout, is_classification, y_shift,
+                        "train_naive_bayes_with_randomized_search_cv"
+                    )
+                    results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    # Per-iteration hold-out metrics plus a summary mirroring
+                    # iteration_metrics_summary above.
+                    results["holdout_iteration_analysis"] = holdout_metrics_per_iteration
+                    valid_holdout = [h for h in holdout_metrics_per_iteration if h is not None]
+                    if valid_holdout:
+                        if is_classification:
+                            h_acc = [float(h['accuracy']) for h in valid_holdout]
+                            h_f1 = [float(h['f1']) for h in valid_holdout]
+                            h_prec = [float(h['precision']) for h in valid_holdout]
+                            h_rec = [float(h['recall']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "accuracy_values": h_acc,
+                                "f1_values": h_f1,
+                                "precision_values": h_prec,
+                                "recall_values": h_rec,
+                                "best_accuracy": float(max(h_acc)),
+                                "best_f1": float(max(h_f1)),
+                                "best_precision": float(max(h_prec)),
+                                "best_recall": float(max(h_rec)),
+                                "average_accuracy": float(np.mean(h_acc)),
+                                "average_f1": float(np.mean(h_f1)),
+                                "average_precision": float(np.mean(h_prec)),
+                                "average_recall": float(np.mean(h_rec))
+                            }
+                        else:
+                            h_rmse = [float(h['rmse']) for h in valid_holdout]
+                            h_mae = [float(h['mae']) for h in valid_holdout]
+                            h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
+                            h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
+                            h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
+                            h_bin_acc = [float(h['bin_accuracy']) for h in valid_holdout]
+                            results["holdout_iteration_summary"] = {
+                                "rmse_values": h_rmse,
+                                "mae_values": h_mae,
+                                "wmape_values": h_wmape,
+                                "best_rmse": float(min(h_rmse)),
+                                "best_mae": float(min(h_mae)),
+                                "best_wmape": float(min(h_wmape)),
+                                "average_rmse": float(np.mean(h_rmse)),
+                                "average_mae": float(np.mean(h_mae)),
+                                "average_wmape": float(np.mean(h_wmape)),
+                                "bin_f1_values": h_bin_f1,
+                                "bin_precision_values": h_bin_prec,
+                                "bin_recall_values": h_bin_rec,
+                                "bin_accuracy_values": h_bin_acc
+                            }
 
                 results_file = os.path.join(output_dir, f"naive_bayes_iteration_analysis_{file_identifier}.json")
                 with open(results_file, 'w') as f:
@@ -4941,6 +5811,16 @@ class TrainingPipeline:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
                     print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+
+                if results.get("holdout_metrics"):
+                    hm = results["holdout_metrics"]
+                    print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
+                    if is_classification:
+                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                    else:
+                        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+                        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
 
                 if is_classification:
                     return {

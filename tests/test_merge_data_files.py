@@ -103,7 +103,10 @@ def test_intersect_strategy_drops_extra_columns(tmp_path):
 
     assert result["success"] is True
     assert "extra" not in result["data"].columns
-    assert sorted(result["data"].columns) == ["a", "b"]
+    # 'year' is stamped onto every row by merge_data_files (parsed from each source
+    # file's YYYY_MM name) so split_dataset can carve out an out-of-time hold-out —
+    # it is always present/common across files, unlike the schema-mismatch columns.
+    assert sorted(result["data"].columns) == ["a", "b", "year"]
 
 
 @patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')
@@ -119,7 +122,9 @@ def test_intersect_strategy_drops_missing_columns(tmp_path):
 
     assert result["success"] is True
     assert "b" not in result["data"].columns
-    assert list(result["data"].columns) == ["a"]
+    # 'year' is stamped onto every row by merge_data_files (see comment above) — it
+    # survives the intersect strategy just like 'a' does.
+    assert list(result["data"].columns) == ["a", "year"]
 
 
 @patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')

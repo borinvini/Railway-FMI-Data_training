@@ -5,6 +5,7 @@ PREPROCESSING_STATE_MACHINE = {
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "add_weather_scenarios_col": True,
+    "add_rolling_weather_scenarios_col": True,
     "weather_scenario_one_hot_encoder": True,
     "process_actual_time_column": True,
     "filter_columns": True,
@@ -25,7 +26,12 @@ FOLDER_FILTER_BY_TARGET_STATION = "data/output/2-filter_by_target_station"
 FOLDER_PROCESS_CAUSES_COLUMN = "data/output/3-process_causes_column"
 FOLDER_ADD_TRAIN_DELAYED_FEATURE = "data/output/4-add_train_delayed_feature"
 FOLDER_ADD_WEATHER_SCENARIOS_COL = "data/output/7-add_weather_scenarios_col"
+FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL = "data/output/7b-add_rolling_weather_scenarios_col"
 FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER = "data/output/8-weather_scenario_one_hot_encoder"
+
+# Rolling window suffixes present in the input data (used by add_rolling_weather_scenarios_col
+# and by weather_scenario_one_hot_encoder to encode the per-window scenario columns)
+ROLLING_WINDOWS = ['12h', '24h', '72h']
 
 FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/9-process_actual_time_column"
 FOLDER_FILTER_COLUMNS = "data/output/10-filter_columns"
@@ -85,6 +91,29 @@ CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
 # Boolean features that need to be converted to numeric
 BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']
 
+# Weather scenario categories, shared by the instant and rolling-window scenario stages
+# and by weather_scenario_one_hot_encoder (order matters for consistent one-hot columns)
+WEATHER_SCENARIO_CATEGORIES = [
+    'Normal/Clear',
+    'Blizzard',
+    'Heavy Snow',
+    'Extreme Cold',
+    'Heavy Rain',
+    'Freezing Rain',
+    'Black Ice',
+    'Dense Fog',
+    'High Winds',
+    'Extreme Heat'
+]
+
+def _weather_scenario_one_hot_names(prefix):
+    """Build the one-hot column names for a given scenario column prefix
+    (e.g. 'weather_scenario' or 'weather_scenario_24h')."""
+    return [
+        f'{prefix}_{category.replace("/", "_").replace(" ", "_")}'
+        for category in WEATHER_SCENARIO_CATEGORIES
+    ]
+
 # Multi category features
 CATEGORICAL_FEATURES = [
     "month",
@@ -92,31 +121,20 @@ CATEGORICAL_FEATURES = [
     "day_of_week",
     "causes",
     "causes_related_to_weather",
-    # Weather scenario one-hot encoded features
-    "weather_scenario_Normal_Clear",
-    "weather_scenario_Blizzard",
-    "weather_scenario_Heavy_Snow",
-    "weather_scenario_Extreme_Cold",
-    "weather_scenario_Heavy_Rain",
-    "weather_scenario_Freezing_Rain",
-    "weather_scenario_Black_Ice",
-    "weather_scenario_Dense_Fog",
-    "weather_scenario_High_Winds",
-    "weather_scenario_Extreme_Heat"
+    # Weather scenario one-hot encoded features (instant)
+    *_weather_scenario_one_hot_names("weather_scenario"),
+    # Weather scenario one-hot encoded features (rolling windows)
+    *[name
+      for window in ROLLING_WINDOWS
+      for name in _weather_scenario_one_hot_names(f"weather_scenario_{window}")],
 ]
 
-# Define weather scenario feature columns
+# Define weather scenario feature columns (instant + rolling windows)
 VALID_WEATHER_SCENARIO_FEATURES = [
-    'weather_scenario_Normal_Clear',
-    'weather_scenario_Blizzard',
-    'weather_scenario_Heavy_Snow',
-    'weather_scenario_Extreme_Cold',
-    'weather_scenario_Heavy_Rain',
-    'weather_scenario_Freezing_Rain',
-    'weather_scenario_Black_Ice',
-    'weather_scenario_Dense_Fog',
-    'weather_scenario_High_Winds',
-    'weather_scenario_Extreme_Heat'
+    *_weather_scenario_one_hot_names("weather_scenario"),
+    *[name
+      for window in ROLLING_WINDOWS
+      for name in _weather_scenario_one_hot_names(f"weather_scenario_{window}")],
 ]
 
 # Set to True to drop trainStopping and commercialStop from training

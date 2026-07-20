@@ -10,9 +10,9 @@ TRAINING_STATE_MACHINE = {
     "scale_weather_features": True,
     "shap_correlation_analysis": True,
     "train_xgboost_with_randomized_search_cv": True,
-    "train_lightgbm_with_randomized_search_cv": False,
-    "train_random_forest_with_randomized_search_cv": False,
-    "train_logistic_regression_with_randomized_search_cv": False,
+    "train_lightgbm_with_randomized_search_cv": True,
+    "train_random_forest_with_randomized_search_cv": True,
+    "train_logistic_regression_with_randomized_search_cv": True,
     "train_naive_bayes_with_randomized_search_cv": True,
 }
 
@@ -69,6 +69,15 @@ TOP_FEATURES_COUNT = 5
 # Test/train split configuration
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
+
+# Out-of-time hold-out: reserve the most recent calendar year as a final evaluation set
+# that is never trained or tuned on, so reported metrics reflect predicting a genuinely
+# future year rather than a random-row split of the same years (which leaks temporally
+# adjacent rows between train and test). merge_data_files stamps HOLDOUT_YEAR_COLUMN onto
+# every row (parsed from each source file's YYYY_MM name); split_dataset carves out the
+# max year into a third *_holdout.parquet file and drops the column before saving.
+HOLDOUT_LAST_YEAR = True
+HOLDOUT_YEAR_COLUMN = 'year'
 
 # Sample weighting parameters for delay-based weighting
 WEIGHT_DELAY_COLUMN = 'NONE' # Put 'NONE' to disable the weights
@@ -206,7 +215,7 @@ SCORE_METRIC = 'f1'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 10
+RANDOM_SEARCH_ITERATIONS = 50
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration

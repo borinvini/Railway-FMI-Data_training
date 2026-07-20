@@ -16,6 +16,9 @@ from src.file_utils import generate_output_path, save_dataframe_to_parquet
 from config.const_preprocessing import (
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
     FOLDER_ADD_WEATHER_SCENARIOS_COL,
+    FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL,
+    ROLLING_WINDOWS,
+    WEATHER_SCENARIO_CATEGORIES,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
     FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS,
     FOLDER_CONVERT_HOUR_TO_SINCOS,
@@ -458,6 +461,33 @@ class PreprocessingPipeline:
                 result["errors"].append("add_weather_scenarios_col skipped - no data available")
         else:
             print(f"    ⊝ add_weather_scenarios_col (disabled)")
+
+        if state_machine.get("add_rolling_weather_scenarios_col", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → add_rolling_weather_scenarios_col")
+                    rolling_weather_scenarios_df = self.add_rolling_weather_scenarios_col(dataframe=result["data"], month_id=file_id)
+
+                    if rolling_weather_scenarios_df is not None:
+                        result["data"] = rolling_weather_scenarios_df
+                        result["steps_executed"].append("add_rolling_weather_scenarios_col")
+                        result["file_info"]["rows"] = len(rolling_weather_scenarios_df)
+                        result["file_info"]["columns"] = len(rolling_weather_scenarios_df.columns)
+                        print(f"      ✓ Added rolling weather scenarios columns for {len(rolling_weather_scenarios_df)} rows")
+                    else:
+                        result["errors"].append("add_rolling_weather_scenarios_col failed")
+                        print(f"      ✗ Failed to add rolling weather scenarios columns")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"add_rolling_weather_scenarios_col failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ add_rolling_weather_scenarios_col (no data available)")
+                result["errors"].append("add_rolling_weather_scenarios_col skipped - no data available")
+        else:
+            print(f"    ⊝ add_rolling_weather_scenarios_col (disabled)")
 
         if state_machine.get("weather_scenario_one_hot_encoder", False):
             if result["data"] is not None:
@@ -1445,17 +1475,291 @@ class PreprocessingPipeline:
         except Exception as save_error:
             print(f"⚠️  Warning: Failed to save processed data: {save_error}")
             print("Continuing with processing, but data was not saved to folder.")
-        
+
+        return df
+
+    def add_rolling_weather_scenarios_col(self, dataframe, month_id=None):
+        """
+        Add categorical weather scenario columns based on rolling-window weather conditions.
+
+        This mirrors add_weather_scenarios_col, but instead of classifying each row from
+        instantaneous readings, it classifies each row from the pre-computed rolling-window
+        aggregates (12h/24h/72h) already present in the input data (columns named e.g.
+        "Air temperature (24h min)", "Precipitation amount (24h cumulative)"). This captures
+        whether a weather scenario condition occurred at any point during each window, rather
+        than only at the instant of the row's own reading.
+
+        For each window W in ROLLING_WINDOWS, a column `weather_scenario_{W}` is added, using
+        the same 10-category vocabulary and priority order as add_weather_scenarios_col, with
+        each condition evaluated on the "worst case" aggregate for that window:
+          - cold thresholds use the window minimum air temperature
+          - heat/wind/intensity/snow-depth thresholds use the window maximum
+          - visibility thresholds use the window minimum
+          - humidity thresholds use the window maximum
+          - precipitation amount thresholds use the window cumulative total
+
+        Two conditions are adapted because their instant inputs have no rolling equivalent:
+          - Blizzard and High Winds use Wind speed only (no rolling Gust speed column exists)
+          - Black Ice drops the dew-point closeness term (no rolling Dew-point column exists)
+
+        If the rolling columns required for a given window are not present in the dataframe,
+        that window's scenario column is skipped with a warning (the other windows still run).
+
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            Input dataframe containing the rolling-window weather columns produced upstream.
+        month_id : str, optional
+            Identifier for the month being processed (e.g., '2024_01')
+
+        Returns:
+        --------
+        pandas.DataFrame
+            Dataframe with one added 'weather_scenario_{window}' column per available window.
+        """
+
+        # Create a copy to avoid modifying the original dataframe
+        df = dataframe.copy()
+
+        month_str = f" for {month_id}" if month_id else ""
+        windows_processed = []
+
+        for window in ROLLING_WINDOWS:
+
+            def col(base, agg):
+                return f"{base} ({window} {agg})"
+
+            # Required rolling columns for this window's scenario logic
+            required_cols = [
+                col('Air temperature', 'min'),
+                col('Air temperature', 'max'),
+                col('Wind speed', 'max'),
+                col('Relative humidity', 'max'),
+                col('Precipitation intensity', 'max'),
+                col('Precipitation amount', 'cumulative'),
+                col('Snow depth', 'max'),
+                col('Horizontal visibility', 'min'),
+            ]
+            missing_cols = [c for c in required_cols if c not in df.columns]
+            if missing_cols:
+                print(f"⚠ Skipping weather_scenario_{window}{month_str}: missing columns {missing_cols}")
+                continue
+
+            # Coerce required columns to numeric, handling any non-numeric values
+            for c in required_cols:
+                df[c] = pd.to_numeric(df[c], errors='coerce')
+
+            scenario_col = f'weather_scenario_{window}'
+            df[scenario_col] = 'Normal/Clear'
+
+            # 1. BLIZZARD/WINTER STORM - Most severe winter condition (Wind speed only; no rolling gust)
+            blizzard_mask = (
+                ((df[col('Precipitation intensity', 'max')] > 1) | (df[col('Precipitation amount', 'cumulative')] > 3)) &
+                (df[col('Air temperature', 'min')] < 0) &
+                (df[col('Wind speed', 'max')] > 10) &
+                (df[col('Horizontal visibility', 'min')] < 1000)
+            )
+            df.loc[blizzard_mask, scenario_col] = 'Blizzard'
+
+            # 2. HEAVY SNOW - Severe snowfall without blizzard conditions
+            heavy_snow_mask = (
+                ((df[col('Precipitation intensity', 'max')] > 2) | (df[col('Precipitation amount', 'cumulative')] > 5)) &
+                (df[col('Air temperature', 'min')] < 0) &
+                (df[col('Snow depth', 'max')] > 0) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[heavy_snow_mask, scenario_col] = 'Heavy Snow'
+
+            # 3. EXTREME COLD - Dangerous cold temperatures
+            extreme_cold_mask = (
+                (df[col('Air temperature', 'min')] < -20) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[extreme_cold_mask, scenario_col] = 'Extreme Cold'
+
+            # 4. HEAVY RAIN - Intense rainfall events
+            heavy_rain_mask = (
+                ((df[col('Precipitation intensity', 'max')] > 4) | (df[col('Precipitation amount', 'cumulative')] > 10)) &
+                (df[col('Air temperature', 'max')] > 2) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[heavy_rain_mask, scenario_col] = 'Heavy Rain'
+
+            # 5. BLACK ICE CONDITIONS - dew-point term dropped (no rolling Dew-point column)
+            black_ice_mask = (
+                (df[col('Air temperature', 'min')] >= -2) &
+                (df[col('Air temperature', 'max')] <= 2) &
+                (df[col('Relative humidity', 'max')] > 80) &
+                (df[col('Precipitation amount', 'cumulative')] <= 0.5) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[black_ice_mask, scenario_col] = 'Black Ice'
+
+            # 6. SLEET/FREEZING RAIN - Active precipitation that freezes on contact
+            sleet_mask = (
+                ((df[col('Precipitation amount', 'cumulative')] > 0) | (df[col('Precipitation intensity', 'max')] > 0)) &
+                (df[col('Air temperature', 'min')] >= -2) &
+                (df[col('Air temperature', 'max')] <= 2) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[sleet_mask, scenario_col] = 'Freezing Rain'
+
+            # 7. DENSE FOG - Low visibility conditions
+            dense_fog_mask = (
+                (df[col('Horizontal visibility', 'min')] < 1000) &
+                (df[col('Precipitation amount', 'cumulative')] <= 0.1) &
+                (df[col('Relative humidity', 'max')] > 95) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[dense_fog_mask, scenario_col] = 'Dense Fog'
+
+            # 8. HIGH WINDS/STORM - Wind speed only (no rolling gust)
+            high_winds_mask = (
+                (df[col('Wind speed', 'max')] > 15) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[high_winds_mask, scenario_col] = 'High Winds'
+
+            # 9. EXTREME HEAT - Dangerous high temperatures
+            extreme_heat_mask = (
+                (df[col('Air temperature', 'max')] > 30) &
+                (df[scenario_col] == 'Normal/Clear')
+            )
+            df.loc[extreme_heat_mask, scenario_col] = 'Extreme Heat'
+
+            windows_processed.append(window)
+
+            # Print summary statistics for this window
+            print(f"\n{'='*60}")
+            print(f"WEATHER SCENARIO DISTRIBUTION ({window}){month_str.upper()}:")
+            print(f"{'='*60}")
+
+            scenario_counts = df[scenario_col].value_counts()
+            scenario_percentages = (df[scenario_col].value_counts(normalize=True) * 100).round(2)
+
+            for scenario in scenario_counts.index:
+                count = scenario_counts[scenario]
+                percentage = scenario_percentages[scenario]
+                print(f"{scenario:<25} : {count:>8,} ({percentage:>6.2f}%)")
+
+            print(f"{'='*60}\n")
+
+        if not windows_processed:
+            print(f"⚠ Warning: No rolling-window weather scenario columns could be created{month_str} (no rolling columns found)")
+
+        print(f"\n--- SAVING add_rolling_weather_scenarios_col DATA ---")
+
+        try:
+            saved_file_path = save_dataframe_to_parquet(
+                folder_path=FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL,
+                month_id=self.current_file_id,
+                df=df,
+                file_prefix="add_rolling_weather_scenarios_col"
+            )
+            print(f"✓ Successfully saved rolling weather scenarios data to: {saved_file_path}")
+        except Exception as save_error:
+            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+            print("Continuing with processing, but data was not saved to folder.")
+
+        return df
+
+    def _one_hot_encode_scenario_column(self, df, scenario_col):
+        """
+        One-hot encode a single weather-scenario categorical column in place, using
+        scikit-learn's OneHotEncoder over the shared WEATHER_SCENARIO_CATEGORIES vocabulary.
+
+        The original column is dropped and the new binary columns are inserted at its
+        original position, named f'{scenario_col}_{category}' (spaces/slashes -> underscores).
+
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            Dataframe to modify (mutated and returned).
+        scenario_col : str
+            Name of the categorical scenario column to encode (e.g. 'weather_scenario',
+            'weather_scenario_24h'). If not present in df, df is returned unchanged.
+
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with scenario_col replaced by its one-hot encoded columns.
+        """
+        if scenario_col not in df.columns:
+            print(f"  ⊝ '{scenario_col}' not found in dataframe - skipping")
+            return df
+
+        # Check for missing values
+        missing_count = df[scenario_col].isnull().sum()
+        if missing_count > 0:
+            print(f"⚠ Warning: {missing_count} missing values in {scenario_col} column")
+            print(f"  Filling missing values with 'Normal/Clear'")
+            df[scenario_col] = df[scenario_col].fillna('Normal/Clear')
+
+        # Display current distribution
+        print(f"\n{scenario_col} Distribution (before encoding):")
+        scenario_counts = df[scenario_col].value_counts()
+        for scenario, count in scenario_counts.items():
+            percentage = (count / len(df)) * 100
+            print(f"  {scenario:<25} : {count:>8,} ({percentage:>6.2f}%)")
+
+        # Check for any unexpected categories
+        unique_scenarios = set(df[scenario_col].unique())
+        expected_scenarios = set(WEATHER_SCENARIO_CATEGORIES)
+        unexpected = unique_scenarios - expected_scenarios
+        if unexpected:
+            print(f"\n⚠ Warning: Found unexpected weather scenarios: {unexpected}")
+            print(f"  These will be treated as unknown categories by the encoder")
+
+        # handle_unknown='ignore' handles unexpected categories gracefully
+        # sparse_output=False returns a dense array (easier to work with)
+        encoder = OneHotEncoder(
+            categories=[WEATHER_SCENARIO_CATEGORIES],
+            sparse_output=False,
+            handle_unknown='ignore',
+            dtype=int
+        )
+
+        print(f"\n✓ Applying OneHotEncoder to '{scenario_col}'...")
+        encoded_array = encoder.fit_transform(df[[scenario_col]])
+
+        # Format: {scenario_col}_CategoryName
+        encoded_column_names = [
+            f'{scenario_col}_{category.replace("/", "_").replace(" ", "_")}'
+            for category in WEATHER_SCENARIO_CATEGORIES
+        ]
+
+        encoded_df = pd.DataFrame(
+            encoded_array,
+            columns=encoded_column_names,
+            index=df.index
+        )
+
+        # Insert the encoded columns at the original column's position, then drop it
+        scenario_col_position = df.columns.get_loc(scenario_col)
+        df = df.drop(columns=[scenario_col])
+        for i, encoded_col in enumerate(encoded_column_names):
+            df.insert(scenario_col_position + i, encoded_col, encoded_df[encoded_col])
+
+        print(f"✓ Original column '{scenario_col}' dropped")
+        print(f"✓ Created {len(encoded_column_names)} one-hot encoded columns:")
+        for encoded_col in encoded_column_names:
+            count_ones = df[encoded_col].sum()
+            percentage = (count_ones / len(df)) * 100
+            print(f"  {encoded_col:<50} : {count_ones:>8,} ({percentage:>6.2f}%)")
+
         return df
 
     def weather_scenario_one_hot_encoder(self, dataframe, month_id=None):
         """
-        Apply one-hot encoding to the weather_scenario column using scikit-learn's OneHotEncoder.
-        
-        This method transforms the categorical weather_scenario column into multiple binary columns,
-        one for each weather scenario category. The original weather_scenario column is dropped
+        Apply one-hot encoding to the weather_scenario column, and to each rolling-window
+        weather_scenario_{window} column produced by add_rolling_weather_scenarios_col
+        (weather_scenario_12h, weather_scenario_24h, weather_scenario_72h), using
+        scikit-learn's OneHotEncoder.
+
+        This method transforms each categorical scenario column into multiple binary columns,
+        one for each weather scenario category. The original categorical columns are dropped
         after encoding.
-        
+
         Weather Scenario Categories (10 total):
         1. Normal/Clear
         2. Blizzard
@@ -1467,140 +1771,63 @@ class PreprocessingPipeline:
         8. Dense Fog
         9. High Winds
         10. Extreme Heat
-        
+
         Parameters:
         -----------
         dataframe : pandas.DataFrame
-            Input dataframe containing the 'weather_scenario' column from previous stage
+            Input dataframe containing the 'weather_scenario' column from add_weather_scenarios_col,
+            and optionally the 'weather_scenario_{window}' columns from
+            add_rolling_weather_scenarios_col.
         month_id : str, optional
             Identifier for the month being processed (e.g., '2024_01')
-            
+
         Returns:
         --------
         pandas.DataFrame
-            Dataframe with one-hot encoded weather scenario columns and original column removed
+            Dataframe with one-hot encoded weather scenario columns and original columns removed
         """
         try:
             # Create a copy to avoid modifying the original dataframe
             df = dataframe.copy()
-            
-            # Define all expected weather scenario categories (order matters for consistency)
-            WEATHER_CATEGORIES = [
-                'Normal/Clear',
-                'Blizzard',
-                'Heavy Snow',
-                'Extreme Cold',
-                'Heavy Rain',
-                'Freezing Rain',
-                'Black Ice',
-                'Dense Fog',
-                'High Winds',
-                'Extreme Heat'
-            ]
-            
+
             print(f"\n{'='*60}")
             print(f"WEATHER SCENARIO ONE-HOT ENCODING")
             print(f"{'='*60}")
             print(f"Processing {len(df):,} rows")
-            
-            # Verify weather_scenario column exists
+
+            # Verify the instant weather_scenario column exists - it is required
             if 'weather_scenario' not in df.columns:
                 error_msg = "Error: 'weather_scenario' column not found in dataframe"
                 print(f"✗ {error_msg}")
                 print(f"Available columns: {list(df.columns)}")
                 return None
-            
-            # Check for missing values in weather_scenario
-            missing_count = df['weather_scenario'].isnull().sum()
-            if missing_count > 0:
-                print(f"⚠ Warning: {missing_count} missing values in weather_scenario column")
-                print(f"  Filling missing values with 'Normal/Clear'")
-                df['weather_scenario'].fillna('Normal/Clear', inplace=True)
-            
-            # Display current weather scenario distribution
-            print(f"\nWeather Scenario Distribution (before encoding):")
-            scenario_counts = df['weather_scenario'].value_counts()
-            for scenario, count in scenario_counts.items():
-                percentage = (count / len(df)) * 100
-                print(f"  {scenario:<25} : {count:>8,} ({percentage:>6.2f}%)")
-            
-            # Check for any unexpected categories
-            unique_scenarios = set(df['weather_scenario'].unique())
-            expected_scenarios = set(WEATHER_CATEGORIES)
-            unexpected = unique_scenarios - expected_scenarios
-            
-            if unexpected:
-                print(f"\n⚠ Warning: Found unexpected weather scenarios: {unexpected}")
-                print(f"  These will be treated as unknown categories by the encoder")
-            
-            # Initialize OneHotEncoder with specified categories
-            # handle_unknown='ignore' will handle any unexpected categories gracefully
-            # sparse_output=False returns a dense array (easier to work with)
-            encoder = OneHotEncoder(
-                categories=[WEATHER_CATEGORIES],
-                sparse_output=False,
-                handle_unknown='ignore',
-                dtype=int
-            )
-            
-            # Fit and transform the weather_scenario column
-            print(f"\n✓ Applying OneHotEncoder...")
-            encoded_array = encoder.fit_transform(df[['weather_scenario']])
-            
-            # Create column names for encoded features
-            # Format: weather_scenario_CategoryName
-            encoded_column_names = [
-                f'weather_scenario_{category.replace("/", "_").replace(" ", "_")}'
-                for category in WEATHER_CATEGORIES
-            ]
-            
-            # Create a dataframe from the encoded array
-            encoded_df = pd.DataFrame(
-                encoded_array,
-                columns=encoded_column_names,
-                index=df.index
-            )
-            
-            # Get the position of the weather_scenario column
-            weather_scenario_position = df.columns.get_loc('weather_scenario')
-            
-            # Drop the original weather_scenario column
-            df = df.drop(columns=['weather_scenario'])
-            
-            # Insert the encoded columns at the original position
-            # This keeps the new columns in a logical place in the dataframe
-            for i, col in enumerate(encoded_column_names):
-                df.insert(weather_scenario_position + i, col, encoded_df[col])
-            
-            # Print encoding results
+
+            # Encode the instant scenario column, then each available rolling-window scenario column
+            scenario_columns = ['weather_scenario'] + [f'weather_scenario_{window}' for window in ROLLING_WINDOWS]
+            for scenario_col in scenario_columns:
+                print(f"\n{'-'*60}")
+                df = self._one_hot_encode_scenario_column(df, scenario_col)
+
             print(f"\n{'='*60}")
             print(f"ENCODING RESULTS:")
             print(f"{'='*60}")
-            print(f"✓ Original column 'weather_scenario' dropped")
-            print(f"✓ Created {len(encoded_column_names)} one-hot encoded columns:")
-            
-            for col in encoded_column_names:
-                count_ones = df[col].sum()
-                percentage = (count_ones / len(df)) * 100
-                print(f"  {col:<50} : {count_ones:>8,} ({percentage:>6.2f}%)")
-            
-            print(f"\n✓ Final dataframe shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+            print(f"✓ Final dataframe shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
             print(f"{'='*60}\n")
-            
+
             # Save the dataframe with one-hot encoded features
             print(f"--- SAVING weather_scenario_one_hot_encoder DATA ---")
-            
+
             saved_file_path = save_dataframe_to_parquet(
                 folder_path=FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
                 month_id=month_id if month_id else self.current_file_id,
                 df=df,
                 file_prefix="weather_scenario_one_hot_encoder"
             )
-            
+
             print(f"✓ Successfully saved one-hot encoded data to: {saved_file_path}")
-            
+
             return df
-            
+
         except Exception as e:
             print(f"✗ Error in weather_scenario_one_hot_encoder: {e}")
             import traceback
