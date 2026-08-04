@@ -33,29 +33,43 @@ def test_unset_data_root_resolves_to_repo_root(tmp_path):
     assert pipeline.project_root == repo_root
 
 
-def test_set_data_root_relocates_output(tmp_path):
+def test_set_data_root_relocates_output(tmp_path, monkeypatch):
     target = str(tmp_path / "scratch")
     os.makedirs(target, exist_ok=True)
-    _, tp_module = _reload_with_env(target)
-    pipeline = tp_module.TrainingPipeline()
-    assert pipeline.project_root == target
-    assert pipeline.output_dir == os.path.join(target, "data/output")
-    # __init__ creates the log dir eagerly; prove it landed under the new root
-    assert os.path.isdir(os.path.join(target, "data", "output", "log"))
-    _reload_with_env(None)  # restore for other tests
+    monkeypatch.setenv("RAILWAY_DATA_ROOT", target)
+    import config.const
+    import src.training_pipeline
+    try:
+        importlib.reload(config.const)
+        importlib.reload(src.training_pipeline)
+        pipeline = src.training_pipeline.TrainingPipeline()
+        assert pipeline.project_root == target
+        assert pipeline.output_dir == os.path.join(target, "data/output")
+        # __init__ creates the log dir eagerly; prove it landed under the new root
+        assert os.path.isdir(os.path.join(target, "data", "output", "log"))
+    finally:
+        # monkeypatch restores the env var automatically, but the modules were reloaded
+        # in place and must be reloaded back to the unset-DATA_ROOT state unconditionally,
+        # even if an assertion above failed, or later tests would leak this tmp_path root.
+        monkeypatch.delenv("RAILWAY_DATA_ROOT", raising=False)
+        importlib.reload(config.const)
+        importlib.reload(src.training_pipeline)
 
 
-def test_ensure_folder_structure_honours_data_root(tmp_path):
+def test_ensure_folder_structure_honours_data_root(tmp_path, monkeypatch):
     target = str(tmp_path / "scratch2")
     os.makedirs(target, exist_ok=True)
-    os.environ["RAILWAY_DATA_ROOT"] = target
+    monkeypatch.setenv("RAILWAY_DATA_ROOT", target)
     import config.const
-    importlib.reload(config.const)
     import src.file_utils
-    importlib.reload(src.file_utils)
-    src.file_utils.ensure_folder_structure()
-    assert os.path.isdir(os.path.join(target, "data", "input"))
-    assert os.path.isdir(os.path.join(target, "data", "output", "log"))
-    os.environ.pop("RAILWAY_DATA_ROOT", None)
-    importlib.reload(config.const)
-    importlib.reload(src.file_utils)
+    try:
+        importlib.reload(config.const)
+        importlib.reload(src.file_utils)
+        src.file_utils.ensure_folder_structure()
+        assert os.path.isdir(os.path.join(target, "data", "input"))
+        assert os.path.isdir(os.path.join(target, "data", "output", "log"))
+    finally:
+        # Same unconditional-restore rationale as test_set_data_root_relocates_output.
+        monkeypatch.delenv("RAILWAY_DATA_ROOT", raising=False)
+        importlib.reload(config.const)
+        importlib.reload(src.file_utils)
