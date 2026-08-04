@@ -9,6 +9,10 @@
 set -euo pipefail
 
 PROJECT="<project>"
+if [ "${PROJECT}" = "<project>" ]; then
+    echo "ERROR: edit this script and set PROJECT to your CSC project ID (see MyCSC)." >&2
+    exit 1
+fi
 SCRATCH="/scratch/${PROJECT}/railway-fmi"
 
 mkdir -p "${SCRATCH}/data/output/101-preprocessed_training_ready"

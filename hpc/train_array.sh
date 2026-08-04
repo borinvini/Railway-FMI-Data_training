@@ -19,6 +19,10 @@
 set -euo pipefail
 
 PROJECT="<project>"
+if [ "${PROJECT}" = "<project>" ]; then
+    echo "ERROR: edit this script and set PROJECT to your CSC project ID (see MyCSC)." >&2
+    exit 1
+fi
 SCRATCH="/scratch/${PROJECT}/railway-fmi"
 
 MODELS=(xgboost lightgbm random_forest logistic_regression naive_bayes)

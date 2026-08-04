@@ -16,6 +16,10 @@
 set -euo pipefail
 
 PROJECT="<project>"
+if [ "${PROJECT}" = "<project>" ]; then
+    echo "ERROR: edit this script and set PROJECT to your CSC project ID (see MyCSC)." >&2
+    exit 1
+fi
 SCRATCH="/scratch/${PROJECT}/railway-fmi"
 
 # Inner estimator threads are pinned to 1 (MODEL_N_JOBS) so the allocated cores
