@@ -58,6 +58,7 @@ from src.file_utils import (
 
 from config.const import (
     OUTPUT_FOLDER,
+    DATA_ROOT,
 )
 
 from config.const_preprocessing import (
@@ -123,7 +124,7 @@ class TrainingPipeline:
         """
         # Get script directory and project root for file operations
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.project_root = os.path.dirname(self.script_dir)
+        self.project_root = DATA_ROOT or os.path.dirname(self.script_dir)
         self.output_dir = os.path.join(self.project_root, OUTPUT_FOLDER)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
         self.random_forest_dir = os.path.join(self.project_root, RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER)

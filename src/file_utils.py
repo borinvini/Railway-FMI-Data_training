@@ -24,6 +24,7 @@ from config.const import (
     INPUT_FOLDER,
     OUTPUT_FOLDER,
     DATA_FILE_PREFIX,
+    DATA_ROOT,
 )
 
 from config.const_preprocessing import (
@@ -71,11 +72,12 @@ def ensure_folder_structure():
     print("Ensuring basic folder structure exists...")
     
     # List of all directories that need to be created
+    # DATA_ROOT is "" locally, so os.path.join leaves these relative — unchanged behaviour.
     required_directories = [
-        FOLDER_NAME,                                    # data/
-        INPUT_FOLDER,                                   # data/input/
-        OUTPUT_FOLDER,                                  # data/output/
-        os.path.join(FOLDER_NAME, "output", "log")      # data/output/log/
+        os.path.join(DATA_ROOT, FOLDER_NAME),                            # data/
+        os.path.join(DATA_ROOT, INPUT_FOLDER),                           # data/input/
+        os.path.join(DATA_ROOT, OUTPUT_FOLDER),                          # data/output/
+        os.path.join(DATA_ROOT, FOLDER_NAME, "output", "log")            # data/output/log/
     ]
     
     created_dirs = []
@@ -117,7 +119,7 @@ def check_parquet_files():
     Returns a list of parquet file paths found.
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
+    project_root = DATA_ROOT or os.path.dirname(script_dir)
     input_folder = os.path.join(project_root, INPUT_FOLDER)
 
     print(f"Looking for parquet files in: {input_folder}")
@@ -2136,8 +2138,8 @@ def find_closest_ems_stations(
     
     # Get script directory and project root for default paths
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    
+    project_root = DATA_ROOT or os.path.dirname(script_dir)
+
     # Set default paths if not provided
     if train_stations_path is None:
         train_stations_path = os.path.join(

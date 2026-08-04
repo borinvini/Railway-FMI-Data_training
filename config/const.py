@@ -1,3 +1,10 @@
+import os
+
+# Absolute path that all relative data folder constants below are resolved against.
+# Empty string means "use the repository root", preserving local behaviour.
+# On CSC this points at /scratch/<project>/railway-fmi.
+DATA_ROOT = os.environ.get("RAILWAY_DATA_ROOT", "")
+
 # Pipeline execution control flag
 EXECUTE_PREPROCESSING_DATA_PIPELINE = False
 EXECUTE_TRAINING_PIPELINE = True

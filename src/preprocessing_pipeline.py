@@ -13,6 +13,10 @@ from sklearn.preprocessing import OneHotEncoder
 
 from src.file_utils import generate_output_path, save_dataframe_to_parquet
 
+from config.const import (
+    DATA_ROOT,
+)
+
 from config.const_preprocessing import (
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
     FOLDER_ADD_WEATHER_SCENARIOS_COL,
@@ -59,7 +63,7 @@ class PreprocessingPipeline:
         """Initialize the PreprocessingPipeline class with default values."""
         # Move relevant initialization from TrainingPipeline
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.project_root = os.path.dirname(self.script_dir)
+        self.project_root = DATA_ROOT or os.path.dirname(self.script_dir)
         self.preprocessed_dir = os.path.join(self.project_root, PREPROCESSED_OUTPUT_FOLDER)
         self.training_ready_dir = os.path.join(self.project_root, TRAINING_READY_OUTPUT_FOLDER)
         
