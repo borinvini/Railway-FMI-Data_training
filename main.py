@@ -117,6 +117,43 @@ def build_state_machine(args, default):
     return default
 
 
+def dump_columns(pipeline, parquet_files):
+    """Print the merged dataset's columns in a form pasteable into SELECTED_COLUMNS.
+
+    Exists so the interactive prompt in select_training_cols never has to run under
+    Slurm, where stdin is /dev/null.
+    """
+    merged = pipeline.merge_data_files(parquet_files)
+    if not merged or not merged.get("success", False):
+        print(f"✗ merge_data_files failed: {merged.get('error') if merged else 'no result'}")
+        return 1
+
+    columns = list(merged["data"].columns)
+    print("\n" + "=" * 60)
+    print(f"CANDIDATE COLUMNS ({len(columns)})")
+    print("=" * 60)
+    for index, name in enumerate(columns, start=1):
+        print(f"  {index:3d}. {name}")
+
+    print("\nPaste the ones you want into SELECTED_COLUMNS in config/const_training.py:")
+    print("SELECTED_COLUMNS = [")
+    for name in columns:
+        print(f"    '{name}',")
+    print("]")
+    return 0
+
+
+def _make_pipeline():
+    """Construct a TrainingPipeline.
+
+    A separate module-level function purely so tests can substitute a fake. The
+    import is deferred because config constants bind at import time and
+    apply_env_overrides() must run first.
+    """
+    from src.training_pipeline import TrainingPipeline
+    return TrainingPipeline()
+
+
 def _run(args):
     """Execute the preprocessing and/or training pipeline.
 
@@ -186,6 +223,9 @@ def _run(args):
     date_range = extract_date_range(parquet_files)
 
     print("\nInitial data check complete.")
+
+    if args.dump_columns:
+        return dump_columns(_make_pipeline(), parquet_files)
 
     if not parquet_files:
         if EXECUTE_PREPROCESSING_DATA_PIPELINE:

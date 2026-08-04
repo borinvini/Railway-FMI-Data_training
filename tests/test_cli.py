@@ -103,3 +103,65 @@ def test_stages_and_model_are_mutually_exclusive():
         pass  # argparse rejects it via parser.error()
     else:
         raise AssertionError("expected --stages combined with --model to be rejected")
+
+
+def test_dump_columns_flag_parses():
+    args = main_module.parse_args(["--dump-columns"])
+    assert args.dump_columns is True
+
+
+def _fake_pipeline_class(calls):
+    """Build a stand-in for TrainingPipeline that records which methods were called."""
+    import pandas as pd
+
+    class FakePipeline:
+        def merge_data_files(self, csv_files):
+            calls["merge"] += 1
+            return {
+                "success": True,
+                "data": pd.DataFrame({"alpha": [1], "beta": [2], "trainDelayed": [0]}),
+            }
+
+        def execute_training_pipeline_steps(self, csv_files, state_machine):
+            calls["train"] += 1
+            return {"success": True}
+
+    return FakePipeline
+
+
+def test_dump_columns_prints_a_pasteable_block(capsys):
+    calls = {"merge": 0, "train": 0}
+    pipeline = _fake_pipeline_class(calls)()
+
+    rc = main_module.dump_columns(pipeline, [])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert calls["merge"] == 1
+    assert calls["train"] == 0, "no trainer may run under --dump-columns"
+    assert "alpha" in out and "beta" in out
+    # The printed block must be pasteable straight into SELECTED_COLUMNS
+    assert "SELECTED_COLUMNS = [" in out
+    assert "'alpha'," in out
+
+
+def test_dump_columns_reports_merge_failure():
+    class FailingPipeline:
+        def merge_data_files(self, csv_files):
+            return {"success": False, "error": "no training-ready files"}
+
+    assert main_module.dump_columns(FailingPipeline(), []) == 1
+
+
+def test_dump_columns_short_circuits_before_training(monkeypatch):
+    """--dump-columns must make _run return via dump_columns without ever reaching
+    the training block, proven by driving the real _run() end-to-end with fakes."""
+    calls = {"merge": 0, "train": 0}
+    monkeypatch.setattr(main_module, "_make_pipeline", _fake_pipeline_class(calls))
+
+    args = main_module.parse_args(["--dump-columns"])
+    rc = main_module._run(args)
+
+    assert rc == 0
+    assert calls["merge"] == 1
+    assert calls["train"] == 0, "training must never run under --dump-columns"
