@@ -3,10 +3,16 @@ import numpy as np
 import os
 
 # Outer RandomizedSearchCV parallelism, and standalone (non-nested) model fits.
-# Slurm sets SLURM_CPUS_PER_TASK to the cores actually allocated; joblib's -1 would
-# instead grab every physical core on the node and thrash. Off-cluster this is -1,
+# RAILWAY_N_JOBS (set by `python main.py --n-jobs`) takes priority so the CLI flag
+# does not have to overwrite Slurm's own SLURM_CPUS_PER_TASK record, which the
+# batch scripts read independently. Falling back to SLURM_CPUS_PER_TASK keeps the
+# allocation-aware default when no explicit --n-jobs is given: Slurm sets it to the
+# cores actually allocated, whereas joblib's -1 would instead grab every physical
+# core on the node and thrash. Off-cluster, with neither variable set, this is -1,
 # preserving local behaviour.
-SEARCH_N_JOBS = int(os.environ.get("SLURM_CPUS_PER_TASK", -1))
+SEARCH_N_JOBS = int(
+    os.environ.get("RAILWAY_N_JOBS", os.environ.get("SLURM_CPUS_PER_TASK", -1))
+)
 
 # Inner estimator threads. Kept at 1 so the cores go to the independent CV fits
 # rather than to OpenMP threads competing with them. Batch scripts also export
