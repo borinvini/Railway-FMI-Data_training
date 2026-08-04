@@ -12,7 +12,7 @@ set -euo pipefail
 
 PROJECT="project_2019266"
 REMOTE_USER="vpozzobo"
-REMOTE_HOST="roihu.csc.fi"
+REMOTE_HOST="roihu-cpu.csc.fi"
 if [ "${PROJECT}" = "<project>" ] || [ "${REMOTE_USER}" = "<username>" ]; then
     echo "ERROR: edit this script and set PROJECT (see MyCSC) and REMOTE_USER." >&2
     exit 1

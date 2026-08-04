@@ -11,10 +11,55 @@ The CSC project ID `project_2019266` is already filled in throughout this runboo
 The CSC username `vpozzobo` is likewise filled in, both here and as `REMOTE_USER` in
 `hpc/stage_data.sh`. Nothing is left to substitute — the scripts are ready to run.
 
+## 0. SSH access (do this first, and repeat daily)
+
+Roihu does **not** accept passwords, and it does not accept a bare public key
+either. It requires a short-lived **SSH certificate** signed by CSC. Two facts
+that catch people out:
+
+- The login host is `roihu-cpu.csc.fi` — not `roihu.csc.fi`.
+- **Certificates expire after 24 hours.** Re-sign each day you work.
+
+**One-time — register your key.** If you do not already have an Ed25519 key:
+
+```bash
+ssh-keygen -t ed25519 -C "your.email@example.com"   # do NOT leave the passphrase empty
+```
+
+Then in [my.csc.fi](https://my.csc.fi) → Profile → SSH PUBLIC KEYS → **+ Add key**,
+paste the contents of `~/.ssh/id_ed25519.pub`. Allow up to an hour for activation.
+
+**Daily — sign the key.** In MyCSC → Profile → SSH PUBLIC KEYS, open the
+three-dot menu beside your key and choose **Sign and download SSH certificate**.
+Save it next to the private key, keeping the exact name:
+
+```
+~/.ssh/id_ed25519-cert.pub
+```
+
+SSH picks the certificate up automatically from that filename — no config needed.
+CSC also publishes a helper that automates the daily signing:
+
+```bash
+python3 csc_cert.py -u vpozzobo ~/.ssh/id_ed25519.pub
+```
+
+**Verify:**
+
+```bash
+ssh vpozzobo@roihu-cpu.csc.fi
+```
+
+| Error | Meaning |
+|---|---|
+| `Permission denied (publickey)` | No valid certificate — sign again in MyCSC |
+| `Network is unreachable` | Usually the wrong hostname, or IPv6 with no IPv6 route — retry with `ssh -4` |
+| `Could not resolve hostname` | Typo in the host name |
+
 ## 1. Connect
 
 ```bash
-ssh vpozzobo@roihu.csc.fi
+ssh vpozzobo@roihu-cpu.csc.fi
 ```
 
 ## 2. Locate your directories
@@ -147,14 +192,14 @@ before the 180-day scratch purge:
 
 ```bash
 mkdir -p results
-rsync -av vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*/ ./results/
+rsync -av vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*/ ./results/
 ```
 
 On Windows, Git Bash has no `rsync`. Use `scp` instead:
 
 ```bash
 mkdir -p results
-scp -r "vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*" ./results/
+scp -r "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*" ./results/
 ```
 
 `train_all.sh` does not use per-task run roots (it is a single sequential job,
@@ -163,9 +208,9 @@ so there is no race to isolate against), so its results land directly under
 
 ```bash
 mkdir -p results
-rsync -av vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*/ ./results/
+rsync -av vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*/ ./results/
 # or, on Windows Git Bash (no rsync):
-scp -r "vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*" ./results/
+scp -r "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*" ./results/
 ```
 
 ## Running a subset
@@ -196,6 +241,8 @@ enables the correct prerequisite chain for you.
 | Trainer runs but produces nothing | `--search-iterations` below 10 | Use 10 or more |
 | `sbatch: error: Invalid account` | Wrong or expired project, or Roihu access not enabled for it | Check the project in MyCSC and confirm `--account=project_2019266` matches |
 | `stage_data.sh` exits "set REMOTE_USER" | `<username>` not replaced | Set `REMOTE_USER` to your CSC username in `hpc/stage_data.sh` |
+| `Permission denied (publickey)` | SSH certificate missing or older than 24 h | Re-sign the key in MyCSC (Section 0) |
+| `ssh: connect ... Network is unreachable` | Wrong host, or IPv6 with no IPv6 route | Use `roihu-cpu.csc.fi`; add `-4` to force IPv4 |
 
 ## Environment deviations
 
