@@ -114,6 +114,8 @@ from config.const_training import (
     SELECTED_COLUMNS,
     SCHEMA_MISMATCH_STRATEGY,
     DELAY_THRESHOLD_MINUTES,
+    SEARCH_N_JOBS,
+    MODEL_N_JOBS,
 )
 
 
@@ -2358,9 +2360,9 @@ class TrainingPipeline:
             print(f"    shap_correlation_analysis: Fitting plain default XGBoost ({problem_type})...")
 
             if is_classification:
-                model = xgb.XGBClassifier(random_state=RANDOM_STATE, n_jobs=-1)
+                model = xgb.XGBClassifier(random_state=RANDOM_STATE, n_jobs=SEARCH_N_JOBS)
             else:
-                model = xgb.XGBRegressor(random_state=RANDOM_STATE, n_jobs=-1)
+                model = xgb.XGBRegressor(random_state=RANDOM_STATE, n_jobs=SEARCH_N_JOBS)
 
             model.fit(X_train, y_train)
 
@@ -2729,14 +2731,14 @@ class TrainingPipeline:
                 cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = xgb.XGBClassifier(
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=MODEL_N_JOBS,
                 )
                 scoring_metric = SCORE_METRIC
             else:
                 cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = xgb.XGBRegressor(
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=MODEL_N_JOBS,
                 )
                 scoring_metric = 'neg_mean_absolute_error'
                 # Shift target so all values are positive, then log-transform to compress
@@ -2786,7 +2788,7 @@ class TrainingPipeline:
                     scoring=scoring_metric,
                     cv=cv_splitter,
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=SEARCH_N_JOBS,
                     verbose=0
                 )
                 
@@ -3389,7 +3391,7 @@ class TrainingPipeline:
                 cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = lgb.LGBMClassifier(
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=MODEL_N_JOBS,
                     subsample_freq=1,
                     verbose=-1,
                 )
@@ -3398,7 +3400,7 @@ class TrainingPipeline:
                 cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = lgb.LGBMRegressor(
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=MODEL_N_JOBS,
                     subsample_freq=1,
                     verbose=-1,
                 )
@@ -3450,7 +3452,7 @@ class TrainingPipeline:
                     scoring=scoring_metric,
                     cv=cv_splitter,
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=SEARCH_N_JOBS,
                     verbose=0
                 )
 
@@ -4037,7 +4039,7 @@ class TrainingPipeline:
                 cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = RandomForestClassifier(
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=MODEL_N_JOBS,
                 )
                 param_distributions=RANDOM_FOREST_PARAM_DISTRIBUTIONS
                 scoring_metric = SCORE_METRIC
@@ -4045,7 +4047,7 @@ class TrainingPipeline:
                 cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
                 base_model = RandomForestRegressor(
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=MODEL_N_JOBS,
                 )
                 param_distributions = RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION
                 scoring_metric = 'neg_mean_absolute_error'
@@ -4096,7 +4098,7 @@ class TrainingPipeline:
                     scoring=scoring_metric,
                     cv=cv_splitter,
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=SEARCH_N_JOBS,
                     verbose=0
                 )
 
@@ -4689,7 +4691,7 @@ class TrainingPipeline:
                     solver='saga',        # only solver supporting l1/l2/elasticnet — enables the full penalty search
                     max_iter=5000,        # avoid ConvergenceWarning spam; not searched
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=MODEL_N_JOBS,
                 )
                 param_distributions = LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS
                 scoring_metric = SCORE_METRIC
@@ -4749,7 +4751,7 @@ class TrainingPipeline:
                     scoring=scoring_metric,
                     cv=cv_splitter,
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=SEARCH_N_JOBS,
                     verbose=0
                 )
 
@@ -5401,7 +5403,7 @@ class TrainingPipeline:
                     scoring=scoring_metric,
                     cv=cv_splitter,
                     random_state=RANDOM_STATE,
-                    n_jobs=-1,
+                    n_jobs=SEARCH_N_JOBS,
                     verbose=0
                 )
 

@@ -27,8 +27,11 @@ def _source():
     return inspect.getsource(TrainingPipeline.train_lightgbm_with_randomized_search_cv)
 
 
-def test_n_jobs_is_minus_one():
-    assert 'n_jobs=-1' in _source()
+def test_search_uses_slurm_aware_n_jobs():
+    source = _source()
+    assert 'n_jobs=-1' not in source, "hardcoded n_jobs=-1 ignores the Slurm allocation"
+    assert 'n_jobs=SEARCH_N_JOBS' in source, "outer RandomizedSearchCV must use SEARCH_N_JOBS"
+    assert 'n_jobs=MODEL_N_JOBS' in source, "inner estimator must use MODEL_N_JOBS"
 
 
 def test_subsample_freq_set_in_constructor():

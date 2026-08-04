@@ -1,5 +1,17 @@
 from scipy.stats import randint, loguniform
 import numpy as np
+import os
+
+# Outer RandomizedSearchCV parallelism, and standalone (non-nested) model fits.
+# Slurm sets SLURM_CPUS_PER_TASK to the cores actually allocated; joblib's -1 would
+# instead grab every physical core on the node and thrash. Off-cluster this is -1,
+# preserving local behaviour.
+SEARCH_N_JOBS = int(os.environ.get("SLURM_CPUS_PER_TASK", -1))
+
+# Inner estimator threads. Kept at 1 so the cores go to the independent CV fits
+# rather than to OpenMP threads competing with them. Batch scripts also export
+# OMP_NUM_THREADS=1 for the same reason.
+MODEL_N_JOBS = 1
 
 TRAINING_STATE_MACHINE = {
     "merge_data_files": True,
@@ -215,7 +227,9 @@ SCORE_METRIC = 'f1'
 
 
 # RandomizedSearchCV settings
-RANDOM_SEARCH_ITERATIONS = 50
+# Minimum meaningful value is 10: training_pipeline.py builds
+# list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10)), which is empty below 10.
+RANDOM_SEARCH_ITERATIONS = int(os.environ.get("RAILWAY_SEARCH_ITERATIONS", 50))
 RANDOM_SEARCH_CV_FOLDS = 5
 
 # Resampling configuration
