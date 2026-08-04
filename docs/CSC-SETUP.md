@@ -4,8 +4,12 @@ Target system is **Roihu**. Puhti and Mahti were retired in July and August 2026
 This workload is **CPU-only** — there is no PyTorch, TensorFlow, or CUDA code in
 the repository, so never request `--gres=gpu`.
 
-Replace `<project>` with your CSC project ID (visible in MyCSC) throughout, including
-inside the `hpc/*.sh` scripts.
+The CSC project ID `project_2019266` is already filled in throughout this runbook and in the
+`hpc/*.sh` scripts. If you switch to a different project, replace it everywhere (including the
+`#SBATCH --account=` line and the `PROJECT=` assignment in each script).
+
+`<username>` is still a placeholder — replace it with your CSC username. In `hpc/stage_data.sh`
+that means setting `REMOTE_USER`; the script refuses to run until you do.
 
 ## 1. Connect
 
@@ -20,15 +24,15 @@ csc-workspaces
 ```
 
 You need two:
-- `/projappl/<project>` — the Python environment. Persistent.
-- `/scratch/<project>` — data and results. **Files untouched for 180 days are deleted.**
+- `/projappl/project_2019266` — the Python environment. Persistent.
+- `/scratch/project_2019266` — data and results. **Files untouched for 180 days are deleted.**
 
 Do not run jobs out of `$HOME`; it is quota-limited and not intended for job I/O.
 
 ## 3. Clone the repository
 
 ```bash
-cd /projappl/<project>
+cd /projappl/project_2019266
 git clone <your-repo-url> railway-fmi-code
 cd railway-fmi-code
 ```
@@ -42,13 +46,13 @@ many-small-files penalty conda otherwise incurs on Lustre.
 
 ```bash
 module load tykky
-conda-containerize new --prefix /projappl/<project>/railway-env environment-linux.yml
+conda-containerize new --prefix /projappl/project_2019266/railway-env environment-linux.yml
 ```
 
 This takes 10-20 minutes. Then:
 
 ```bash
-export PATH="/projappl/<project>/railway-env/bin:$PATH"
+export PATH="/projappl/project_2019266/railway-env/bin:$PATH"
 python -c "import sklearn, xgboost, lightgbm, shap, pyarrow, seaborn, haversine; print('env OK')"
 ```
 
@@ -83,7 +87,7 @@ cat slurm-smoke-*.out
 ```
 
 Look for: no `EOFError`, no `UnicodeEncodeError`, no "Enter column numbers" prompt,
-and a populated `/scratch/<project>/railway-fmi/data/output/1000-xgboost_randomized_search/`.
+and a populated `/scratch/project_2019266/railway-fmi/data/output/1000-xgboost_randomized_search/`.
 
 Then check efficiency:
 
@@ -142,7 +146,7 @@ Each writes a joblib model, JSON metrics, and PNG/PDF figures. Copy them all off
 before the 180-day scratch purge:
 
 ```bash
-rsync -av <username>@roihu.csc.fi:/scratch/<project>/railway-fmi/run_*/data/output/10*/ ./results/
+rsync -av <username>@roihu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*/ ./results/
 ```
 
 `train_all.sh` does not use per-task run roots (it is a single sequential job,
@@ -150,13 +154,13 @@ so there is no race to isolate against), so its results land directly under
 `data/output/10*/`:
 
 ```bash
-rsync -av <username>@roihu.csc.fi:/scratch/<project>/railway-fmi/data/output/10*/ ./results/
+rsync -av <username>@roihu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*/ ./results/
 ```
 
 ## Running a subset
 
 ```bash
-python main.py --data-root /scratch/<project>/railway-fmi --model xgboost
+python main.py --data-root /scratch/project_2019266/railway-fmi --model xgboost
 python main.py --dump-columns          # regenerate the SELECTED_COLUMNS list
 ```
 
@@ -179,7 +183,8 @@ enables the correct prerequisite chain for you.
 | `seff` shows CPU efficiency under 30% | Thread oversubscription | Confirm `OMP_NUM_THREADS=1` and that `MODEL_N_JOBS` is 1 |
 | "No parquet files found" then exits | Preprocessing enabled with an empty `data/input` | Confirm `EXECUTE_PREPROCESSING_DATA_PIPELINE = False` |
 | Trainer runs but produces nothing | `--search-iterations` below 10 | Use 10 or more |
-| `sbatch: error: Invalid account` | `<project>` placeholder not replaced | Set your real project ID in all `hpc/*.sh` |
+| `sbatch: error: Invalid account` | Wrong or expired project, or Roihu access not enabled for it | Check the project in MyCSC and confirm `--account=project_2019266` matches |
+| `stage_data.sh` exits "set REMOTE_USER" | `<username>` not replaced | Set `REMOTE_USER` to your CSC username in `hpc/stage_data.sh` |
 
 ## Environment deviations
 

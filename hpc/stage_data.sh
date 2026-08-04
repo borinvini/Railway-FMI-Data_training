@@ -10,7 +10,7 @@
 # do not run on the cluster.
 set -euo pipefail
 
-PROJECT="<project>"
+PROJECT="project_2019266"
 REMOTE_USER="<username>"
 REMOTE_HOST="roihu.csc.fi"
 if [ "${PROJECT}" = "<project>" ] || [ "${REMOTE_USER}" = "<username>" ]; then

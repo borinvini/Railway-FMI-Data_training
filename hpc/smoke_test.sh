@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=railway-smoke
-#SBATCH --account=<project>
+#SBATCH --account=project_2019266
 #SBATCH --partition=small
 #SBATCH --time=00:30:00
 #SBATCH --ntasks=1
@@ -19,7 +19,7 @@ set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
 
-PROJECT="<project>"
+PROJECT="project_2019266"
 if [ "${PROJECT}" = "<project>" ]; then
     echo "ERROR: edit this script and set PROJECT to your CSC project ID (see MyCSC)." >&2
     exit 1
