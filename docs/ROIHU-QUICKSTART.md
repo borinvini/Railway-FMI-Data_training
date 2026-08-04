@@ -13,7 +13,7 @@ way this goes wrong.
 
 - [x] SSH key + certificate configured
 - [x] Data staged to scratch (96 files, 25 MB)
-- [ ] Branch pushed to GitHub  ← **blocks step 2**
+- [x] Branch pushed to GitHub
 - [ ] Environment built
 - [ ] Smoke test
 
@@ -45,10 +45,10 @@ ssh-keygen -L -f ~/.ssh/id_csc-cert.pub | grep Valid
 
 ---
 
-## 1. [LOCAL] Push the branch
+## 1. [LOCAL] Push the branch — already done
 
-The port lives on `feat/csc-roihu-port`. Without this, the clone in step 2
-gives you `main`, which has none of it.
+`feat/csc-roihu-port` is on GitHub as of 2026-08-04. Nothing to do here unless
+you make further local commits, in which case push them the same way:
 
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
@@ -76,6 +76,16 @@ problem, not a code problem.
 cd /projappl/project_2019266
 git clone https://github.com/borinvini/Railway-FMI-Data_training.git railway-fmi-code
 cd railway-fmi-code
+git checkout feat/csc-roihu-port
+```
+
+**Already cloned before the branch was pushed?** Then `git checkout` fails with
+`pathspec ... did not match any file(s) known to git` — your clone simply
+predates the branch. Fetch it and retry; no need to re-clone:
+
+```bash
+cd /projappl/project_2019266/railway-fmi-code
+git fetch origin
 git checkout feat/csc-roihu-port
 ```
 
