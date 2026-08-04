@@ -16,6 +16,8 @@
 # and `small` queues faster than `medium`.
 set -euo pipefail
 
+cd "$(dirname "$(readlink -f "$0")")/.."
+
 PROJECT="<project>"
 if [ "${PROJECT}" = "<project>" ]; then
     echo "ERROR: edit this script and set PROJECT to your CSC project ID (see MyCSC)." >&2
@@ -27,6 +29,11 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export PYTHONIOENCODING=utf-8
+
+# Since Slurm 22.05, srun no longer inherits --cpus-per-task from the batch
+# allocation on its own; without this a step can start with just 1 CPU and the
+# 750-fit sweep runs serially, blowing the 12h walltime.
+export SRUN_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK}
 
 export PATH="/projappl/${PROJECT}/railway-env/bin:$PATH"
 

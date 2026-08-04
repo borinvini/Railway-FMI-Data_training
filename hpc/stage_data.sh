@@ -1,6 +1,8 @@
 #!/bin/bash
-# Copy code and the preprocessed training data to Roihu scratch.
-# Run on the Roihu LOGIN node, from the repo root. Not a batch job.
+# Push the preprocessed training data to Roihu scratch over SSH.
+# Run on your LOCAL machine, from the repo root. Not a batch job, and not run
+# on Roihu itself: .gitignore excludes *.parquet, so a fresh clone on Roihu has
+# no data/output/101-preprocessed_training_ready/ to copy from.
 #
 # Only data/output/101-preprocessed_training_ready is copied (~25 MB, 96 files):
 # training reads exclusively from there (see training_pipeline.merge_data_files),
@@ -9,20 +11,20 @@
 set -euo pipefail
 
 PROJECT="<project>"
-if [ "${PROJECT}" = "<project>" ]; then
-    echo "ERROR: edit this script and set PROJECT to your CSC project ID (see MyCSC)." >&2
+REMOTE_USER="<username>"
+REMOTE_HOST="roihu.csc.fi"
+if [ "${PROJECT}" = "<project>" ] || [ "${REMOTE_USER}" = "<username>" ]; then
+    echo "ERROR: edit this script and set PROJECT (see MyCSC) and REMOTE_USER." >&2
     exit 1
 fi
+REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 SCRATCH="/scratch/${PROJECT}/railway-fmi"
 
-mkdir -p "${SCRATCH}/data/output/101-preprocessed_training_ready"
-mkdir -p "${SCRATCH}/data/input"
-mkdir -p "${SCRATCH}/data/output/log"
+ssh "${REMOTE}" "mkdir -p '${SCRATCH}/data/output/101-preprocessed_training_ready' '${SCRATCH}/data/output/log'"
 
 rsync -av --progress \
     data/output/101-preprocessed_training_ready/ \
-    "${SCRATCH}/data/output/101-preprocessed_training_ready/"
+    "${REMOTE}:${SCRATCH}/data/output/101-preprocessed_training_ready/"
 
-echo "Staged to ${SCRATCH}"
-echo "Files: $(ls -1 "${SCRATCH}/data/output/101-preprocessed_training_ready" | wc -l) (expected 96)"
-du -sh "${SCRATCH}"
+echo "Staged to ${REMOTE}:${SCRATCH}"
+ssh "${REMOTE}" "echo \"Files: \$(ls -1 '${SCRATCH}/data/output/101-preprocessed_training_ready' | wc -l) (expected 96)\"; du -sh '${SCRATCH}'"

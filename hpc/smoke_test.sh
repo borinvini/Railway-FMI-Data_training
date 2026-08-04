@@ -9,11 +9,15 @@
 #SBATCH --output=slurm-smoke-%j.out
 #
 # Cheapest end-to-end proof that the port works, before spending real allocation.
-# Runs one fast model at the minimum search budget.
+# Runs one model at the minimum search budget, using xgboost rather than a
+# trivial model so this actually exercises XGBoost's OpenMP threading and
+# validates the SEARCH_N_JOBS / MODEL_N_JOBS split (see docs/CSC-SETUP.md).
 #
 # --search-iterations 10 is the SMALLEST valid value: the trainer iterates
 # range(10, N+1, 10), which is empty below 10 and would silently do nothing.
 set -euo pipefail
+
+cd "$(dirname "$(readlink -f "$0")")/.."
 
 PROJECT="<project>"
 if [ "${PROJECT}" = "<project>" ]; then
@@ -31,11 +35,16 @@ export OPENBLAS_NUM_THREADS=1
 # UnicodeEncodeError when writing this .out file.
 export PYTHONIOENCODING=utf-8
 
+# Since Slurm 22.05, srun no longer inherits --cpus-per-task from the batch
+# allocation on its own; without this a step can start with just 1 CPU and
+# never exercise the parallelism this smoke test is meant to validate.
+export SRUN_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK}
+
 export PATH="/projappl/${PROJECT}/railway-env/bin:$PATH"
 
 srun python main.py \
     --data-root "${SCRATCH}" \
-    --model naive_bayes \
+    --model xgboost \
     --search-iterations 10
 
 echo "Smoke test finished. Check CPU efficiency with: seff ${SLURM_JOB_ID}"
