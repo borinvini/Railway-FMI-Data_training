@@ -1,0 +1,53 @@
+# Linux/AMD environment for CSC Roihu. Built with Tykky:
+#   module load tykky
+#   conda-containerize new --prefix /projappl/<project>/railway-env environment-linux.yml
+#
+# Differences from the Windows environment.yml:
+#   - no prefix:, no icc_rt/ucrt/vc/vc14_runtime/vs2015_runtime (Windows-only)
+#   - nomkl + openblas instead of mkl/intel-openmp: Roihu is AMD Turin, where MKL
+#     can select slow codepaths
+#   - adds lightgbm, matplotlib, seaborn, haversine, pyarrow, pytest, which the code
+#     imports but the Windows file omits
+name: venv_rail_fmi_training
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12.3
+  # BLAS: OpenBLAS rather than MKL, for AMD
+  - nomkl
+  - openblas
+  # Core numerics
+  - numpy=2.0.1
+  - pandas=2.2.3
+  - scipy=1.15.1
+  - bottleneck=1.4.2
+  - numexpr=2.10.1
+  - pyarrow
+  # ML
+  - scikit-learn=1.6.1
+  - xgboost=3.0.1
+  - lightgbm
+  - imbalanced-learn=0.13.0
+  - sklearn-compat=0.1.3
+  - shap=0.48.0
+  - slicer=0.0.8
+  - numba=0.61.2
+  - llvmlite=0.44.0
+  # Plotting (Agg backend, headless)
+  - matplotlib
+  - seaborn
+  # Utilities
+  - joblib=1.4.2
+  - threadpoolctl=3.5.0
+  - cloudpickle=3.1.1
+  - psutil=5.9.0
+  - tqdm=4.67.1
+  - haversine
+  - python-dateutil=2.9.0.post0
+  - pytz=2024.1
+  - tzdata
+  - packaging=25.0
+  - six=1.16.0
+  - typing_extensions=4.14.1
+  # Testing
+  - pytest
