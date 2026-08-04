@@ -246,6 +246,20 @@ enables the correct prerequisite chain for you.
 
 ## Environment deviations
 
-Record here any pin relaxed relative to `environment-linux.yml`:
+Record here any pin relaxed relative to the Windows `environment.yml`:
 
-- (none yet)
+**2026-08-04 — `psutil` unpinned (was `=5.9.0`).** The first Tykky build failed
+with "Could not solve for environment specs": `psutil 5.9.0` has no `cp312` build
+on conda-forge/linux-64 (only 3.7–3.10 and pypy), so it could not coexist with
+`python=3.12.3`. `psutil` is imported at `src/training_pipeline.py:14` but is not
+used for any numerical work, so the version does not affect results.
+
+At the same time, these pure-utility pins were relaxed pre-emptively, to avoid
+paying a 10–20 minute rebuild per discovery: `bottleneck`, `numexpr`,
+`cloudpickle`, `tqdm`, `python-dateutil`, `pytz`, `packaging`, `six`,
+`typing_extensions`. None affects numerical output.
+
+Still pinned exactly, because they *do* affect results: `python=3.12.3`,
+`numpy=2.0.1`, `pandas=2.2.3`, `scipy=1.15.1`, `scikit-learn=1.6.1`,
+`xgboost=3.0.1`, `shap=0.48.0`, `imbalanced-learn=0.13.0`, `sklearn-compat`,
+`slicer`, `numba`, `llvmlite`, `joblib`, `threadpoolctl`.

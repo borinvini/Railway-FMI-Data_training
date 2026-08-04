@@ -8,6 +8,15 @@
 #     can select slow codepaths
 #   - adds lightgbm, matplotlib, seaborn, haversine, pyarrow, pytest, which the code
 #     imports but the Windows file omits
+#
+# Pinning policy: packages that affect numerical results stay pinned to the exact
+# Windows versions (python, numpy, pandas, scipy, scikit-learn, xgboost, shap,
+# imbalanced-learn, numba/llvmlite). Pure utilities are left unpinned, because a
+# pin that cannot be satisfied on linux-64 costs a 10-20 minute rebuild to
+# discover and buys no reproducibility.
+#
+# Known conda-forge/linux-64 gap: psutil 5.9.0 has no cp312 build (only 3.7-3.10
+# and pypy), so pinning it made the whole solve fail against python 3.12.3.
 name: venv_rail_fmi_training
 channels:
   - conda-forge
@@ -20,8 +29,8 @@ dependencies:
   - numpy=2.0.1
   - pandas=2.2.3
   - scipy=1.15.1
-  - bottleneck=1.4.2
-  - numexpr=2.10.1
+  - bottleneck
+  - numexpr
   - pyarrow
   # ML
   - scikit-learn=1.6.1
@@ -36,18 +45,19 @@ dependencies:
   # Plotting (Agg backend, headless)
   - matplotlib
   - seaborn
-  # Utilities
+  # Utilities — deliberately unpinned (see pinning policy above). psutil in
+  # particular MUST stay unpinned: 5.9.0 has no cp312 build on conda-forge.
   - joblib=1.4.2
   - threadpoolctl=3.5.0
-  - cloudpickle=3.1.1
-  - psutil=5.9.0
-  - tqdm=4.67.1
+  - cloudpickle
+  - psutil
+  - tqdm
   - haversine
-  - python-dateutil=2.9.0.post0
-  - pytz=2024.1
+  - python-dateutil
+  - pytz
   - tzdata
-  - packaging=25.0
-  - six=1.16.0
-  - typing_extensions=4.14.1
+  - packaging
+  - six
+  - typing_extensions
   # Testing
   - pytest
