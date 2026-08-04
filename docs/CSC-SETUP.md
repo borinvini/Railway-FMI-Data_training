@@ -8,13 +8,13 @@ The CSC project ID `project_2019266` is already filled in throughout this runboo
 `hpc/*.sh` scripts. If you switch to a different project, replace it everywhere (including the
 `#SBATCH --account=` line and the `PROJECT=` assignment in each script).
 
-`<username>` is still a placeholder — replace it with your CSC username. In `hpc/stage_data.sh`
-that means setting `REMOTE_USER`; the script refuses to run until you do.
+The CSC username `vpozzobo` is likewise filled in, both here and as `REMOTE_USER` in
+`hpc/stage_data.sh`. Nothing is left to substitute — the scripts are ready to run.
 
 ## 1. Connect
 
 ```bash
-ssh <username>@roihu.csc.fi
+ssh vpozzobo@roihu.csc.fi
 ```
 
 ## 2. Locate your directories
@@ -61,8 +61,8 @@ If a pinned version fails to solve on `linux-64`, relax that single pin in
 
 ## 5. Stage the data
 
-From your **local machine**, in the repo root, edit `hpc/stage_data.sh` to set
-`PROJECT` and `REMOTE_USER`, then run it. It copies the preprocessed training set
+From your **local machine**, in the repo root, run the staging script. `PROJECT` and
+`REMOTE_USER` are already set in it. It copies the preprocessed training set
 (~25 MB, 96 files) to scratch over SSH and prints a file-count and `du -sh` check
 at the end:
 
@@ -146,7 +146,7 @@ Each writes a joblib model, JSON metrics, and PNG/PDF figures. Copy them all off
 before the 180-day scratch purge:
 
 ```bash
-rsync -av <username>@roihu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*/ ./results/
+rsync -av vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*/ ./results/
 ```
 
 `train_all.sh` does not use per-task run roots (it is a single sequential job,
@@ -154,7 +154,7 @@ so there is no race to isolate against), so its results land directly under
 `data/output/10*/`:
 
 ```bash
-rsync -av <username>@roihu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*/ ./results/
+rsync -av vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*/ ./results/
 ```
 
 ## Running a subset
