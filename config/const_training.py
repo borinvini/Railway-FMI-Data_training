@@ -37,8 +37,168 @@ MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/505-scale_weather_feat
 SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER = "data/output/700-shap_correlation_analysis"
 SHAP_CORRELATION_TOP_N_PAIRS = 20     # Feature pairs shown in the top-correlated-pairs bar chart
 SHAP_CORRELATION_TOP_N_FEATURES = 15  # Features shown in the top-correlated-features sub-heatmap
-SELECTED_COLUMNS = []  # Empty = interactive prompt; populate to skip prompt
-SCHEMA_MISMATCH_STRATEGY = ''  # '' = ask interactively; 'intersect' = auto-drop; 'fail' = auto-fail
+# Frozen from `python main.py --dump-columns` on 2026-08-04. Explicit rather than
+# empty so batch jobs never reach the interactive prompt at training_pipeline.py:1364,
+# which sits inside a `while True:` loop and would consume the entire walltime.
+#
+# The captured merge produced 138 common columns (SCHEMA_MISMATCH_STRATEGY='intersect'
+# drops the 10 "Cloud amount" columns absent from the 2018-01..2019-05 files; FMI did
+# not supply cloud data before June 2019). From those 138, four are excluded here:
+#   - differenceInMinutes, differenceInMinutes_offset,
+#     differenceInMinutes_eachStation_offset: direct transformations of the delay
+#     outcome; including any as a predictor would leak the answer.
+#   - year: HOLDOUT_YEAR_COLUMN, stamped by merge_data_files purely so split_dataset
+#     can carve out the out-of-time hold-out. select_training_cols force-keeps it
+#     even when absent from this list (training_pipeline.py:1416-1418), and
+#     split_dataset drops it again right after the split, so it never reaches
+#     balancing/scaling/training — it is not a predictive feature.
+#
+# trainDelayed (the target) is deliberately KEPT: every trainer stage derives its
+# feature matrix as `[c for c in train_df.columns if c != target_feature]`
+# (training_pipeline.py e.g. lines 2355, 2698), so the target column must survive
+# select_training_cols to be available as the label — dropping it here does not
+# reduce leakage (the trainers already exclude it from X by name) and instead
+# breaks training outright with "Target feature 'trainDelayed' not found in
+# dataset", confirmed by an end-to-end run during this task.
+SELECTED_COLUMNS = [
+    'trainDelayed',
+    'cancelled',
+    'trainStopping',
+    'commercialStop',
+    'month',
+    'month_sin',
+    'month_cos',
+    'hour_sin',
+    'hour_cos',
+    'hour',
+    'day_of_week',
+    'day_week_sin',
+    'day_week_cos',
+    'day_of_month',
+    'causes_related_to_weather',
+    'Air temperature',
+    'Wind speed',
+    'Gust speed',
+    'Wind direction',
+    'Relative humidity',
+    'Dew-point temperature',
+    'Precipitation intensity',
+    'Snow depth',
+    'Pressure (msl)',
+    'Horizontal visibility',
+    'weather_scenario_Normal_Clear',
+    'weather_scenario_Blizzard',
+    'weather_scenario_Heavy_Snow',
+    'weather_scenario_Extreme_Cold',
+    'weather_scenario_Heavy_Rain',
+    'weather_scenario_Freezing_Rain',
+    'weather_scenario_Black_Ice',
+    'weather_scenario_Dense_Fog',
+    'weather_scenario_High_Winds',
+    'weather_scenario_Extreme_Heat',
+    'weather_scenario_12h_Normal_Clear',
+    'weather_scenario_12h_Blizzard',
+    'weather_scenario_12h_Heavy_Snow',
+    'weather_scenario_12h_Extreme_Cold',
+    'weather_scenario_12h_Heavy_Rain',
+    'weather_scenario_12h_Freezing_Rain',
+    'weather_scenario_12h_Black_Ice',
+    'weather_scenario_12h_Dense_Fog',
+    'weather_scenario_12h_High_Winds',
+    'weather_scenario_12h_Extreme_Heat',
+    'weather_scenario_24h_Normal_Clear',
+    'weather_scenario_24h_Blizzard',
+    'weather_scenario_24h_Heavy_Snow',
+    'weather_scenario_24h_Extreme_Cold',
+    'weather_scenario_24h_Heavy_Rain',
+    'weather_scenario_24h_Freezing_Rain',
+    'weather_scenario_24h_Black_Ice',
+    'weather_scenario_24h_Dense_Fog',
+    'weather_scenario_24h_High_Winds',
+    'weather_scenario_24h_Extreme_Heat',
+    'weather_scenario_72h_Normal_Clear',
+    'weather_scenario_72h_Blizzard',
+    'weather_scenario_72h_Heavy_Snow',
+    'weather_scenario_72h_Extreme_Cold',
+    'weather_scenario_72h_Heavy_Rain',
+    'weather_scenario_72h_Freezing_Rain',
+    'weather_scenario_72h_Black_Ice',
+    'weather_scenario_72h_Dense_Fog',
+    'weather_scenario_72h_High_Winds',
+    'weather_scenario_72h_Extreme_Heat',
+    'Air temperature (12h max)',
+    'Air temperature (12h min)',
+    'Air temperature (12h mean)',
+    'Air temperature (24h max)',
+    'Air temperature (24h min)',
+    'Air temperature (24h mean)',
+    'Air temperature (72h max)',
+    'Air temperature (72h min)',
+    'Air temperature (72h mean)',
+    'Wind speed (12h max)',
+    'Wind speed (12h min)',
+    'Wind speed (12h mean)',
+    'Wind speed (24h max)',
+    'Wind speed (24h min)',
+    'Wind speed (24h mean)',
+    'Wind speed (72h max)',
+    'Wind speed (72h min)',
+    'Wind speed (72h mean)',
+    'Relative humidity (12h max)',
+    'Relative humidity (12h min)',
+    'Relative humidity (12h mean)',
+    'Relative humidity (24h max)',
+    'Relative humidity (24h min)',
+    'Relative humidity (24h mean)',
+    'Relative humidity (72h max)',
+    'Relative humidity (72h min)',
+    'Relative humidity (72h mean)',
+    'Precipitation intensity (12h max)',
+    'Precipitation intensity (12h min)',
+    'Precipitation intensity (12h mean)',
+    'Precipitation intensity (24h max)',
+    'Precipitation intensity (24h min)',
+    'Precipitation intensity (24h mean)',
+    'Precipitation intensity (72h max)',
+    'Precipitation intensity (72h min)',
+    'Precipitation intensity (72h mean)',
+    'Snow depth (12h max)',
+    'Snow depth (12h min)',
+    'Snow depth (12h mean)',
+    'Snow depth (24h max)',
+    'Snow depth (24h min)',
+    'Snow depth (24h mean)',
+    'Snow depth (72h max)',
+    'Snow depth (72h min)',
+    'Snow depth (72h mean)',
+    'Pressure (msl) (12h max)',
+    'Pressure (msl) (12h min)',
+    'Pressure (msl) (12h mean)',
+    'Pressure (msl) (24h max)',
+    'Pressure (msl) (24h min)',
+    'Pressure (msl) (24h mean)',
+    'Pressure (msl) (72h max)',
+    'Pressure (msl) (72h min)',
+    'Pressure (msl) (72h mean)',
+    'Horizontal visibility (12h max)',
+    'Horizontal visibility (12h min)',
+    'Horizontal visibility (12h mean)',
+    'Horizontal visibility (24h max)',
+    'Horizontal visibility (24h min)',
+    'Horizontal visibility (24h mean)',
+    'Horizontal visibility (72h max)',
+    'Horizontal visibility (72h min)',
+    'Horizontal visibility (72h mean)',
+    'Precipitation amount (12h mean)',
+    'Precipitation amount (12h cumulative)',
+    'Precipitation amount (24h mean)',
+    'Precipitation amount (24h cumulative)',
+    'Precipitation amount (72h mean)',
+    'Precipitation amount (72h cumulative)',
+]
+# 'intersect' rather than '' so batch jobs never block on input(): under Slurm
+# stdin is /dev/null and the prompt at training_pipeline.py:1109 would raise EOFError.
+SCHEMA_MISMATCH_STRATEGY = 'intersect'  # 'intersect' = auto-drop; 'fail' = auto-fail; '' = ask
 
 # Asymmetric quantile thresholds for delay outlier removal
 # Lower tail: conservative cut (few implausibly-early arrivals)

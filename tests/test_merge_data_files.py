@@ -87,7 +87,10 @@ def test_schema_check_single_file_passes(tmp_path):
 
 def test_schema_mismatch_constant_exists():
     from config.const_training import SCHEMA_MISMATCH_STRATEGY
-    assert SCHEMA_MISMATCH_STRATEGY == ''
+    # Frozen to 'intersect' (CSC Roihu port, Task 7) so batch jobs under Slurm
+    # never block on the input() prompt at training_pipeline.py:1109, where
+    # stdin is /dev/null and would raise EOFError.
+    assert SCHEMA_MISMATCH_STRATEGY == 'intersect'
 
 
 @patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')

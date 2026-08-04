@@ -1,3 +1,4 @@
 hpc/*.sh text eol=lf
 *.sh text eol=lf
 environment-linux.yml text eol=lf
+docs/CSC-SETUP.md text eol=lf
