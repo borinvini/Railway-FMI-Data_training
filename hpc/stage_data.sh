@@ -22,9 +22,25 @@ SCRATCH="/scratch/${PROJECT}/railway-fmi"
 
 ssh "${REMOTE}" "mkdir -p '${SCRATCH}/data/output/101-preprocessed_training_ready' '${SCRATCH}/data/output/log'"
 
-rsync -av --progress \
-    data/output/101-preprocessed_training_ready/ \
-    "${REMOTE}:${SCRATCH}/data/output/101-preprocessed_training_ready/"
+SRC="data/output/101-preprocessed_training_ready"
+DEST="${REMOTE}:${SCRATCH}/data/output/101-preprocessed_training_ready/"
+
+if [ ! -d "${SRC}" ]; then
+    echo "ERROR: ${SRC} not found. Run this from the repository root on the machine" >&2
+    echo "       that holds the preprocessed data (your local machine, not Roihu)." >&2
+    exit 1
+fi
+
+# rsync is absent from Git Bash on Windows, so fall back to scp. The payload is
+# ~25 MB across 96 files, so rsync's delta transfer buys us nothing here — the
+# only real loss is resumability, which barely matters at this size.
+if command -v rsync >/dev/null 2>&1; then
+    echo "Transferring with rsync..."
+    rsync -av --progress "${SRC}/" "${DEST}"
+else
+    echo "rsync not found; falling back to scp (fine for ~25 MB)."
+    scp -r "${SRC}/." "${DEST}"
+fi
 
 echo "Staged to ${REMOTE}:${SCRATCH}"
 ssh "${REMOTE}" "echo \"Files: \$(ls -1 '${SCRATCH}/data/output/101-preprocessed_training_ready' | wc -l) (expected 96)\"; du -sh '${SCRATCH}'"

@@ -146,7 +146,15 @@ Each writes a joblib model, JSON metrics, and PNG/PDF figures. Copy them all off
 before the 180-day scratch purge:
 
 ```bash
+mkdir -p results
 rsync -av vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*/ ./results/
+```
+
+On Windows, Git Bash has no `rsync`. Use `scp` instead:
+
+```bash
+mkdir -p results
+scp -r "vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/10*" ./results/
 ```
 
 `train_all.sh` does not use per-task run roots (it is a single sequential job,
@@ -154,7 +162,10 @@ so there is no race to isolate against), so its results land directly under
 `data/output/10*/`:
 
 ```bash
+mkdir -p results
 rsync -av vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*/ ./results/
+# or, on Windows Git Bash (no rsync):
+scp -r "vpozzobo@roihu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/10*" ./results/
 ```
 
 ## Running a subset
