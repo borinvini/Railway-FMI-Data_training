@@ -63,7 +63,10 @@ def test_prerequisite_stages_are_all_real_stages():
         assert stage in TRAINING_STATE_MACHINE
 
 
-def test_apply_env_overrides_sets_variables():
+def test_apply_env_overrides_sets_variables(monkeypatch):
+    monkeypatch.delenv("RAILWAY_DATA_ROOT", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.delenv("RAILWAY_SEARCH_ITERATIONS", raising=False)
     args = main_module.parse_args(
         ["--data-root", "/scratch/x", "--n-jobs", "40", "--search-iterations", "10"]
     )
@@ -71,13 +74,12 @@ def test_apply_env_overrides_sets_variables():
     assert os.environ["RAILWAY_DATA_ROOT"] == "/scratch/x"
     assert os.environ["SLURM_CPUS_PER_TASK"] == "40"
     assert os.environ["RAILWAY_SEARCH_ITERATIONS"] == "10"
-    for var in ("RAILWAY_DATA_ROOT", "SLURM_CPUS_PER_TASK", "RAILWAY_SEARCH_ITERATIONS"):
-        os.environ.pop(var, None)
 
 
-def test_apply_env_overrides_is_a_noop_without_flags():
-    for var in ("RAILWAY_DATA_ROOT", "SLURM_CPUS_PER_TASK", "RAILWAY_SEARCH_ITERATIONS"):
-        os.environ.pop(var, None)
+def test_apply_env_overrides_is_a_noop_without_flags(monkeypatch):
+    monkeypatch.delenv("RAILWAY_DATA_ROOT", raising=False)
+    monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
+    monkeypatch.delenv("RAILWAY_SEARCH_ITERATIONS", raising=False)
     main_module.apply_env_overrides(main_module.parse_args([]))
     assert "RAILWAY_DATA_ROOT" not in os.environ
     assert "SLURM_CPUS_PER_TASK" not in os.environ
@@ -92,3 +94,12 @@ def test_search_iterations_below_ten_is_rejected():
         pass  # argparse rejects it
     else:
         raise AssertionError("expected --search-iterations 5 to be rejected")
+
+
+def test_stages_and_model_are_mutually_exclusive():
+    try:
+        main_module.parse_args(["--stages", "merge_data_files", "--model", "xgboost"])
+    except SystemExit:
+        pass  # argparse rejects it via parser.error()
+    else:
+        raise AssertionError("expected --stages combined with --model to be rejected")

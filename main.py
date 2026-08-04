@@ -118,6 +118,13 @@ def build_state_machine(args, default):
 
 
 def _run(args):
+    """Execute the preprocessing and/or training pipeline.
+
+    Called after parse_args() and apply_env_overrides() have already run, so
+    `args` holds the parsed CLI flags and any env-based overrides (data root,
+    n-jobs, search iterations) are already reflected in the config constants
+    imported below.
+    """
     # Imported here, not at module scope: config constants are bound at import
     # time, so apply_env_overrides() must have already run.
     from src.file_utils import check_parquet_files, extract_date_range, ensure_folder_structure
@@ -142,9 +149,6 @@ def _run(args):
         TRAINING_STATE_MACHINE,
     )
 
-    """
-    Main function to execute the script.
-    """
     # STEP 1: Ensure folder structure exists BEFORE any other operations
     print("="*60)
     print("RAILWAY FMI DATA PROCESSING - INITIALIZATION")
