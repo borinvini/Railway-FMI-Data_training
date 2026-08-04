@@ -65,6 +65,7 @@ def test_prerequisite_stages_are_all_real_stages():
 
 def test_apply_env_overrides_sets_variables(monkeypatch):
     monkeypatch.delenv("RAILWAY_DATA_ROOT", raising=False)
+    monkeypatch.delenv("RAILWAY_N_JOBS", raising=False)
     monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
     monkeypatch.delenv("RAILWAY_SEARCH_ITERATIONS", raising=False)
     args = main_module.parse_args(
@@ -72,18 +73,57 @@ def test_apply_env_overrides_sets_variables(monkeypatch):
     )
     main_module.apply_env_overrides(args)
     assert os.environ["RAILWAY_DATA_ROOT"] == "/scratch/x"
-    assert os.environ["SLURM_CPUS_PER_TASK"] == "40"
+    # --n-jobs must set its own variable, not overwrite Slurm's allocation record.
+    assert os.environ["RAILWAY_N_JOBS"] == "40"
+    assert "SLURM_CPUS_PER_TASK" not in os.environ
     assert os.environ["RAILWAY_SEARCH_ITERATIONS"] == "10"
 
 
 def test_apply_env_overrides_is_a_noop_without_flags(monkeypatch):
     monkeypatch.delenv("RAILWAY_DATA_ROOT", raising=False)
+    monkeypatch.delenv("RAILWAY_N_JOBS", raising=False)
     monkeypatch.delenv("SLURM_CPUS_PER_TASK", raising=False)
     monkeypatch.delenv("RAILWAY_SEARCH_ITERATIONS", raising=False)
     main_module.apply_env_overrides(main_module.parse_args([]))
     assert "RAILWAY_DATA_ROOT" not in os.environ
+    assert "RAILWAY_N_JOBS" not in os.environ
     assert "SLURM_CPUS_PER_TASK" not in os.environ
     assert "RAILWAY_SEARCH_ITERATIONS" not in os.environ
+
+
+def test_n_jobs_zero_is_rejected():
+    try:
+        main_module.parse_args(["--n-jobs", "0"])
+    except SystemExit:
+        pass  # argparse rejects it via parser.error()
+    else:
+        raise AssertionError("expected --n-jobs 0 to be rejected")
+
+
+def test_n_jobs_below_minus_one_is_rejected():
+    try:
+        main_module.parse_args(["--n-jobs", "-2"])
+    except SystemExit:
+        pass  # argparse rejects it via parser.error()
+    else:
+        raise AssertionError("expected --n-jobs -2 to be rejected")
+
+
+def test_n_jobs_minus_one_is_accepted():
+    args = main_module.parse_args(["--n-jobs", "-1"])
+    assert args.n_jobs == -1
+
+
+def test_main_defers_config_imports():
+    """A module-scope config/src import would bind constants before
+    apply_env_overrides() runs, silently breaking --data-root, --n-jobs and
+    --search-iterations. See main.py's module docstring."""
+    import ast
+
+    tree = ast.parse(open("main.py", encoding="utf-8").read())
+    top = {a.name.split(".")[0] for n in tree.body if isinstance(n, ast.Import) for a in n.names}
+    top |= {n.module.split(".")[0] for n in tree.body if isinstance(n, ast.ImportFrom) and n.module}
+    assert top <= {"argparse", "os", "sys"}, f"module-scope import breaks env overrides: {top}"
 
 
 def test_search_iterations_below_ten_is_rejected():
@@ -151,6 +191,48 @@ def test_dump_columns_reports_merge_failure():
             return {"success": False, "error": "no training-ready files"}
 
     assert main_module.dump_columns(FailingPipeline(), []) == 1
+
+
+def test_run_returns_nonzero_on_training_failure(monkeypatch):
+    """A failed training pipeline must make _run() (and therefore main()) return a
+    non-zero code, so Slurm/sacct records the job as failed instead of COMPLETED."""
+    calls = {"merge": 0, "train": 0}
+    FakePipeline = _fake_pipeline_class(calls)
+
+    class FailingTrainPipeline(FakePipeline):
+        def execute_training_pipeline_steps(self, csv_files, state_machine):
+            calls["train"] += 1
+            return {"success": False, "errors": ["boom"]}
+
+    # _run() constructs TrainingPipeline() directly (not via _make_pipeline) for the
+    # training step, so patch the class where _run() imports it from.
+    import src.training_pipeline
+    monkeypatch.setattr(src.training_pipeline, "TrainingPipeline", FailingTrainPipeline)
+
+    args = main_module.parse_args([])
+    rc = main_module._run(args)
+
+    assert calls["train"] == 1
+    assert rc != 0
+
+
+def test_run_returns_nonzero_when_training_results_is_falsy(monkeypatch):
+    calls = {"merge": 0, "train": 0}
+    FakePipeline = _fake_pipeline_class(calls)
+
+    class NoneResultPipeline(FakePipeline):
+        def execute_training_pipeline_steps(self, csv_files, state_machine):
+            calls["train"] += 1
+            return None
+
+    import src.training_pipeline
+    monkeypatch.setattr(src.training_pipeline, "TrainingPipeline", NoneResultPipeline)
+
+    args = main_module.parse_args([])
+    rc = main_module._run(args)
+
+    assert calls["train"] == 1
+    assert rc != 0
 
 
 def test_dump_columns_short_circuits_before_training(monkeypatch):

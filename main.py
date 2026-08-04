@@ -9,6 +9,7 @@ first config/src import. That is why those imports live inside _run().
 """
 import argparse
 import os
+import sys
 
 # Short model name -> trainer stage key in TRAINING_STATE_MACHINE.
 MODEL_STAGES = {
@@ -81,6 +82,10 @@ def parse_args(argv=None):
         )
     if args.stages and args.model:
         parser.error("--stages and --model are mutually exclusive.")
+    if args.n_jobs is not None and (args.n_jobs == 0 or args.n_jobs < -1):
+        parser.error(
+            "--n-jobs must be -1 (use all available cores) or a positive integer."
+        )
 
     return args
 
@@ -91,7 +96,11 @@ def apply_env_overrides(args):
     if args.data_root is not None:
         os.environ["RAILWAY_DATA_ROOT"] = args.data_root
     if args.n_jobs is not None:
-        os.environ["SLURM_CPUS_PER_TASK"] = str(args.n_jobs)
+        # A dedicated variable, not SLURM_CPUS_PER_TASK: that variable is Slurm's
+        # own record of the step's allocation and the batch scripts rely on it
+        # independently (see hpc/*.sh SRUN_CPUS_PER_TASK exports). Overwriting it
+        # here would corrupt that record for anything else reading it.
+        os.environ["RAILWAY_N_JOBS"] = str(args.n_jobs)
     if args.search_iterations is not None:
         os.environ["RAILWAY_SEARCH_ITERATIONS"] = str(args.search_iterations)
 
@@ -318,21 +327,23 @@ def _run(args):
         print("="*60)
 
         # Display training summary
-        if training_results:
-            if training_results.get('success', False):
-                print("✓ Training pipeline completed successfully!")
-                print(f"Steps executed: {', '.join(training_results.get('steps_executed', []))}")
-                file_info = training_results.get('file_info', {})
-                print(f"Files processed: {file_info.get('processed_files', 0)}/{file_info.get('total_files', 0)}")
-            else:
-                print("✗ Training pipeline failed!")
-                errors = training_results.get('errors', [])
-                if errors:
-                    print("Errors encountered:")
-                    for error in errors:
-                        print(f"  - {error}")
+        if training_results and training_results.get('success', False):
+            print("✓ Training pipeline completed successfully!")
+            print(f"Steps executed: {', '.join(training_results.get('steps_executed', []))}")
+            file_info = training_results.get('file_info', {})
+            print(f"Files processed: {file_info.get('processed_files', 0)}/{file_info.get('total_files', 0)}")
+            return 0
+        elif training_results:
+            print("✗ Training pipeline failed!")
+            errors = training_results.get('errors', [])
+            if errors:
+                print("Errors encountered:")
+                for error in errors:
+                    print(f"  - {error}")
+            return 1
         else:
             print("✗ Training pipeline returned no results!")
+            return 1
 
 
 def main(argv=None):
@@ -342,4 +353,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
