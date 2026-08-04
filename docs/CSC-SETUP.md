@@ -57,17 +57,13 @@ If a pinned version fails to solve on `linux-64`, relax that single pin in
 
 ## 5. Stage the data
 
-From your **local machine**, copy the preprocessed training set (~25 MB, 96 files):
+From your **local machine**, in the repo root, edit `hpc/stage_data.sh` to set
+`PROJECT` and `REMOTE_USER`, then run it. It copies the preprocessed training set
+(~25 MB, 96 files) to scratch over SSH and prints a file-count and `du -sh` check
+at the end:
 
 ```bash
-rsync -av "data/output/101-preprocessed_training_ready/" \
-    <username>@roihu.csc.fi:/scratch/<project>/railway-fmi/data/output/101-preprocessed_training_ready/
-```
-
-Then on Roihu, verify with `hpc/stage_data.sh`, or directly:
-
-```bash
-ls -1 /scratch/<project>/railway-fmi/data/output/101-preprocessed_training_ready | wc -l   # expect 96
+hpc/stage_data.sh
 ```
 
 The 2.6 GB `data/input/` is **not** needed: it feeds preprocessing only, which we
@@ -87,7 +83,7 @@ cat slurm-smoke-*.out
 ```
 
 Look for: no `EOFError`, no `UnicodeEncodeError`, no "Enter column numbers" prompt,
-and a populated `/scratch/<project>/railway-fmi/data/output/1004-naive_bayes/`.
+and a populated `/scratch/<project>/railway-fmi/data/output/1000-xgboost_randomized_search/`.
 
 Then check efficiency:
 
@@ -95,17 +91,27 @@ Then check efficiency:
 seff <jobid>
 ```
 
-CPU efficiency should be above roughly 70%. Materially lower means thread
-oversubscription — revisit the `SEARCH_N_JOBS` / `MODEL_N_JOBS` split in
-`config/const_training.py` and the `OMP_NUM_THREADS` exports in the batch script.
+The smoke test's own CPU efficiency is not meaningful — 50 fits preceded by a
+serial merge/split/SMOTE-Tomek step will read well under 70% by construction.
+Use `seff` here only to confirm the job ran and used more than one CPU; judge
+efficiency against the 70% rule of thumb on the **full run** (Section 7)
+instead, where the 750-fit sweep dominates the walltime. Materially lower than
+70% there means thread oversubscription — revisit the `SEARCH_N_JOBS` /
+`MODEL_N_JOBS` split in `config/const_training.py` and the `OMP_NUM_THREADS`
+exports in the batch script.
 
 ## 7. Full run
 
-Five models in parallel, one per array task:
+Five models in parallel, one per array task — the recommended default, since
+each task's 8h walltime is checkpointed independently: a timeout or failure in
+one model does not cost the other four.
 
 ```bash
 sbatch hpc/train_array.sh
 ```
+
+Each array task writes under its own `run_<task-id>/` scratch subdirectory (see
+Section 8), to avoid the five tasks racing on shared intermediate files.
 
 Or all five sequentially in one job:
 
@@ -114,21 +120,34 @@ sbatch hpc/train_all.sh
 ```
 
 `train_all.sh` also runs `shap_correlation_analysis`; `train_array.sh` skips it,
-because running it once per task would waste allocation.
+because running it once per task would waste allocation. `train_all.sh` has no
+checkpointing: a timeout or failure anywhere in its single 12h job loses every
+model trained so far, not just the one in progress. Prefer `train_array.sh`
+unless you specifically need the combined SHAP analysis in one job.
 
 ## 8. Retrieve results
 
-Each model writes a joblib model, JSON metrics, and PNG/PDF figures:
+`train_array.sh` isolates each array task in its own data root, so results land
+under `run_<task-id>/data/output/`, not directly under `data/output/`:
 
-| Directory | Model |
-|---|---|
-| `data/output/1000-xgboost_randomized_search` | XGBoost |
-| `data/output/1001-lightgbm_randomized_search` | LightGBM |
-| `data/output/1002-random_forest_randomized_search` | Random Forest |
-| `data/output/1003-regularized_regression` | Logistic Regression |
-| `data/output/1004-naive_bayes` | Naive Bayes |
+| Directory (relative to `run_<task-id>/data/output/`) | Model | Array task |
+|---|---|---|
+| `1000-xgboost_randomized_search` | XGBoost | 0 |
+| `1001-lightgbm_randomized_search` | LightGBM | 1 |
+| `1002-random_forest_randomized_search` | Random Forest | 2 |
+| `1003-regularized_regression` | Logistic Regression | 3 |
+| `1004-naive_bayes` | Naive Bayes | 4 |
 
-Copy them off before the 180-day scratch purge:
+Each writes a joblib model, JSON metrics, and PNG/PDF figures. Copy them all off
+before the 180-day scratch purge:
+
+```bash
+rsync -av <username>@roihu.csc.fi:/scratch/<project>/railway-fmi/run_*/data/output/10*/ ./results/
+```
+
+`train_all.sh` does not use per-task run roots (it is a single sequential job,
+so there is no race to isolate against), so its results land directly under
+`data/output/10*/`:
 
 ```bash
 rsync -av <username>@roihu.csc.fi:/scratch/<project>/railway-fmi/data/output/10*/ ./results/
@@ -138,9 +157,15 @@ rsync -av <username>@roihu.csc.fi:/scratch/<project>/railway-fmi/data/output/10*
 
 ```bash
 python main.py --data-root /scratch/<project>/railway-fmi --model xgboost
-python main.py --data-root /scratch/<project>/railway-fmi --stages merge_data_files,split_dataset
 python main.py --dump-columns          # regenerate the SELECTED_COLUMNS list
 ```
+
+`--stages` must cover a **contiguous prefix** of the stage chain (merge, filter,
+select, split, balance, scale, then a trainer). Disabling `select_training_cols`
+while enabling `split_dataset`, for example, makes `split_dataset` fall through
+to whatever a previous run already left in its default input folder, splitting
+stale or missing data instead of erroring loudly. Prefer `--model`, which always
+enables the correct prerequisite chain for you.
 
 `--search-iterations` has a minimum of 10; the trainer iterates
 `range(10, N+1, 10)`, which is empty below that.
