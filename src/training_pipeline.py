@@ -2557,8 +2557,8 @@ class TrainingPipeline:
         if is_classification:
             metrics['accuracy'] = accuracy_score(y_true, y_pred)
             metrics['f1'] = f1_score(y_true, y_pred, average='binary' if len(np.unique(y_true)) == 2 else 'weighted')
-            metrics['precision'] = precision_score(y_true, y_pred, average='weighted', zero_division=0)
-            metrics['recall'] = recall_score(y_true, y_pred, average='weighted')
+            metrics['precision'] = precision_score(y_true, y_pred, average='binary' if len(np.unique(y_true)) == 2 else 'weighted', zero_division=0)
+            metrics['recall'] = recall_score(y_true, y_pred, average='binary' if len(np.unique(y_true)) == 2 else 'weighted', zero_division=0)
             metrics['confusion_matrix'] = confusion_matrix(y_true, y_pred).tolist()
         else:
             metrics['rmse'] = np.sqrt(mean_squared_error(y_true, y_pred))
@@ -2812,8 +2812,8 @@ class TrainingPipeline:
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
@@ -2896,8 +2896,8 @@ class TrainingPipeline:
             if is_classification:
                 final_test_accuracy = accuracy_score(y_test, final_y_pred)
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                 final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
@@ -3476,8 +3476,8 @@ class TrainingPipeline:
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
@@ -3560,8 +3560,8 @@ class TrainingPipeline:
             if is_classification:
                 final_test_accuracy = accuracy_score(y_test, final_y_pred)
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                 final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
@@ -4122,8 +4122,8 @@ class TrainingPipeline:
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
@@ -4206,8 +4206,8 @@ class TrainingPipeline:
             if is_classification:
                 final_test_accuracy = accuracy_score(y_test, final_y_pred)
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                 final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
@@ -4775,8 +4775,8 @@ class TrainingPipeline:
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
@@ -4859,8 +4859,8 @@ class TrainingPipeline:
             if is_classification:
                 final_test_accuracy = accuracy_score(y_test, final_y_pred)
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                 final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
@@ -5427,8 +5427,8 @@ class TrainingPipeline:
                 if is_classification:
                     test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
                     test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
 
                     print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
@@ -5511,8 +5511,8 @@ class TrainingPipeline:
             if is_classification:
                 final_test_accuracy = accuracy_score(y_test, final_y_pred)
                 final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='weighted')
+                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                 final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
                 if hasattr(best_model, 'predict_proba'):
