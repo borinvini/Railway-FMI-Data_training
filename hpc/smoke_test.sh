@@ -17,7 +17,19 @@
 # range(10, N+1, 10), which is empty below 10 and would silently do nothing.
 set -euo pipefail
 
-cd "$(dirname "$(readlink -f "$0")")/.."
+# Slurm COPIES the batch script into a spool directory before running it, so $0
+# is /var/spool/slurmd/job<N>/slurm_script - NOT this file. Deriving the repo
+# root from $0 therefore lands in /var/spool/slurmd and main.py is not found.
+# SLURM_SUBMIT_DIR is the directory sbatch was invoked from, which is the repo
+# root in normal use; it is also Slurm's default cwd, so this is belt and braces.
+cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+if [ ! -f main.py ]; then
+    echo "ERROR: main.py not found in $(pwd)." >&2
+    echo "       Submit from the repository root, e.g.:" >&2
+    echo "         cd /projappl/project_2019266/railway-fmi-code" >&2
+    echo "         sbatch hpc/$(basename "${0}")" >&2
+    exit 1
+fi
 
 PROJECT="project_2019266"
 if [ "${PROJECT}" = "<project>" ]; then
