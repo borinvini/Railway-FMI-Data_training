@@ -86,6 +86,11 @@ cd /projappl/project_2019266/railway-fmi-code 2>/dev/null && \
 
 Branch is `feat/csc-roihu-port` and both hashes match → skip to step 3.
 
+⚠️ **If the hashes differ, run `git pull` before doing anything else.** The
+`git fetch` above only downloads; your files on disk are still the old version.
+Skipping the pull here is how you end up rebuilding the environment from a
+stale `environment-linux.yml` and getting an identical failure 20 minutes later.
+
 **FIX — directory missing (never cloned):**
 
 ```bash
@@ -141,9 +146,21 @@ python -c "import sklearn, xgboost, lightgbm, shap, pyarrow, seaborn, haversine,
 
 `env OK` → skip to step 5.
 
-**FIX:** takes 10–20 minutes. ⚠️ The `rm -rf` deletes only the environment
-directory — a build artifact, nothing else lives there — and is required
-because `conda-containerize` refuses to write into an existing prefix:
+**FIX:** takes 10–20 minutes, so first make sure you are building from the
+current `environment-linux.yml`. Step 2's check runs `git fetch`, which only
+*downloads* — it does not touch your working tree. If step 2 showed
+`local` ≠ `remote`, you still have the old file on disk and the build will fail
+in exactly the same way it did before:
+
+```bash
+cd /projappl/project_2019266/railway-fmi-code
+git pull
+git rev-parse --short HEAD    # must now equal the remote hash from step 2
+```
+
+⚠️ The `rm -rf` below deletes only the environment directory — a build artifact,
+nothing else lives there — and is required because `conda-containerize` refuses
+to write into an existing prefix:
 
 ```bash
 rm -rf /projappl/project_2019266/railway-env
