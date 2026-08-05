@@ -248,13 +248,13 @@ Git Bash has no `rsync`, so use `scp`:
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
 mkdir -p results
-scp -r "roihu:/scratch/project_2019266/railway-fmi/run_*/data/output/10*" ./results/
+scp -r "roihu:/scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*" ./results/
 ```
 
 After `train_all.sh` instead (no per-task run roots):
 
 ```bash
-scp -r "roihu:/scratch/project_2019266/railway-fmi/data/output/10*" ./results/
+scp -r "roihu:/scratch/project_2019266/railway-fmi/data/output/100[0-4]-*" ./results/
 ```
 
 Scratch deletes anything untouched for 180 days — copy results off.
@@ -281,8 +281,8 @@ else
   echo "  NOT BUILT"
 fi
 echo "== results =="
-ls -d /scratch/project_2019266/railway-fmi/*/data/output/10* \
-      /scratch/project_2019266/railway-fmi/data/output/10* 2>/dev/null | sed 's/^/  /' || echo "  none yet"
+ls -d /scratch/project_2019266/railway-fmi/*/data/output/100[0-4]-* \
+      /scratch/project_2019266/railway-fmi/data/output/100[0-4]-* 2>/dev/null | sed 's/^/  /' || echo "  none yet"
 echo "== queue =="
 squeue --me
 ```
