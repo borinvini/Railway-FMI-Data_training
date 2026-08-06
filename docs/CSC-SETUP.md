@@ -250,7 +250,8 @@ scp -r "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/data/outp
 
 ```bash
 python main.py --data-root /scratch/project_2019266/railway-fmi --model xgboost
-python main.py --dump-columns          # regenerate the SELECTED_COLUMNS list
+python main.py --dump-columns                        # list every available column
+python main.py --columns-file config/features.txt    # select features from a file
 ```
 
 `--stages` must cover a **contiguous prefix** of the stage chain (merge, filter,
@@ -267,7 +268,8 @@ enables the correct prerequisite chain for you.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Job hangs, then `EOFError` | `SELECTED_COLUMNS` or `SCHEMA_MISMATCH_STRATEGY` reverted to empty | Restore the frozen values in `config/const_training.py` |
+| Job hangs, then `EOFError` | An empty feature selection, or `SCHEMA_MISMATCH_STRATEGY` reverted to empty | Confirm `config/features.txt` is present and non-empty; restore `SCHEMA_MISMATCH_STRATEGY = 'intersect'` |
+| `ERROR: columns file not found` | `config/features.txt` was never uploaded to Roihu | Run `hpc/push-features.sh` on your laptop |
 | `UnicodeEncodeError` in the `.out` file | Emoji in `print()` with a non-UTF-8 locale | Confirm `export PYTHONIOENCODING=utf-8` in the batch script |
 | `seff` shows CPU efficiency under 30% | Thread oversubscription | Confirm `OMP_NUM_THREADS=1` and that `MODEL_N_JOBS` is 1 |
 | "No parquet files found" then exits | Preprocessing enabled with an empty `data/input` | Confirm `EXECUTE_PREPROCESSING_DATA_PIPELINE = False` |

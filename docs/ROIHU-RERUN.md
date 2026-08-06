@@ -1,7 +1,7 @@
 # Roihu re-run — the everyday loop
 
 Setup is already done. This is the short cycle you repeat each time you want new
-results: certificate → push → pull → clean → run → fetch.
+results: certificate → features/push → pull → clean → run → fetch.
 
 For first-time setup see `ROIHU-QUICKSTART.md`. For the reasoning behind any
 step, `CSC-SETUP.md`.
@@ -14,8 +14,11 @@ node). Values are filled in: project `project_2019266`, user `vpozzobo`.
 ## The whole loop, if nothing is broken
 
 ```bash
-# [LOCAL] push whatever you changed
+# [LOCAL] features only — no commit needed
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
+hpc/push-features.sh
+
+# [LOCAL] code changes — these still go through git
 git add -A && git commit -m "your message"
 git push Railway-FMI-Data_training feat/csc-roihu-port
 ssh roihu
@@ -66,17 +69,39 @@ ssh roihu "echo OK"
 
 ## 2. [LOCAL] Push your changes
 
-The cluster reads its own clone. Anything you edit locally — most often
-`SELECTED_COLUMNS` in `config/const_training.py` — has to reach GitHub first.
+### Features — no commit
+
+`config/features.txt` is gitignored. Edit it, then upload it straight into the
+cluster's clone:
 
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
+hpc/push-features.sh
+```
+
+One name per line, taken verbatim — no quotes, no commas. `trainDelayed` must
+stay: it is the target, and the trainers split it out by name.
+`python main.py --dump-columns` lists everything available, and
+`config/features.example.txt` is the committed starting point if you need one.
+
+The script prints a sha256. The batch scripts print the same one into the slurm
+log, so you can confirm afterwards which selection actually ran.
+
+No `config/features.txt` yet? `cp config/features.example.txt config/features.txt`.
+
+### Code — commit as before
+
+The cluster reads its own clone, so anything you change under `src/`, `config/`
+(other than the feature file) or `hpc/` has to reach GitHub first.
+
+```bash
 git status --short
 git add -A && git commit -m "your message"
 git push Railway-FMI-Data_training feat/csc-roihu-port
 ```
 
-Nothing changed locally? Skip to step 3.
+Changed only the features? The push and the pull in step 3 are both unnecessary
+— skip to step 4.
 
 ---
 
@@ -174,7 +199,7 @@ ls -1 /scratch/project_2019266/railway-fmi/data/output/101-preprocessed_training
 
 ## 5. [ROIHU] Optional smoke test
 
-Worth the ~5 minutes whenever you changed `SELECTED_COLUMNS` or anything in
+Worth the ~5 minutes whenever you changed `config/features.txt` or anything in
 `src/`. It catches a bad column name immediately instead of across five array
 tasks.
 
@@ -284,10 +309,11 @@ the honest estimate of how the model behaves on data from a period it never saw.
 
 ## Changing what gets trained
 
-**Which features** — `config/const_training.py:69`, the `SELECTED_COLUMNS` list.
-Names, not numbers. `'trainDelayed'` must stay: it is the target, and the
-trainers split it out by name. `python main.py --dump-columns` lists everything
-available.
+**Which features** — `config/features.txt`, one name per line, then
+`hpc/push-features.sh`. No commit, no pull. `'trainDelayed'` must stay: it is
+the target, and the trainers split it out by name. `python main.py
+--dump-columns` lists everything available. With no `--columns-file`, the
+frozen fallback in `config/const_training.py:69` applies instead.
 
 **Which models** — edit `MODELS=(...)` in `hpc/train_array.sh:49` and match
 `--array=0-N` to its length. Or run one directly:
@@ -316,7 +342,9 @@ not help.
 | `sacct` shows FAILED | A model crashed | Read that task's `slurm-train-*_N.out` |
 | Empty model directory | That task failed | Same as above |
 | `main.py: No such file` | Submitted from the wrong directory | `cd` to the repo root before `sbatch` |
-| Job hangs then `EOFError` | Config reverted to interactive | Check `SELECTED_COLUMNS` and `SCHEMA_MISMATCH_STRATEGY` |
+| Job hangs then `EOFError` | Config reverted to interactive | Check `config/features.txt` reached Roihu, and `SCHEMA_MISMATCH_STRATEGY` |
+| `columns file not found` | `features.txt` never uploaded | `hpc/push-features.sh` from your laptop |
 | `SELECTED_COLUMNS references columns not in DataFrame` | Typo or a dropped column | Re-check with `--dump-columns` |
+| Features not what you expected | An older `features.txt` on Roihu | Compare the log's sha256 with `sha256sum config/features.txt` |
 | Trainer runs but produces nothing | `--search-iterations` below 10 | Use 10 or more |
 | Post-quantum SSH warning | Server lacks PQ key exchange | Cosmetic, ignore |

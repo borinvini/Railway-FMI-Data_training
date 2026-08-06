@@ -184,3 +184,8 @@ docs/superpowers/
 
 # Git worktrees for isolated feature work
 .worktrees/
+
+# The feature-selection template is committed; the working copy it is copied to
+# (config/features.txt) stays ignored by the *.txt rule above, which is what
+# lets a feature change reach Roihu by scp instead of by commit.
+!config/features.example.txt

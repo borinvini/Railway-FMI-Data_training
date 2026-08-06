@@ -1,0 +1,90 @@
+# Feature selection for a training run — one column name per line.
+#
+# Blank lines and # comments are ignored. Names are taken verbatim, so do
+# not quote them or add commas: Air temperature (12h max) is a valid line.
+#
+# Copy this file to config/features.txt (gitignored), edit that, then run
+# hpc/push-features.sh to upload it to Roihu. No commit is needed.
+#
+# trainDelayed is the target and must stay: the trainers split it out of the
+# feature matrix by name, so removing it here breaks training outright.
+# python main.py --dump-columns lists everything available.
+trainDelayed
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+day_of_month
+Air temperature (12h max)
+Air temperature (12h min)
+Air temperature (12h mean)
+Air temperature (24h max)
+Air temperature (24h min)
+Air temperature (24h mean)
+Air temperature (72h max)
+Air temperature (72h min)
+Air temperature (72h mean)
+Wind speed (12h max)
+Wind speed (12h min)
+Wind speed (12h mean)
+Wind speed (24h max)
+Wind speed (24h min)
+Wind speed (24h mean)
+Wind speed (72h max)
+Wind speed (72h min)
+Wind speed (72h mean)
+Relative humidity (12h max)
+Relative humidity (12h min)
+Relative humidity (12h mean)
+Relative humidity (24h max)
+Relative humidity (24h min)
+Relative humidity (24h mean)
+Relative humidity (72h max)
+Relative humidity (72h min)
+Relative humidity (72h mean)
+Precipitation intensity (12h max)
+Precipitation intensity (12h min)
+Precipitation intensity (12h mean)
+Precipitation intensity (24h max)
+Precipitation intensity (24h min)
+Precipitation intensity (24h mean)
+Precipitation intensity (72h max)
+Precipitation intensity (72h min)
+Precipitation intensity (72h mean)
+Snow depth (12h max)
+Snow depth (12h min)
+Snow depth (12h mean)
+Snow depth (24h max)
+Snow depth (24h min)
+Snow depth (24h mean)
+Snow depth (72h max)
+Snow depth (72h min)
+Snow depth (72h mean)
+Pressure (msl) (12h max)
+Pressure (msl) (12h min)
+Pressure (msl) (12h mean)
+Pressure (msl) (24h max)
+Pressure (msl) (24h min)
+Pressure (msl) (24h mean)
+Pressure (msl) (72h max)
+Pressure (msl) (72h min)
+Pressure (msl) (72h mean)
+Horizontal visibility (12h max)
+Horizontal visibility (12h min)
+Horizontal visibility (12h mean)
+Horizontal visibility (24h max)
+Horizontal visibility (24h min)
+Horizontal visibility (24h mean)
+Horizontal visibility (72h max)
+Horizontal visibility (72h min)
+Horizontal visibility (72h mean)
+Precipitation amount (12h mean)
+Precipitation amount (12h cumulative)
+Precipitation amount (24h mean)
+Precipitation amount (24h cumulative)
+Precipitation amount (72h mean)
+Precipitation amount (72h cumulative)

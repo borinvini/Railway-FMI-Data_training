@@ -308,7 +308,8 @@ csc-quota                        # disk usage against quota
 | `pathspec ... did not match` | Clone predates the branch | `git fetch origin` then checkout |
 | `Could not solve for environment specs` | A pin has no linux-64 build for Python 3.12 | Unpin the named package — step 4 |
 | `sbatch: Invalid account` | Project lacks Roihu access | Check MyCSC |
-| Job hangs then `EOFError` | Config reverted to interactive | Check `SELECTED_COLUMNS` and `SCHEMA_MISMATCH_STRATEGY` in `config/const_training.py` |
+| Job hangs then `EOFError` | Empty feature selection or config reverted to interactive | Check `config/features.txt` is present and non-empty, and `SCHEMA_MISMATCH_STRATEGY` in `config/const_training.py` |
+| `ERROR: columns file not found` | `config/features.txt` not uploaded | `hpc/push-features.sh` — see `ROIHU-RERUN.md` step 2 |
 | `UnicodeEncodeError` in `.out` | Missing UTF-8 setting | Confirm `PYTHONIOENCODING=utf-8` in the batch script |
 | `main.py: No such file` | Wrong directory | `cd /projappl/project_2019266/railway-fmi-code` |
 | Trainer runs, produces nothing | `--search-iterations` below 10 | Minimum is 10 |
