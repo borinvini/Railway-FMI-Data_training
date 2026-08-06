@@ -38,6 +38,22 @@ if [ "${PROJECT}" = "<project>" ]; then
 fi
 SCRATCH="/scratch/${PROJECT}/railway-fmi"
 
+# Which features to train on. The file is gitignored and uploaded straight to
+# this clone with hpc/push-features.sh, so changing the feature set needs no
+# commit, push or pull. Checked here rather than left to Python so a forgotten
+# upload costs a second instead of the whole allocation. sbatch exports the
+# submitting environment, so COLUMNS_FILE=<path> sbatch ... overrides the default.
+COLUMNS_FILE="${COLUMNS_FILE:-config/features.txt}"
+if [ ! -f "${COLUMNS_FILE}" ]; then
+    echo "ERROR: columns file not found: ${COLUMNS_FILE}" >&2
+    echo "       Upload it from your laptop with hpc/push-features.sh," >&2
+    echo "       or submit with: COLUMNS_FILE=<path> sbatch hpc/$(basename "${0}")" >&2
+    exit 1
+fi
+# Recorded so a finished log identifies its feature set: the sha256 proves two
+# runs differ, the list printed by config/const_training.py says how.
+echo "Features: $(grep -cve '^[[:space:]]*\(#.*\)\?$' "${COLUMNS_FILE}") columns, sha256 $(sha256sum "${COLUMNS_FILE}" | cut -c1-16)"
+
 # Inner estimator threads are pinned to 1 (MODEL_N_JOBS) so the allocated cores
 # go to the outer CV workers instead of competing OpenMP threads.
 export OMP_NUM_THREADS=1
@@ -57,6 +73,7 @@ export PATH="/projappl/${PROJECT}/railway-env/bin:$PATH"
 srun python main.py \
     --data-root "${SCRATCH}" \
     --model xgboost \
-    --search-iterations 10
+    --search-iterations 10 \
+    --columns-file "${COLUMNS_FILE}"
 
 echo "Smoke test finished. Check CPU efficiency with: seff ${SLURM_JOB_ID}"
