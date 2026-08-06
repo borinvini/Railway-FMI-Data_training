@@ -24,24 +24,21 @@ ssh roihu "echo OK"
 `OK` → skip to step 1. `Permission denied (publickey)` → the certificate has
 expired. That is routine, not a broken setup: certificates last **24 hours**.
 
-**FIX:** at [my.csc.fi](https://my.csc.fi) → Profile → SSH PUBLIC KEYS →
-three-dot menu → *Sign and download SSH certificate*, then:
+**FIX:**
 
 ```bash
-mv ~/Downloads/cert.pub ~/.ssh/id_csc-cert.pub
+hpc/roihu-auth.sh
 ssh roihu "echo OK"
 ```
+
+Signs a fresh certificate, loads the agent, prints the new expiry. Opens a
+browser for MyCSC login plus a 6-digit code — unavoidable, CSC offers no API
+token. Add `-r` to force a re-sign while the current one is still valid.
 
 Check the expiry any time:
 
 ```bash
 ssh-keygen -L -f ~/.ssh/id_csc-cert.pub | grep Valid
-```
-
-Avoid retyping the passphrase all session:
-
-```bash
-eval $(ssh-agent -s) && ssh-add ~/.ssh/id_csc
 ```
 
 ---
@@ -306,7 +303,7 @@ csc-quota                        # disk usage against quota
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Permission denied (publickey)` | Certificate older than 24 h | Re-sign — step 0 |
+| `Permission denied (publickey)` | Certificate older than 24 h | `hpc/roihu-auth.sh` — step 0 |
 | `Network is unreachable` | Wrong host | Use `roihu-cpu.csc.fi` or the `roihu` alias |
 | `pathspec ... did not match` | Clone predates the branch | `git fetch origin` then checkout |
 | `Could not solve for environment specs` | A pin has no linux-64 build for Python 3.12 | Unpin the named package — step 4 |

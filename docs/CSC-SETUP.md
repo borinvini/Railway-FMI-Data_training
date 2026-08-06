@@ -11,48 +11,81 @@ The CSC project ID `project_2019266` is already filled in throughout this runboo
 The CSC username `vpozzobo` is likewise filled in, both here and as `REMOTE_USER` in
 `hpc/stage_data.sh`. Nothing is left to substitute — the scripts are ready to run.
 
-## 0. SSH access (do this first, and repeat daily)
+## 0. SSH access (one command, each day you work)
 
 Roihu does **not** accept passwords, and it does not accept a bare public key
 either. It requires a short-lived **SSH certificate** signed by CSC. Two facts
 that catch people out:
 
 - The login host is `roihu-cpu.csc.fi` — not `roihu.csc.fi`.
-- **Certificates expire after 24 hours.** Re-sign each day you work.
+- **Certificates expire after 24 hours.** The public key in MyCSC never expires;
+  only the certificate does. `Permission denied (publickey)` in the morning is
+  routine, not a broken setup.
 
-**One-time — register your key.** If you do not already have an Ed25519 key:
-
-```bash
-ssh-keygen -t ed25519 -C "your.email@example.com"   # do NOT leave the passphrase empty
-```
-
-Then in [my.csc.fi](https://my.csc.fi) → Profile → SSH PUBLIC KEYS → **+ Add key**,
-paste the contents of `~/.ssh/id_ed25519.pub`. Allow up to an hour for activation.
-
-**Daily — sign the key.** In MyCSC → Profile → SSH PUBLIC KEYS, open the
-three-dot menu beside your key and choose **Sign and download SSH certificate**.
-Save it next to the private key, keeping the exact name:
-
-```
-~/.ssh/id_ed25519-cert.pub
-```
-
-SSH picks the certificate up automatically from that filename — no config needed.
-CSC also publishes a helper that automates the daily signing:
+**Daily:**
 
 ```bash
-python3 csc_cert.py -u vpozzobo ~/.ssh/id_ed25519.pub
+hpc/roihu-auth.sh
 ```
+
+That signs a fresh certificate, loads your key into the ssh-agent, and prints
+the new expiry. It is safe to run repeatedly — when the current certificate is
+still valid it exits in about a second without opening a browser. Use
+`hpc/roihu-auth.sh -r` to force a re-sign.
+
+Signing opens a MyCSC login in your browser and asks for a 6-digit code. That
+step cannot be automated away: CSC publishes no API token for it.
+
+**One-time setup.** If you do not already have the CSC key:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_csc -C "vpozzobo@csc"   # do NOT leave the passphrase empty
+```
+
+Register `~/.ssh/id_csc.pub` at [my.csc.fi](https://my.csc.fi) → Profile →
+SSH PUBLIC KEYS → **+ Add key**. Then add this stanza to `~/.ssh/config`:
+
+```
+Host roihu roihu-cpu.csc.fi
+    HostName roihu-cpu.csc.fi
+    User vpozzobo
+    IdentityFile ~/.ssh/id_csc
+    CertificateFile ~/.ssh/id_csc-cert.pub
+    IdentitiesOnly yes
+    AddressFamily inet
+    ServerAliveInterval 60
+```
+
+`IdentitiesOnly yes` matters: without it, ssh offers `id_ed25519` (the GitHub
+key) first and can exhaust its authentication attempts before reaching `id_csc`.
+
+Finally, so the agent survives between terminals, put in `~/.bashrc`:
+
+```bash
+if [ -f "${HOME}/.ssh/agent.env" ]; then
+    . "${HOME}/.ssh/agent.env" >/dev/null 2>&1
+    # ssh-add exits 2 only when no agent is reachable; 1 just means "no keys yet"
+    ssh-add -l >/dev/null 2>&1 || [ "$?" -ne 2 ] || unset SSH_AUTH_SOCK SSH_AGENT_PID
+fi
+```
+
+Git Bash launches login shells, which do not read `~/.bashrc` on their own —
+`~/.bash_profile` must source it. Git for Windows generates a `~/.bash_profile`
+that already does.
+
+Without it, the passphrase is retyped in every new terminal. Note this targets
+Git Bash's agent, not the Windows `ssh-agent` service — they are separate, and
+this project's scripts all run under Git Bash.
 
 **Verify:**
 
 ```bash
-ssh vpozzobo@roihu-cpu.csc.fi
+ssh roihu "echo OK"
 ```
 
 | Error | Meaning |
 |---|---|
-| `Permission denied (publickey)` | No valid certificate — sign again in MyCSC |
+| `Permission denied (publickey)` | Certificate expired — run `hpc/roihu-auth.sh` |
 | `Network is unreachable` | Usually the wrong hostname, or IPv6 with no IPv6 route — retry with `ssh -4` |
 | `Could not resolve hostname` | Typo in the host name |
 
@@ -241,7 +274,7 @@ enables the correct prerequisite chain for you.
 | Trainer runs but produces nothing | `--search-iterations` below 10 | Use 10 or more |
 | `sbatch: error: Invalid account` | Wrong or expired project, or Roihu access not enabled for it | Check the project in MyCSC and confirm `--account=project_2019266` matches |
 | `stage_data.sh` exits "set REMOTE_USER" | `<username>` not replaced | Set `REMOTE_USER` to your CSC username in `hpc/stage_data.sh` |
-| `Permission denied (publickey)` | SSH certificate missing or older than 24 h | Re-sign the key in MyCSC (Section 0) |
+| `Permission denied (publickey)` | SSH certificate missing or older than 24 h | `hpc/roihu-auth.sh` (Section 0) |
 | `ssh: connect ... Network is unreachable` | Wrong host, or IPv6 with no IPv6 route | Use `roihu-cpu.csc.fi`; add `-4` to force IPv4 |
 
 ## Environment deviations

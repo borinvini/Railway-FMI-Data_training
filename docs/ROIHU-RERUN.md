@@ -48,21 +48,18 @@ The SSH certificate lasts **24 hours**. Expiry looks like a broken setup but is
 routine.
 
 ```bash
+hpc/roihu-auth.sh
+```
+
+Signs only if needed — when the current certificate is still valid it exits in
+about a second without opening a browser, so running it every morning costs
+nothing. It also loads `id_csc` into the ssh-agent, so the passphrase is entered
+once per boot rather than once per command. Add `-r` to force a re-sign.
+
+Confirm:
+
+```bash
 ssh roihu "echo OK"
-```
-
-`Permission denied (publickey)` → re-sign at [my.csc.fi](https://my.csc.fi) →
-Profile → SSH PUBLIC KEYS → three-dot menu → *Sign and download SSH
-certificate*, then:
-
-```bash
-mv ~/Downloads/cert.pub ~/.ssh/id_csc-cert.pub
-```
-
-Avoid retyping the passphrase for the rest of the session:
-
-```bash
-eval $(ssh-agent -s) && ssh-add ~/.ssh/id_csc
 ```
 
 ---
@@ -261,7 +258,7 @@ not help.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Permission denied (publickey)` | Certificate older than 24 h | Step 1 |
+| `Permission denied (publickey)` | Certificate older than 24 h | `hpc/roihu-auth.sh` — step 1 |
 | Results identical to last run | Forgot `git pull` on Roihu | Step 3 |
 | `pathspec ... did not match` | Clone predates a new branch | `git fetch origin` then checkout |
 | `sacct` shows FAILED | A model crashed | Read that task's `slurm-train-*_N.out` |
