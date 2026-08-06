@@ -30,6 +30,26 @@ CERT_TOOL="${REPO_ROOT}/hpc/vendor/csc_cert.py"
 AGENT_ENV="${HOME}/.ssh/agent.env"
 CERT="${SSH_KEY}-cert.pub"
 
+# Pin the ssh tools to Git Bash's own OpenSSH. On Windows, bare `ssh-add` /
+# `ssh-agent` / `ssh-keygen` resolve off PATH, and if
+# C:\Windows\System32\OpenSSH precedes /usr/bin there, ssh-add would talk to
+# the Windows named-pipe agent while Git's ssh uses the unix socket agent we
+# set up below — a silent split that leaves every later `ssh roihu` demanding
+# the passphrase despite this script printing "Ready.".
+SSH_ADD="/usr/bin/ssh-add"
+SSH_AGENT="/usr/bin/ssh-agent"
+SSH_KEYGEN="/usr/bin/ssh-keygen"
+for tool_var in SSH_ADD SSH_AGENT SSH_KEYGEN; do
+    tool_path="${!tool_var}"
+    if [ ! -x "${tool_path}" ]; then
+        echo "ERROR: ${tool_path} not found or not executable." >&2
+        echo "       This script requires Git Bash's own OpenSSH, not Windows'" >&2
+        echo "       C:\\Windows\\System32\\OpenSSH build, to keep ssh-add and ssh" >&2
+        echo "       talking to the same agent." >&2
+        exit 1
+    fi
+done
+
 REFRESH=()
 while getopts "r" opt; do
     case "${opt}" in
@@ -37,6 +57,12 @@ while getopts "r" opt; do
         *) echo "Usage: hpc/roihu-auth.sh [-r]" >&2; exit 2 ;;
     esac
 done
+shift $((OPTIND - 1))
+if [ "$#" -gt 0 ]; then
+    echo "Usage: hpc/roihu-auth.sh [-r]" >&2
+    echo "ERROR: unexpected argument(s): $*" >&2
+    exit 2
+fi
 
 # --- Preflight -------------------------------------------------------------
 if [ ! -f "${SSH_KEY}" ]; then
@@ -85,7 +111,7 @@ agent_alive() {
     [ -n "${SSH_AUTH_SOCK:-}" ] || return 1
     [ -S "${SSH_AUTH_SOCK}" ] || return 1
     local rc=0
-    ssh-add -l >/dev/null 2>&1 || rc=$?
+    "${SSH_ADD}" -l >/dev/null 2>&1 || rc=$?
     [ "${rc}" -ne 2 ]
 }
 
@@ -96,7 +122,8 @@ if [ -z "${ROIHU_AUTH_NO_AGENT:-}" ]; then
     fi
     if ! agent_alive; then
         echo "Starting a new ssh-agent..."
-        if (umask 077; ssh-agent -s > "${AGENT_ENV}"); then
+        if (umask 077; "${SSH_AGENT}" -s > "${AGENT_ENV}"); then
+            chmod 600 "${AGENT_ENV}"
             # shellcheck source=/dev/null
             . "${AGENT_ENV}" >/dev/null
         else
@@ -119,16 +146,45 @@ fi
 "${PYTHON}" "${CERT_TOOL}" -u "${CSC_USER}" -a none -p "${REFRESH[@]}" "${SSH_KEY}.pub"
 
 # --- 3. Load the key into the agent ----------------------------------------
+# A wrong passphrase or Ctrl-C here must not abort the whole run: signing
+# already succeeded above, so failing to load the agent is a degraded-but-
+# usable outcome, not a reason to hide a good certificate's expiry.
 if [ -z "${ROIHU_AUTH_NO_AGENT:-}" ]; then
-    KEY_FP="$(ssh-keygen -lf "${SSH_KEY}.pub" 2>/dev/null | awk '{print $2}')" || KEY_FP=""
-    if [ -z "${KEY_FP}" ] || ! ssh-add -l 2>/dev/null | grep -qF "${KEY_FP}"; then
+    KEY_FP="$("${SSH_KEYGEN}" -lf "${SSH_KEY}.pub" 2>/dev/null | awk '{print $2}')" || KEY_FP=""
+    if [ -z "${KEY_FP}" ] || ! "${SSH_ADD}" -l 2>/dev/null | grep -qF "${KEY_FP}"; then
         echo "Adding ${SSH_KEY} to the agent (passphrase needed once per boot)..."
-        ssh-add "${SSH_KEY}"
+        if ! "${SSH_ADD}" "${SSH_KEY}"; then
+            echo "WARNING: key not loaded into the agent; the certificate is still valid." >&2
+        fi
     fi
 fi
 
-# --- 4. Report -------------------------------------------------------------
-if [ -f "${CERT}" ]; then
-    ssh-keygen -L -f "${CERT}" 2>/dev/null | grep "Valid:" | sed 's/^ *//' || true
+# --- 4. Report ---------------------------------------------------------------
+# Exit 0 from csc_cert.py is not proof a certificate landed, and a leftover
+# expired certificate from a prior day must not be reported as fresh success.
+if [ ! -f "${CERT}" ]; then
+    echo "ERROR: signing reported success but no certificate was found at ${CERT}" >&2
+    exit 1
+fi
+
+VALID_LINE="$("${SSH_KEYGEN}" -L -f "${CERT}" 2>/dev/null | grep "Valid:" | sed 's/^ *//')" || VALID_LINE=""
+if [ -z "${VALID_LINE}" ]; then
+    echo "ERROR: could not read/parse certificate validity from ${CERT}" >&2
+    exit 1
+fi
+
+VALID_END="${VALID_LINE##* }"
+VALID_END_EPOCH="$(date -d "${VALID_END/T/ }" +%s 2>/dev/null)" || VALID_END_EPOCH=""
+if [ -z "${VALID_END_EPOCH}" ]; then
+    echo "WARNING: could not check certificate expiry (unparseable timestamp)." >&2
+    echo "${VALID_LINE}"
+else
+    NOW_EPOCH="$(date +%s)"
+    if [ "${VALID_END_EPOCH}" -lt "${NOW_EPOCH}" ]; then
+        echo "ERROR: certificate at ${CERT} is expired:" >&2
+        echo "       ${VALID_LINE}" >&2
+        exit 1
+    fi
+    echo "${VALID_LINE}"
 fi
 echo "Ready. Try: ssh roihu \"echo OK\""

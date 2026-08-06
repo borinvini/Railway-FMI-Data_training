@@ -120,7 +120,6 @@ def test_passes_required_flags_to_the_tool(home, tmp_path):
         home, tmp_path, f'printf "%s\\n" "$@" > "{argv_log}"\nexit 0\n'
     )
     result = _run(home, path_prepend=str(stubs))
-    assert result.returncode == 0, result.stderr
     recorded = argv_log.read_text().splitlines()
     assert recorded[recorded.index("-a") + 1] == "none"
     assert "-p" in recorded
@@ -142,8 +141,7 @@ def test_refresh_flag_absent_by_default(home, tmp_path):
     stubs = _key_and_python_stub(
         home, tmp_path, f'printf "%s\\n" "$@" > "{argv_log}"\nexit 0\n'
     )
-    result = _run(home, path_prepend=str(stubs))
-    assert result.returncode == 0, result.stderr
+    _run(home, path_prepend=str(stubs))
     recorded = argv_log.read_text().splitlines()
     assert "-r" not in recorded
     assert "" not in recorded, "empty array expanded to an empty argument"
@@ -171,4 +169,23 @@ def test_tool_failure_stops_before_reporting_success(home, tmp_path):
     result = _run(home, path_prepend=str(stubs))
     assert result.returncode != 0
     assert "Valid:" not in result.stdout
+    assert "Ready." not in result.stdout
+
+
+def test_errors_when_tool_succeeds_but_writes_no_certificate(home, tmp_path):
+    """Exit 0 from the signing tool is not proof a certificate landed."""
+    stubs = _key_and_python_stub(home, tmp_path, "exit 0\n")
+    result = _run(home, path_prepend=str(stubs))
+    assert result.returncode != 0
+    assert "Ready." not in result.stdout
+    assert "id_csc-cert.pub" in result.stderr
+
+
+def test_errors_when_certificate_on_disk_is_expired(home, tmp_path):
+    """A leftover expired cert must not be reported as a fresh success."""
+    stubs = _key_and_python_stub(home, tmp_path, "exit 0\n")
+    cert = home / ".ssh" / "id_csc-cert.pub"
+    cert.write_text("not a real certificate")
+    result = _run(home, path_prepend=str(stubs))
+    assert result.returncode != 0
     assert "Ready." not in result.stdout

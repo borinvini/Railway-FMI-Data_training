@@ -92,7 +92,7 @@ ssh roihu "echo OK"
 ## 1. Connect
 
 ```bash
-ssh vpozzobo@roihu-cpu.csc.fi
+ssh roihu
 ```
 
 ## 2. Locate your directories
