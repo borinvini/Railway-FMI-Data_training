@@ -184,7 +184,34 @@ conda-forge/linux-64.
 
 ---
 
-## Step 5 — [ROIHU] Smoke test
+## Step 5 — [LOCAL] Feature selection uploaded
+
+`config/features.txt` is gitignored, so a fresh clone never has one — the
+`git pull`/`git clone` in step 2 does not create it.
+
+**CHECK:**
+
+```bash
+ssh roihu "test -s /projappl/project_2019266/railway-fmi-code/config/features.txt && echo OK"
+```
+
+`OK` → skip to step 6.
+
+**FIX:**
+
+```bash
+cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
+cp config/features.example.txt config/features.txt   # first run only
+# edit config/features.txt now if you want a different feature set
+hpc/push-features.sh
+```
+
+This is why no commit is needed when only the feature set changes — see
+`ROIHU-RERUN.md`.
+
+---
+
+## Step 6 — [ROIHU] Smoke test
 
 Proves the whole chain cheaply before spending real allocation.
 
@@ -194,7 +221,7 @@ Proves the whole chain cheaply before spending real allocation.
 ls /scratch/project_2019266/railway-fmi/data/output/1000-xgboost_randomized_search/ 2>/dev/null
 ```
 
-Files listed → the smoke test already passed; skip to step 6.
+Files listed → the smoke test already passed; skip to step 7.
 
 **RUN:**
 
@@ -211,14 +238,15 @@ cat slurm-smoke-*.out
 ```
 
 Success looks like: **no** `EOFError`, **no** `UnicodeEncodeError`, **no**
-prompt asking for column numbers, and a populated output directory.
+prompt asking for column numbers, a `Features: N columns, sha256 ...` line
+matching what step 5's upload printed, and a populated output directory.
 
 Ignore this job's CPU efficiency — 50 fits behind a serial merge/SMOTE step
 reads low by construction. Judge efficiency on the full run.
 
 ---
 
-## Step 6 — [ROIHU] Full run
+## Step 7 — [ROIHU] Full run
 
 Five models in parallel, one per array task. Preferred: a failure in one model
 does not cost the other four.
@@ -238,7 +266,7 @@ sbatch hpc/train_all.sh
 
 ---
 
-## Step 7 — [LOCAL] Retrieve results
+## Step 8 — [LOCAL] Retrieve results
 
 Git Bash has no `rsync`, so use `scp`:
 

@@ -16,6 +16,7 @@ node). Values are filled in: project `project_2019266`, user `vpozzobo`.
 ```bash
 # [LOCAL] features only — no commit needed
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
+# first run only, no config/features.txt yet: cp config/features.example.txt config/features.txt
 hpc/push-features.sh
 
 # [LOCAL] code changes — these still go through git
