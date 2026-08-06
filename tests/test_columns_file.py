@@ -84,3 +84,39 @@ def test_comments_only_file_is_rejected(tmp_path):
 def test_missing_file_raises_filenotfound(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_columns(str(tmp_path / "nope.txt"))
+
+
+def test_env_var_overrides_the_frozen_selected_columns(tmp_path, monkeypatch, capsys):
+    """RAILWAY_COLUMNS_FILE replaces the literal list, and the resolved list is
+    printed so a finished slurm log identifies the feature set that ran."""
+    import importlib
+    import config.const_training as const_training
+
+    features = tmp_path / "features.txt"
+    features.write_text("trainDelayed\nAir temperature (12h max)\n", encoding="utf-8")
+    monkeypatch.setenv("RAILWAY_COLUMNS_FILE", str(features))
+
+    try:
+        importlib.reload(const_training)
+        assert const_training.SELECTED_COLUMNS == [
+            "trainDelayed",
+            "Air temperature (12h max)",
+        ]
+        out = capsys.readouterr().out
+        assert str(features) in out
+        assert "Air temperature (12h max)" in out, "the full list must reach the log"
+    finally:
+        # Restore the module for every other test in the session: monkeypatch
+        # would undo the variable only after this test's reload had baked it in.
+        monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+        importlib.reload(const_training)
+
+
+def test_without_the_env_var_the_frozen_list_is_used(monkeypatch):
+    import importlib
+    import config.const_training as const_training
+
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+    importlib.reload(const_training)
+    assert len(const_training.SELECTED_COLUMNS) == 79
+    assert "trainDelayed" in const_training.SELECTED_COLUMNS

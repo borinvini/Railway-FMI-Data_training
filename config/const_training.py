@@ -147,6 +147,25 @@ SELECTED_COLUMNS = [
     'Precipitation amount (72h mean)',
     'Precipitation amount (72h cumulative)',
 ]
+# `python main.py --columns-file <path>` exports RAILWAY_COLUMNS_FILE before this
+# module is first imported (main.apply_env_overrides), letting a run select its
+# features from a plain-text file that is never committed — the cluster reads a
+# scp'd copy, so a feature change needs no commit, push or pull. The literal list
+# above stays the default, so a bare `python main.py` is unchanged.
+#
+# The resolved list is printed in full: it is the only record of which features a
+# job used, since the file is outside git. Pair it with the sha256 the batch
+# scripts echo. Any parse error propagates and aborts the run — main.py has
+# already reported it far more cheaply at parse time.
+_COLUMNS_FILE = os.environ.get("RAILWAY_COLUMNS_FILE", "")
+if _COLUMNS_FILE:
+    from config.columns_file import load_columns
+
+    SELECTED_COLUMNS = load_columns(_COLUMNS_FILE)
+    print(f"const_training: SELECTED_COLUMNS loaded from {_COLUMNS_FILE} "
+          f"({len(SELECTED_COLUMNS)} columns)")
+    for _column_name in SELECTED_COLUMNS:
+        print(f"    {_column_name}")
 # 'intersect' rather than '' so batch jobs never block on input(): under Slurm
 # stdin is /dev/null and the prompt at training_pipeline.py:1109 would raise EOFError.
 SCHEMA_MISMATCH_STRATEGY = 'intersect'  # 'intersect' = auto-drop; 'fail' = auto-fail; '' = ask
