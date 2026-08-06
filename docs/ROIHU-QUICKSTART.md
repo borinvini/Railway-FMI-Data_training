@@ -268,19 +268,22 @@ sbatch hpc/train_all.sh
 
 ## Step 8 — [LOCAL] Retrieve results
 
-Git Bash has no `rsync`, so use `scp`:
-
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-mkdir -p results
-scp -r "roihu:/scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*" ./results/
+hpc/fetch-results.sh
 ```
 
-After `train_all.sh` instead (no per-task run roots):
+That pulls every pipeline stage — the merged, filtered, selected, split,
+balanced and scaled datasets as well as the five model directories — into
+`./results/`. It prints the total size before it starts.
+
+After `train_all.sh` instead, which has no per-task run roots:
 
 ```bash
-scp -r "roihu:/scratch/project_2019266/railway-fmi/data/output/100[0-4]-*" ./results/
+hpc/fetch-results.sh --train-all
 ```
+
+Only want the models, as before? `hpc/fetch-results.sh --models`.
 
 Scratch deletes anything untouched for 180 days — copy results off.
 

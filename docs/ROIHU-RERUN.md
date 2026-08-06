@@ -38,8 +38,7 @@ squeue --me
 ```bash
 # [LOCAL] once the queue is empty
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-mkdir -p results
-scp -r "roihu:/scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*" ./results/
+hpc/fetch-results.sh
 ```
 
 The rest of this file explains each step and what to do when one fails.
@@ -267,13 +266,34 @@ terminal implied.
 
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-mkdir -p results
-scp -r "roihu:/scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*" ./results/
+hpc/fetch-results.sh
 ```
 
-Git Bash has no `rsync`, hence `scp`. The glob is `100[0-4]-*` and not `10*` on
-purpose — `10*` also matches `101-preprocessed_training_ready`, which would drag
-the input data back down once per run directory.
+This brings back **every** training-pipeline stage, not only the models:
+
+| Directory | What it holds |
+|---|---|
+| `500-merge_data_files` | The merged dataset, all months in one frame |
+| `501-filter_delay_outliers` | After the quantile cut on the delay tails |
+| `502-select_training_cols` | After `config/features.txt` was applied |
+| `503-split_dataset` | train / test / out-of-time holdout |
+| `504-balance_classes` | After SMOTE-Tomek |
+| `505-scale_weather_features` | The frame the trainers actually saw |
+| `700-shap_correlation_analysis` | Only after `train_all.sh` |
+| `1000-*` … `1004-*` | One per model: joblib, metrics JSON, figures |
+
+Stages 500-505 come from `run_0` alone. `train_array.sh` re-runs them in all
+five run roots from identical code and identical input, so the other four copies
+are the same bytes and five times the download. The model directories come from
+all five roots, since each task produces exactly one.
+
+The script prints what it is about to copy and how big it is before it starts —
+this is a much larger transfer than the models alone. Two variants:
+
+```bash
+hpc/fetch-results.sh --models     # only 1000-1004, the old behaviour
+hpc/fetch-results.sh --train-all  # after train_all.sh, which has no run_N roots
+```
 
 This **overwrites** whatever is already in `results/`. Keep a previous run by
 renaming first:

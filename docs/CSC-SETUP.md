@@ -224,27 +224,36 @@ Each writes a joblib model, JSON metrics, and PNG/PDF figures. Copy them all off
 before the 180-day scratch purge:
 
 ```bash
-mkdir -p results
-rsync -av vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*/ ./results/
+hpc/fetch-results.sh
 ```
 
-On Windows, Git Bash has no `rsync`. Use `scp` instead:
+That fetches every training-pipeline stage, not only the model directories:
+`50[0-5]-*` and `700-*` from `run_0`, and `100[0-4]-*` from every `run_*`. It
+resolves the paths and reports their size before transferring. `--models`
+restores the models-only behaviour; `--train-all` switches to the single-job
+layout, where there are no `run_N` roots because `train_all.sh` runs
+sequentially and has no race to isolate against.
+
+The equivalent raw commands, for reference — this is what the script does:
 
 ```bash
 mkdir -p results
-scp -r "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*" ./results/
+# array layout (hpc/train_array.sh)
+scp -r "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/run_0/data/output/50[0-5]-*" \
+       "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*" \
+       ./results/
+# single-job layout (hpc/train_all.sh)
+scp -r "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/[57]*-*" \
+       "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/100[0-4]-*" \
+       ./results/
 ```
 
-`train_all.sh` does not use per-task run roots (it is a single sequential job,
-so there is no race to isolate against), so its results land directly under
-`data/output/100[0-4]-*/`:
+On Linux or macOS `rsync -av` works too and resumes better; Git Bash has no
+`rsync`, which is why the script uses `scp`.
 
-```bash
-mkdir -p results
-rsync -av vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/100[0-4]-*/ ./results/
-# or, on Windows Git Bash (no rsync):
-scp -r "vpozzobo@roihu-cpu.csc.fi:/scratch/project_2019266/railway-fmi/data/output/100[0-4]-*" ./results/
-```
+The glob is `100[0-4]-*` and never `10*`: `10*` also matches
+`101-preprocessed_training_ready`, which is pipeline input staged up by
+`hpc/stage_data.sh` and would come back down once per run directory.
 
 ## Running a subset
 
