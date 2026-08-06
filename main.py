@@ -68,6 +68,13 @@ def parse_args(argv=None):
         help="Override RANDOM_SEARCH_ITERATIONS. Minimum 10; smaller values skip training.",
     )
     parser.add_argument(
+        "--columns-file",
+        default=None,
+        help="Path to a one-name-per-line file of columns to keep, overriding "
+             "SELECTED_COLUMNS in config/const_training.py. Used by hpc/*.sh so "
+             "changing the feature set needs no commit.",
+    )
+    parser.add_argument(
         "--dump-columns",
         action="store_true",
         help="Print the merged dataset's candidate columns and exit, for populating "
@@ -86,6 +93,18 @@ def parse_args(argv=None):
         parser.error(
             "--n-jobs must be -1 (use all available cores) or a positive integer."
         )
+    if args.columns_file is not None:
+        # Imported inside the function, never at module scope: main.py's
+        # top-level imports must stay {argparse, os, sys} or config constants
+        # bind before apply_env_overrides() runs. tests/test_cli.py:117 guards
+        # this. columns_file itself imports nothing from config.
+        from config.columns_file import load_columns
+        try:
+            load_columns(args.columns_file)
+        except (OSError, ValueError) as exc:
+            # Fail here, not in const_training at import time: a bad file then
+            # costs one second instead of a queued allocation and a merge.
+            parser.error(str(exc))
 
     return args
 
@@ -103,6 +122,11 @@ def apply_env_overrides(args):
         os.environ["RAILWAY_N_JOBS"] = str(args.n_jobs)
     if args.search_iterations is not None:
         os.environ["RAILWAY_SEARCH_ITERATIONS"] = str(args.search_iterations)
+    if args.columns_file is not None:
+        # Stored verbatim rather than absolutised: nothing between here and the
+        # config import in _run() changes the working directory, and the path as
+        # typed is what appears in the run's log, matching the batch script.
+        os.environ["RAILWAY_COLUMNS_FILE"] = args.columns_file
 
 
 def build_state_machine(args, default):

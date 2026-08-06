@@ -11,6 +11,7 @@ def test_no_args_returns_all_none():
     assert args.data_root is None
     assert args.n_jobs is None
     assert args.search_iterations is None
+    assert args.columns_file is None
     assert args.dump_columns is False
 
 
@@ -247,3 +248,42 @@ def test_dump_columns_short_circuits_before_training(monkeypatch):
     assert rc == 0
     assert calls["merge"] == 1
     assert calls["train"] == 0, "training must never run under --dump-columns"
+
+
+def test_columns_file_flag_parses_and_sets_env_var(tmp_path, monkeypatch):
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+    features = tmp_path / "features.txt"
+    features.write_text("trainDelayed\nAir temperature (12h max)\n", encoding="utf-8")
+
+    args = main_module.parse_args(["--columns-file", str(features)])
+    assert args.columns_file == str(features)
+
+    main_module.apply_env_overrides(args)
+    assert os.environ["RAILWAY_COLUMNS_FILE"] == str(features)
+
+
+def test_no_columns_file_leaves_env_var_unset(monkeypatch):
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+    main_module.apply_env_overrides(main_module.parse_args([]))
+    assert "RAILWAY_COLUMNS_FILE" not in os.environ
+
+
+def test_missing_columns_file_is_rejected_at_parse_time(tmp_path):
+    """Fails in about a second, rather than after the merge stage has run."""
+    try:
+        main_module.parse_args(["--columns-file", str(tmp_path / "nope.txt")])
+    except SystemExit:
+        pass  # argparse rejects it via parser.error()
+    else:
+        raise AssertionError("expected a missing --columns-file to be rejected")
+
+
+def test_empty_columns_file_is_rejected_at_parse_time(tmp_path):
+    features = tmp_path / "features.txt"
+    features.write_text("# nothing selected\n", encoding="utf-8")
+    try:
+        main_module.parse_args(["--columns-file", str(features)])
+    except SystemExit:
+        pass  # argparse rejects it via parser.error()
+    else:
+        raise AssertionError("expected an empty --columns-file to be rejected")
