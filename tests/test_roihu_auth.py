@@ -59,7 +59,7 @@ def _stub_dir(tmp_path, name, body):
     d = tmp_path / f"stubs_{name}"
     d.mkdir(exist_ok=True)
     stub = d / name
-    stub.write_text("#!/bin/bash\n" + body)
+    stub.write_text("#!/bin/bash\n" + body, newline="\n")
     stub.chmod(0o755)
     return d
 
@@ -77,16 +77,20 @@ def test_aborts_when_private_key_missing(home):
     assert "ssh-keygen -t ed25519" in result.stderr
 
 
-def test_abort_message_does_not_run_the_signing_tool(home):
+def test_abort_message_does_not_run_the_signing_tool(home, tmp_path):
     """A missing key must fail before any network work is attempted."""
-    result = _run(home)
-    assert "Certificate" not in result.stdout
+    sentinel = tmp_path / "tool-ran"
+    stubs = _stub_dir(tmp_path, "python", f'touch "{sentinel}"\nexit 0\n')
+    result = _run(home, path_prepend=str(stubs))
+    assert result.returncode != 0
+    assert not sentinel.exists(), "csc_cert.py ran despite the missing key"
 
 
 def test_aborts_when_vendored_tool_missing(home, tmp_path):
     """REPO_ROOT derives from the script's own location, so a copy outside the
     repo must report the missing tool rather than crash."""
     (home / ".ssh" / "id_csc").write_text("fake private key")
+    (home / ".ssh" / "id_csc.pub").write_text("ssh-ed25519 AAAA fake")
     elsewhere = tmp_path / "no_such_repo" / "hpc"
     elsewhere.mkdir(parents=True)
     script_copy = elsewhere / "roihu-auth.sh"
@@ -118,9 +122,9 @@ def test_passes_required_flags_to_the_tool(home, tmp_path):
     result = _run(home, path_prepend=str(stubs))
     assert result.returncode == 0, result.stderr
     recorded = argv_log.read_text().splitlines()
-    assert "-a" in recorded and "none" in recorded
+    assert recorded[recorded.index("-a") + 1] == "none"
     assert "-p" in recorded
-    assert "-u" in recorded and "vpozzobo" in recorded
+    assert recorded[recorded.index("-u") + 1] == "vpozzobo"
 
 
 def test_refresh_flag_is_forwarded(home, tmp_path):

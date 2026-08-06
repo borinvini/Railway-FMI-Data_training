@@ -46,6 +46,13 @@ if [ ! -f "${SSH_KEY}" ]; then
     exit 1
 fi
 
+if [ ! -f "${SSH_KEY}.pub" ]; then
+    echo "ERROR: no public key at ${SSH_KEY}.pub" >&2
+    echo "       Regenerate it from the private key:" >&2
+    echo "         ssh-keygen -y -f \"${SSH_KEY}\" > \"${SSH_KEY}.pub\"" >&2
+    exit 1
+fi
+
 if [ ! -f "${CERT_TOOL}" ]; then
     echo "ERROR: hpc/vendor/csc_cert.py not found at ${CERT_TOOL}" >&2
     echo "       Re-vendor it (see hpc/vendor/README.md)." >&2
@@ -62,7 +69,7 @@ if ! command -v "${PYTHON}" >/dev/null 2>&1; then
 fi
 if ! command -v "${PYTHON}" >/dev/null 2>&1; then
     echo "ERROR: no usable Python. Expected 'python' on PATH, or miniconda at" >&2
-    echo "       C:\\Users\\vinic\\miniconda3\\python.exe" >&2
+    echo "       ${PYTHON}" >&2
     exit 1
 fi
 
@@ -89,9 +96,12 @@ if [ -z "${ROIHU_AUTH_NO_AGENT:-}" ]; then
     fi
     if ! agent_alive; then
         echo "Starting a new ssh-agent..."
-        (umask 077; ssh-agent -s > "${AGENT_ENV}")
-        # shellcheck source=/dev/null
-        . "${AGENT_ENV}" >/dev/null
+        if (umask 077; ssh-agent -s > "${AGENT_ENV}"); then
+            # shellcheck source=/dev/null
+            . "${AGENT_ENV}" >/dev/null
+        else
+            rm -f "${AGENT_ENV}"
+        fi
     fi
     if ! agent_alive; then
         echo "ERROR: could not start an ssh-agent. Refusing to continue agentless," >&2
@@ -110,8 +120,8 @@ fi
 
 # --- 3. Load the key into the agent ----------------------------------------
 if [ -z "${ROIHU_AUTH_NO_AGENT:-}" ]; then
-    KEY_FP="$(ssh-keygen -lf "${SSH_KEY}.pub" | awk '{print $2}')"
-    if ! ssh-add -l 2>/dev/null | grep -qF "${KEY_FP}"; then
+    KEY_FP="$(ssh-keygen -lf "${SSH_KEY}.pub" 2>/dev/null | awk '{print $2}')" || KEY_FP=""
+    if [ -z "${KEY_FP}" ] || ! ssh-add -l 2>/dev/null | grep -qF "${KEY_FP}"; then
         echo "Adding ${SSH_KEY} to the agent (passphrase needed once per boot)..."
         ssh-add "${SSH_KEY}"
     fi
@@ -119,6 +129,6 @@ fi
 
 # --- 4. Report -------------------------------------------------------------
 if [ -f "${CERT}" ]; then
-    ssh-keygen -L -f "${CERT}" | grep "Valid:" | sed 's/^ *//'
+    ssh-keygen -L -f "${CERT}" 2>/dev/null | grep "Valid:" | sed 's/^ *//' || true
 fi
 echo "Ready. Try: ssh roihu \"echo OK\""
