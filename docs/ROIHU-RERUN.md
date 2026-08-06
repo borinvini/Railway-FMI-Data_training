@@ -93,6 +93,58 @@ That hash must match what you just pushed. Skipping this is the single most
 expensive mistake available here: the job runs happily against the *old* code
 and you burn an hour of allocation to reproduce results you already had.
 
+### [LOCAL] Confirm the two sides actually match
+
+⚠️ **This one runs on your laptop, not on Roihu** — it is the only `[LOCAL]`
+block in this section. `roihu` is a `Host` alias in your laptop's
+`~/.ssh/config`; Roihu has no such alias, so running this there fails with
+`ssh: Could not resolve hostname roihu`.
+
+From the repo root on your laptop, after the pull:
+
+```bash
+LOCAL_HEAD="$(git rev-parse HEAD)"
+ROIHU_HEAD="$(ssh roihu 'cd /projappl/project_2019266/railway-fmi-code && git rev-parse HEAD')"
+
+if [ -z "${ROIHU_HEAD}" ]; then
+    echo "CHECK FAILED — could not read Roihu's HEAD. Nothing was compared."
+    echo "  Are you running this on your laptop? Is the certificate current?"
+elif [ "${LOCAL_HEAD}" = "${ROIHU_HEAD}" ]; then
+    echo "IN SYNC   ${LOCAL_HEAD}"
+else
+    echo "OUT OF SYNC — git pull on Roihu"
+    echo "  laptop: ${LOCAL_HEAD}"
+    echo "  roihu : ${ROIHU_HEAD}"
+fi
+```
+
+The three-way branch matters. A one-liner that just compares the two values
+reports `OUT OF SYNC` whenever `ssh` fails, because the comparison is then
+against an empty string — telling you the clones disagree when it has in fact
+learned nothing. `CHECK FAILED` and `OUT OF SYNC` need different fixes.
+
+Roihu's sshd prints three `** WARNING: ... post-quantum ...` lines on every
+connection. They go to stderr, so they do not affect the comparison — ignore
+them.
+
+**Already logged into Roihu?** Then just run `git rev-parse HEAD` there and
+compare it against `git rev-parse HEAD` on your laptop by eye. There is no way
+to reach your laptop from Roihu.
+
+Two things this does **not** prove, both worth a second command when results
+look wrong:
+
+- **Matching hashes do not mean matching files.** A commit match covers tracked
+  files only. Someone can edit `config/const_training.py` directly on Roihu and
+  the hashes still agree. Check with `git status --porcelain` there — anything
+  beyond untracked `slurm-*.out` job logs means the clone has drifted.
+- **A pull only helps if the push landed first.** If you skipped step 2, Roihu
+  pulls nothing and reports success. The check above catches this, because your
+  local `HEAD` will be ahead of Roihu's.
+
+The symptom of getting this wrong is silent: results identical to your last run,
+with no error anywhere.
+
 ---
 
 ## 4. [ROIHU] Clean the previous run
