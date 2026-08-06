@@ -87,7 +87,12 @@ while IFS= read -r line; do
             ;;
         "")
             ;;
-        *)
+        /*)
+            # Anchored to an absolute path on purpose: every real path from
+            # `ls -d` is absolute, since the globs themselves are absolute.
+            # A bare `*)` would also swallow a stray banner line (MOTD, a
+            # maintenance notice) ahead of the first marker and hand it to
+            # scp as a bogus path, aborting the whole transfer.
             PATHS+=("${line}")
             current_count=$((current_count + 1))
             ;;
@@ -104,6 +109,10 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
             *700-*)
                 echo "      (700-shap_correlation_analysis is produced only by"
                 echo "       hpc/train_all.sh; after an array run this is normal.)"
+                ;;
+            *run_0/data/output/50\[0-5\]-*)
+                echo "      (run_0 did not complete, so the prep stages are"
+                echo "       unavailable; the model directories below may also be incomplete.)"
                 ;;
         esac
     done

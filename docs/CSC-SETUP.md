@@ -228,7 +228,8 @@ hpc/fetch-results.sh
 ```
 
 That fetches every training-pipeline stage, not only the model directories:
-`50[0-5]-*` and `700-*` from `run_0`, and `100[0-4]-*` from every `run_*`. It
+`50[0-5]-*` and `700-*` from `run_0` (array runs do not produce `700-*`), and
+`100[0-4]-*` from every `run_*`. It
 resolves the paths and reports their size before transferring. `--models`
 restores the models-only behaviour; `--train-all` switches to the single-job
 layout, where there are no `run_N` roots because `train_all.sh` runs
