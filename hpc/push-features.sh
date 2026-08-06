@@ -22,6 +22,22 @@ if [ ! -f "${LOCAL}" ]; then
     exit 1
 fi
 
+# Parse locally with the real parser before uploading, so a duplicate name or an
+# all-commented file fails on the laptop in a second instead of on Roihu after
+# the scp. cd above already put us at the repo root, so `config` is importable
+# from the current directory. Skipped (not fatal) if python is not on PATH.
+# LOCAL is passed via the environment, not interpolated into the Python source,
+# so a path containing quotes cannot break the -c string.
+if command -v python >/dev/null 2>&1; then
+    RAILWAY_LOCAL_FEATURES_FILE="${LOCAL}" python -c "
+import os
+from config.columns_file import load_columns
+load_columns(os.environ['RAILWAY_LOCAL_FEATURES_FILE'])
+"
+else
+    echo "NOTE: python not found on PATH; skipping local validation of ${LOCAL}." >&2
+fi
+
 scp "${LOCAL}" "${REMOTE}"
 
 echo "Uploaded $(grep -cve '^[[:space:]]*\(#.*\)\?$' "${LOCAL}") columns, sha256 $(sha256sum "${LOCAL}" | cut -c1-16)"

@@ -27,8 +27,8 @@ def load_columns(path):
     columns = []
     first_seen = {}
     for lineno, raw in enumerate(text.splitlines(), start=1):
-        # .strip() also removes the trailing \r left by copying a CRLF file
-        # from Windows to Linux, which would corrupt every name in the file.
+        # read_text() above already normalises CRLF/CR line endings; .strip()
+        # here removes surrounding whitespace and is a backstop for any stray \r.
         name = raw.strip()
         if not name or name.startswith("#"):
             continue

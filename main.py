@@ -96,7 +96,7 @@ def parse_args(argv=None):
     if args.columns_file is not None:
         # Imported inside the function, never at module scope: main.py's
         # top-level imports must stay {argparse, os, sys} or config constants
-        # bind before apply_env_overrides() runs. tests/test_cli.py:117 guards
+        # bind before apply_env_overrides() runs. tests/test_cli.py:118 guards
         # this. columns_file itself imports nothing from config.
         from config.columns_file import load_columns
         try:

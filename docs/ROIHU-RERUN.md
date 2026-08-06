@@ -320,7 +320,7 @@ frozen fallback in `config/const_training.py:69` applies instead.
 `--array=0-N` to its length. Or run one directly:
 
 ```bash
-python main.py --data-root /scratch/project_2019266/railway-fmi/run_0 --model xgboost
+python main.py --data-root /scratch/project_2019266/railway-fmi/run_0 --model xgboost --columns-file config/features.txt
 ```
 
 **Search budget** — `RANDOM_SEARCH_ITERATIONS` in `config/const_training.py`.
@@ -344,7 +344,7 @@ not help.
 | Empty model directory | That task failed | Same as above |
 | `main.py: No such file` | Submitted from the wrong directory | `cd` to the repo root before `sbatch` |
 | Job hangs then `EOFError` | Config reverted to interactive | Check `config/features.txt` reached Roihu, and `SCHEMA_MISMATCH_STRATEGY` |
-| `columns file not found` | `features.txt` never uploaded | `hpc/push-features.sh` from your laptop |
+| `columns file missing or empty` | `features.txt` never uploaded, or a truncated scp left it zero-byte | `hpc/push-features.sh` from your laptop |
 | `SELECTED_COLUMNS references columns not in DataFrame` | Typo or a dropped column | Re-check with `--dump-columns` |
 | Features not what you expected | An older `features.txt` on Roihu | Compare the log's sha256 with `sha256sum config/features.txt` |
 | Trainer runs but produces nothing | `--search-iterations` below 10 | Use 10 or more |

@@ -287,3 +287,48 @@ def test_empty_columns_file_is_rejected_at_parse_time(tmp_path):
         pass  # argparse rejects it via parser.error()
     else:
         raise AssertionError("expected an empty --columns-file to be rejected")
+
+
+def test_parse_args_does_not_import_const_training(tmp_path, monkeypatch):
+    """parse_args()'s `from config.columns_file import load_columns` must stay the
+    only config import it triggers. If someone moves apply_env_overrides() to run
+    inside _run() after the config imports, or a config/__init__.py starts
+    importing const_training, parse_args would pull const_training in before
+    RAILWAY_COLUMNS_FILE is set and every run would silently use the frozen list
+    with the suite staying green. This test pins that config.const_training is
+    not yet imported when parse_args() returns."""
+    import sys
+
+    features = tmp_path / "features.txt"
+    features.write_text("trainDelayed\n", encoding="utf-8")
+
+    # A previously run test in this session may already have imported
+    # config.const_training; hide that from this test and restore it after.
+    monkeypatch.delitem(sys.modules, "config.const_training", raising=False)
+
+    main_module.parse_args(["--columns-file", str(features)])
+
+    assert "config.const_training" not in sys.modules
+
+
+def test_main_sets_env_var_before_run(monkeypatch, tmp_path):
+    """main() must call apply_env_overrides() before _run(), because _run()'s
+    deferred config imports bind SELECTED_COLUMNS from RAILWAY_COLUMNS_FILE at
+    import time. If that ordering were ever reversed, _run() would import the
+    frozen list before the env var existed and this test would catch it."""
+    features = tmp_path / "features.txt"
+    features.write_text("trainDelayed\n", encoding="utf-8")
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+
+    seen = {}
+
+    def fake_run(args):
+        seen["value"] = os.environ.get("RAILWAY_COLUMNS_FILE")
+        return 0
+
+    monkeypatch.setattr(main_module, "_run", fake_run)
+
+    rc = main_module.main(["--columns-file", str(features)])
+
+    assert rc == 0
+    assert seen["value"] == str(features)

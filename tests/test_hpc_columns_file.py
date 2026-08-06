@@ -20,11 +20,13 @@ def test_script_defaults_and_passes_the_columns_file(name):
 
 
 @pytest.mark.parametrize("name", BATCH_SCRIPTS)
-def test_script_fails_before_srun_when_the_file_is_absent(name):
-    """A forgotten upload must cost a second, not a full training run."""
+def test_script_fails_before_srun_when_the_file_is_absent_or_empty(name):
+    """A forgotten upload, or a truncated scp leaving a zero-byte file, must cost
+    a second, not a full training run. `-s` (not `-f`) so a zero-byte file also
+    fails the guard instead of reaching Python."""
     body = (REPO_ROOT / "hpc" / name).read_text(encoding="utf-8")
-    assert 'if [ ! -f "${COLUMNS_FILE}" ]; then' in body
-    guard_at = body.index('if [ ! -f "${COLUMNS_FILE}" ]; then')
+    assert 'if [ ! -s "${COLUMNS_FILE}" ]; then' in body
+    guard_at = body.index('if [ ! -s "${COLUMNS_FILE}" ]; then')
     srun_at = body.index("srun python main.py")
     assert guard_at < srun_at, "the guard must run before srun"
 
@@ -39,3 +41,13 @@ def test_push_features_script_exists_and_targets_the_repo_clone():
     body = (REPO_ROOT / "hpc" / "push-features.sh").read_text(encoding="utf-8")
     assert "scp" in body
     assert "roihu:/projappl/project_2019266/railway-fmi-code/config/features.txt" in body
+
+
+def test_push_features_script_validates_locally_before_scp():
+    """A duplicate name or all-commented file must fail on the laptop, not only
+    after the scp lands on Roihu, so parse locally with the real parser first."""
+    body = (REPO_ROOT / "hpc" / "push-features.sh").read_text(encoding="utf-8")
+    assert "from config.columns_file import load_columns" in body
+    validate_at = body.index("from config.columns_file import load_columns")
+    scp_at = body.index('scp "${LOCAL}" "${REMOTE}"')
+    assert validate_at < scp_at, "local validation must run before the upload"

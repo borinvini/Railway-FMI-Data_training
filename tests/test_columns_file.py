@@ -27,10 +27,21 @@ def test_preserves_spaces_and_parentheses_verbatim(tmp_path):
 
 def test_strips_crlf_line_endings(tmp_path):
     """A CRLF file scp'd from Windows to Linux keeps its \\r, which would
-    otherwise become part of every column name and fail validation."""
+    otherwise become part of every column name and fail validation.
+    read_text() normalises the \\r\\n itself; .strip() is a backstop for any
+    stray \\r plus ordinary surrounding whitespace, which is what the second
+    case below actually exercises."""
     f = tmp_path / "features.txt"
     f.write_bytes(b"trainDelayed\r\nAir temperature (12h max)\r\n")
     assert load_columns(str(f)) == ["trainDelayed", "Air temperature (12h max)"]
+
+
+def test_strips_surrounding_whitespace(tmp_path):
+    """.strip()'s actual job: trimming stray leading/trailing spaces, which
+    read_text()'s line-ending normalisation does not touch."""
+    f = tmp_path / "features.txt"
+    f.write_text("  Air temperature (12h max)  \n", encoding="utf-8")
+    assert load_columns(str(f)) == ["Air temperature (12h max)"]
 
 
 def test_strips_utf8_bom(tmp_path):
@@ -62,7 +73,7 @@ def test_duplicate_name_is_rejected_with_both_line_numbers(tmp_path):
         load_columns(str(f))
     message = str(exc.value)
     assert "trainDelayed" in message
-    assert "1" in message and "3" in message
+    assert "lines 1 and 3" in message
 
 
 def test_empty_file_is_rejected(tmp_path):

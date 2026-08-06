@@ -43,8 +43,8 @@ SCRATCH="/scratch/${PROJECT}/railway-fmi"
 # upload costs a second instead of the whole allocation. sbatch exports the
 # submitting environment, so COLUMNS_FILE=<path> sbatch ... overrides the default.
 COLUMNS_FILE="${COLUMNS_FILE:-config/features.txt}"
-if [ ! -f "${COLUMNS_FILE}" ]; then
-    echo "ERROR: columns file not found: ${COLUMNS_FILE}" >&2
+if [ ! -s "${COLUMNS_FILE}" ]; then
+    echo "ERROR: columns file missing or empty: ${COLUMNS_FILE}" >&2
     echo "       Upload it from your laptop with hpc/push-features.sh," >&2
     echo "       or submit with: COLUMNS_FILE=<path> sbatch hpc/$(basename "${0}")" >&2
     exit 1
