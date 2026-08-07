@@ -62,6 +62,11 @@ REMOTE_SCRIPT=""
 for glob in "${CANDIDATES[@]}"; do
     REMOTE_SCRIPT="${REMOTE_SCRIPT}echo '### ${glob}'; ls -d ${glob} 2>/dev/null || true; "
 done
+# Sizes come back over the SAME connection as the resolve, tagged with @@ so the
+# parser below can tell them from paths. Every additional ssh or scp invocation
+# is a full authentication, and with no ssh-agent loaded that is another
+# passphrase prompt — see the transfer step for why that matters.
+REMOTE_SCRIPT="${REMOTE_SCRIPT}du -csh ${CANDIDATES[*]} 2>/dev/null | sed 's/^/@@ /' || true; "
 
 # stderr is discarded because Roihu's sshd prints three post-quantum warnings on
 # every connection; our own message below covers the failure case.
@@ -74,10 +79,15 @@ fi
 
 PATHS=()
 MISSING=()
+SIZES=""
 current_glob=""
 current_count=0
 while IFS= read -r line; do
     case "${line}" in
+        "@@ "*)
+            SIZES="${SIZES}  ${line#@@ }
+"
+            ;;
         "### "*)
             if [ -n "${current_glob}" ] && [ "${current_count}" -eq 0 ]; then
                 MISSING+=("${current_glob}")
@@ -130,10 +140,11 @@ fi
 
 echo
 echo "Fetching ${#PATHS[@]} directories:"
-# Unquoted on purpose: the remote shell must see separate arguments. Output
-# directory names contain no spaces. || true so an unreadable directory costs a
-# size figure, not the transfer.
-ssh "${REMOTE_HOST}" "du -csh ${PATHS[*]}" 2>/dev/null || echo "  (size unavailable)"
+if [ -n "${SIZES}" ]; then
+    printf '%s' "${SIZES}"
+else
+    echo "  (size unavailable)"
+fi
 
 mkdir -p results
 if [ -n "$(ls -A results 2>/dev/null)" ]; then
@@ -142,14 +153,26 @@ if [ -n "$(ls -A results 2>/dev/null)" ]; then
     echo "      Keep the previous run first with: mv results results-\$(date +%Y%m%d)"
 fi
 
-REMOTE_ARGS=()
+# One connection for the whole transfer, deliberately not scp.
+#
+# scp opens a SEPARATE connection per remote source argument. With 11
+# directories that was 11 authentications on top of the resolve — and with no
+# ssh-agent loaded, 11 passphrase prompts, one every couple of files. A single
+# tar stream is also markedly faster here, because a few hundred MB spread over
+# many small files is dominated by per-file round trips rather than bandwidth.
+#
+# The repeated `-C <parent> <name>` pairs are what make the sources land
+# side by side: each member is archived under its bare directory name, so
+# results/ ends up with the same flat layout scp produced, even though the
+# sources live under different run roots.
+TAR_ARGS=""
 for path in "${PATHS[@]}"; do
-    REMOTE_ARGS+=("${REMOTE_HOST}:${path}")
+    TAR_ARGS="${TAR_ARGS} -C $(dirname "${path}") $(basename "${path}")"
 done
 
 echo
 echo "Copying into ./results/ ..."
-scp -r "${REMOTE_ARGS[@]}" ./results/
+ssh "${REMOTE_HOST}" "tar -czf -${TAR_ARGS}" | tar -xzvf - -C results
 
 echo "Done. ${#PATHS[@]} directories under $(pwd)/results/"
 echo "Scratch deletes anything untouched for 180 days, so this copy is the durable one."

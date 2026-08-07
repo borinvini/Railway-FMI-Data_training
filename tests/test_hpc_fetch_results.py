@@ -90,7 +90,34 @@ def test_size_is_reported_before_the_transfer_starts():
     """The point of the du call is to learn a pull is 12 GB before it begins,
     not after."""
     assert "du -csh" in SCRIPT
-    assert SCRIPT.index("du -csh") < SCRIPT.index("scp -r")
+    assert SCRIPT.index("du -csh") < SCRIPT.index("tar -czf -")
+
+
+def test_the_transfer_opens_exactly_one_remote_connection():
+    """scp opens a separate connection per remote source argument, so fetching
+    11 directories authenticated 11 times. With no ssh-agent loaded that is 11
+    passphrase prompts, one every couple of files — which is what this script
+    shipped with and what this test exists to prevent coming back.
+
+    A single `tar -czf -` stream carries every directory down one connection.
+    Two ssh invocations total are expected: the resolve (which now also returns
+    the sizes) and the transfer.
+    """
+    code = "\n".join(
+        line for line in SCRIPT.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "scp" not in code, "scp costs one connection per source argument"
+    assert "tar -czf -" in code
+    assert code.count('ssh "${REMOTE_HOST}"') == 2
+
+
+def test_the_archive_members_are_flattened_to_bare_directory_names():
+    """The sources live under different run roots (run_0/... and run_*/...), so
+    without a `-C <parent>` before each name the archive would carry the full
+    /scratch/... prefix and results/ would gain a deep directory tree instead of
+    the flat layout every doc and the compare-runs snippet assume."""
+    assert '-C $(dirname "${path}") $(basename "${path}")' in SCRIPT
+    assert "-C results" in SCRIPT
 
 
 def test_an_unreachable_cluster_points_at_the_auth_script():
