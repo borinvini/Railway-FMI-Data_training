@@ -224,52 +224,50 @@ This is why no commit is needed when only the feature set changes — see
 
 ---
 
-## Step 6 — [ROIHU] Smoke test
+## Step 6 — [ROIHU] Pre-flight, two cells
 
-Proves the whole chain cheaply before spending real allocation.
-
-⚠️ **This step tests the single-feature-set flow and needs `config/features.txt`,
-not `config/scenarios.txt`.** If you took step 5's scenario path and never
-uploaded a `features.txt`, this job fails immediately with
-`ERROR: columns file missing or empty`. Two ways past it:
-
-- **Running scenarios (the usual case): skip to step 7** and use its two-cell
-  pre-flight, `sbatch --array=0-1 hpc/train_scenarios.sh`. That is the
-  scenario-aware equivalent of this smoke test and proves the same chain.
-- **Want this smoke test anyway:** point it at one scenario —
-  `COLUMNS_FILE=config/scenarios.txt sbatch hpc/smoke_test.sh` will still fail,
-  because `smoke_test.sh` passes no `--scenario` and the catalogue holds 8
-  sections. Upload a `features.txt` as well (step 5's second FIX block) if you
-  specifically want this step.
+Proves the whole chain cheaply before spending real allocation: same script,
+same code path, two tasks instead of forty.
 
 **CHECK:**
 
 ```bash
-ls /scratch/project_2019266/railway-fmi/data/output/1000-xgboost_randomized_search/ 2>/dev/null
+ls -d /scratch/project_2019266/railway-fmi/run_s01_*/data/output/100[0-1]-* 2>/dev/null
 ```
 
-Files listed → the smoke test already passed; skip to step 7.
+Two directories listed → the pre-flight already passed; skip to step 7.
 
 **RUN:**
 
 ```bash
 cd /projappl/project_2019266/railway-fmi-code
-sbatch hpc/smoke_test.sh
+sbatch --array=0-1 hpc/train_scenarios.sh
 squeue --me
 ```
 
-When it leaves the queue:
+Tasks 0 and 1 are scenario 1 with xgboost and lightgbm. When they leave the
+queue:
 
 ```bash
-cat slurm-smoke-*.out
+cat slurm-scenarios-*.out
 ```
 
 Success looks like: **no** `EOFError`, **no** `UnicodeEncodeError`, **no**
-prompt asking for column numbers, a `Features: N columns, sha256 ...` line
-matching what step 5's upload printed, and a populated output directory.
+prompt asking for column numbers, a `Features: config/scenarios.txt scenario
+1/8, sha256 ...` line whose hash matches what step 5's upload printed, and two
+populated `run_s01_*` roots.
 
-Ignore this job's CPU efficiency — 50 fits behind a serial merge/SMOTE step
-reads low by construction. Judge efficiency on the full run.
+If the sha256 does **not** match, the cluster is training on a stale catalogue —
+re-run step 5 before going any further, or all 40 results will be labelled with
+feature sets they were not trained on.
+
+Ignore this job's CPU efficiency — a short search behind a serial merge/SMOTE
+step reads low by construction. Judge efficiency on the full run.
+
+**Running the older single-feature-set flow instead?** Its equivalent is
+`sbatch hpc/smoke_test.sh`, which reads `config/features.txt` (not the
+catalogue) and trains one xgboost model. It fails with `columns file missing or
+empty` if you have only uploaded `config/scenarios.txt`.
 
 ---
 
@@ -291,11 +289,7 @@ sbatch hpc/train_scenarios.sh
 squeue --me
 ```
 
-Prove the chain on two cells first if anything upstream changed:
-
-```bash
-sbatch --array=0-1 hpc/train_scenarios.sh    # scenario 1, xgboost + lightgbm
-```
+Step 6 is the two-cell pre-flight; re-run it whenever anything upstream changes.
 
 Any single cell can be re-run on its own — the roots are independent:
 
@@ -394,7 +388,8 @@ squeue --me                      # your queue
 scancel <jobid>                  # cancel one job
 seff <jobid>                     # CPU/memory efficiency after it finishes
 sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS
-tail -f slurm-train-*.out        # follow a running job
+tail -f slurm-scenarios-*.out    # follow a running scenario task
+tail -f slurm-train-*.out        # follow a train_array.sh / train_all.sh job
 csc-quota                        # disk usage against quota
 ```
 
