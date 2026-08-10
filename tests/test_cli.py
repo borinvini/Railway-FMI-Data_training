@@ -332,3 +332,102 @@ def test_main_sets_env_var_before_run(monkeypatch, tmp_path):
 
     assert rc == 0
     assert seen["value"] == str(features)
+
+
+import pytest
+
+SCENARIO_TEXT = """\
+# 1 - ALL FEATURES
+trainDelayed
+Air temperature (12h max)
+
+# 2 - ONLY OPERACIONAL FEATURES
+trainDelayed
+trainStopping
+"""
+
+
+@pytest.fixture
+def scenario_file(tmp_path):
+    f = tmp_path / "scenarios.txt"
+    f.write_text(SCENARIO_TEXT, encoding="utf-8")
+    return str(f)
+
+
+def test_no_args_leaves_the_new_flags_unset():
+    args = main_module.parse_args([])
+    assert args.scenario is None
+    assert args.list_scenarios is False
+
+
+def test_scenario_flag_is_accepted_with_a_columns_file(scenario_file):
+    args = main_module.parse_args(["--columns-file", scenario_file, "--scenario", "2"])
+    assert args.scenario == "2"
+
+
+def test_scenario_without_columns_file_is_rejected():
+    with pytest.raises(SystemExit):
+        main_module.parse_args(["--scenario", "2"])
+
+
+def test_unknown_scenario_index_is_rejected_at_parse_time(scenario_file):
+    """A bad index must cost a second on the laptop, not a queued allocation."""
+    with pytest.raises(SystemExit):
+        main_module.parse_args(["--columns-file", scenario_file, "--scenario", "9"])
+
+
+def test_unknown_scenario_name_is_rejected_at_parse_time(scenario_file):
+    with pytest.raises(SystemExit):
+        main_module.parse_args(
+            ["--columns-file", scenario_file, "--scenario", "9 - NOPE"]
+        )
+
+
+def test_scenario_file_without_scenario_flag_is_rejected(scenario_file):
+    """load_columns raises the 'pass --scenario' error; parse_args surfaces it."""
+    with pytest.raises(SystemExit):
+        main_module.parse_args(["--columns-file", scenario_file])
+
+
+def test_plain_columns_file_still_validates_without_a_scenario(tmp_path):
+    f = tmp_path / "features.txt"
+    f.write_text("trainDelayed\ntrainStopping\n", encoding="utf-8")
+    args = main_module.parse_args(["--columns-file", str(f)])
+    assert args.columns_file == str(f)
+    assert args.scenario is None
+
+
+def test_apply_env_overrides_exports_the_scenario(monkeypatch, scenario_file):
+    monkeypatch.delenv("RAILWAY_SCENARIO", raising=False)
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+    args = main_module.parse_args(
+        ["--columns-file", scenario_file, "--scenario", "2"]
+    )
+    main_module.apply_env_overrides(args)
+    assert os.environ["RAILWAY_SCENARIO"] == "2"
+    assert os.environ["RAILWAY_COLUMNS_FILE"] == scenario_file
+
+
+def test_apply_env_overrides_leaves_scenario_unset_without_the_flag(monkeypatch, tmp_path):
+    monkeypatch.delenv("RAILWAY_SCENARIO", raising=False)
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+    f = tmp_path / "features.txt"
+    f.write_text("trainDelayed\n", encoding="utf-8")
+    main_module.apply_env_overrides(
+        main_module.parse_args(["--columns-file", str(f)])
+    )
+    assert "RAILWAY_SCENARIO" not in os.environ
+
+
+def test_list_scenarios_prints_the_catalogue_and_exits_zero(scenario_file, capsys):
+    """It must not import the pipeline or touch data."""
+    code = main_module.main(["--columns-file", scenario_file, "--list-scenarios"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "1 - ALL FEATURES" in out
+    assert "2 - ONLY OPERACIONAL FEATURES" in out
+
+
+def test_list_scenarios_without_columns_file_is_rejected():
+    with pytest.raises(SystemExit):
+        main_module.parse_args(["--list-scenarios"])

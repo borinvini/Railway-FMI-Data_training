@@ -75,6 +75,20 @@ def parse_args(argv=None):
              "changing the feature set needs no commit.",
     )
     parser.add_argument(
+        "--scenario",
+        default=None,
+        help="Which scenario section of --columns-file to train on: a 1-based "
+             "index or an exact name. Used by hpc/train_scenarios.sh, which "
+             "passes the index so a name containing spaces never has to survive "
+             "an sbatch --export round trip.",
+    )
+    parser.add_argument(
+        "--list-scenarios",
+        action="store_true",
+        help="Print the scenarios in --columns-file with their indexes and exit. "
+             "Runs no pipeline.",
+    )
+    parser.add_argument(
         "--dump-columns",
         action="store_true",
         help="Print the merged dataset's candidate columns and exit, for populating "
@@ -93,17 +107,33 @@ def parse_args(argv=None):
         parser.error(
             "--n-jobs must be -1 (use all available cores) or a positive integer."
         )
+    if args.list_scenarios and args.columns_file is None:
+        parser.error("--list-scenarios requires --columns-file.")
+    if args.scenario is not None and args.columns_file is None:
+        parser.error("--scenario requires --columns-file.")
     if args.columns_file is not None:
         # Imported inside the function, never at module scope: main.py's
         # top-level imports must stay {argparse, os, sys} or config constants
         # bind before apply_env_overrides() runs. tests/test_cli.py:118 guards
         # this. columns_file itself imports nothing from config.
-        from config.columns_file import load_columns
+        from config.columns_file import load_columns, load_scenarios, select_scenario
         try:
-            load_columns(args.columns_file)
+            # Fail here, not in const_training at import time: a bad file or a
+            # bad scenario then costs one second instead of a queued allocation
+            # and a merge. Each branch parses the whole file, so all three cover
+            # the same ground load_columns used to.
+            #
+            # --list-scenarios validates with load_scenarios, NOT load_columns:
+            # load_columns now rejects any scenario file outright ("pass
+            # --scenario"), which would make listing a catalogue impossible —
+            # the one thing --list-scenarios exists to do.
+            if args.list_scenarios:
+                load_scenarios(args.columns_file)
+            elif args.scenario is not None:
+                select_scenario(args.columns_file, args.scenario)
+            else:
+                load_columns(args.columns_file)
         except (OSError, ValueError) as exc:
-            # Fail here, not in const_training at import time: a bad file then
-            # costs one second instead of a queued allocation and a merge.
             parser.error(str(exc))
 
     return args
@@ -127,6 +157,10 @@ def apply_env_overrides(args):
         # config import in _run() changes the working directory, and the path as
         # typed is what appears in the run's log, matching the batch script.
         os.environ["RAILWAY_COLUMNS_FILE"] = args.columns_file
+    if args.scenario is not None:
+        # Stored as given (index or name); config/const_training.py resolves it
+        # against RAILWAY_COLUMNS_FILE with the same parser that validated it.
+        os.environ["RAILWAY_SCENARIO"] = args.scenario
 
 
 def build_state_machine(args, default):
@@ -372,6 +406,13 @@ def _run(args):
 
 def main(argv=None):
     args = parse_args(argv)
+    if args.list_scenarios:
+        # Before apply_env_overrides and before _run: this needs only the file,
+        # so it must not import the pipeline or touch a data root.
+        from config.columns_file import load_scenarios
+        for index, (name, columns) in enumerate(load_scenarios(args.columns_file), start=1):
+            print(f"{index}. {name}  ({len(columns)} columns)")
+        return 0
     apply_env_overrides(args)
     return _run(args)
 
