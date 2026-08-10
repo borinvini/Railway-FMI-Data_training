@@ -186,8 +186,11 @@ conda-forge/linux-64.
 
 ## Step 5 — [LOCAL] Feature selection uploaded
 
-`config/features.txt` is gitignored, so a fresh clone never has one — the
-`git pull`/`git clone` in step 2 does not create it.
+`config/features.txt` and `config/scenarios.txt` are both gitignored, so a fresh
+clone never has either — the `git pull`/`git clone` in step 2 does not create
+them. Upload whichever one the run you intend to submit will read:
+`scenarios.txt` for `hpc/train_scenarios.sh`, `features.txt` for
+`hpc/train_array.sh`, `hpc/train_all.sh` and `hpc/smoke_test.sh`.
 
 **CHECK:**
 
@@ -224,6 +227,20 @@ This is why no commit is needed when only the feature set changes — see
 ## Step 6 — [ROIHU] Smoke test
 
 Proves the whole chain cheaply before spending real allocation.
+
+⚠️ **This step tests the single-feature-set flow and needs `config/features.txt`,
+not `config/scenarios.txt`.** If you took step 5's scenario path and never
+uploaded a `features.txt`, this job fails immediately with
+`ERROR: columns file missing or empty`. Two ways past it:
+
+- **Running scenarios (the usual case): skip to step 7** and use its two-cell
+  pre-flight, `sbatch --array=0-1 hpc/train_scenarios.sh`. That is the
+  scenario-aware equivalent of this smoke test and proves the same chain.
+- **Want this smoke test anyway:** point it at one scenario —
+  `COLUMNS_FILE=config/scenarios.txt sbatch hpc/smoke_test.sh` will still fail,
+  because `smoke_test.sh` passes no `--scenario` and the catalogue holds 8
+  sections. Upload a `features.txt` as well (step 5's second FIX block) if you
+  specifically want this step.
 
 **CHECK:**
 
