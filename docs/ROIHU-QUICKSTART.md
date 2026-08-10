@@ -288,12 +288,27 @@ empty` if you have only uploaded `config/scenarios.txt`.
 ## Step 7 — [ROIHU] Full run
 
 **Check disk headroom first.** 40 tasks each keep their own copy of the prep
-stages, eight times the footprint of the old five-task array, and this has not
-yet been measured on a completed run:
+stages — eight times the footprint of the old five-task array.
+
+Roihu's default scratch quota is **250 GiB**
+([CSC docs](https://docs.csc.fi/accounts/how-to-increase-disk-quotas/)). There
+is no `csc-quota` command on Roihu; that tool is Puhti/Mahti only, and quotas
+are viewed and changed in MyCSC (project → Configuration). Measure instead:
 
 ```bash
-csc-quota
+du -sh /scratch/project_2019266/railway-fmi/run_0        # one root from the old flow
+du -sh /scratch/project_2019266/railway-fmi              # everything already there
 ```
+
+Multiply the first by 40 and check it fits in 250 GiB alongside the second.
+Under ~5 GB per root is comfortable; above ~6 GB you will exceed the quota
+part-way through the array and lose the tail of the run.
+
+If it does not fit, in order of preference: delete the old `run_0`..`run_4`
+roots once their results are fetched; or raise the quota in MyCSC — but note
+that an increased quota bills Storage Billing Units on the **quota**, not on
+what you actually store, and scratch's automatic cleaning keeps removing idle
+files regardless.
 
 All 8 scenarios × 5 models, 40 independent tasks:
 
@@ -404,7 +419,8 @@ seff <jobid>                     # CPU/memory efficiency after it finishes
 sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS
 tail -f slurm-scenarios-*.out    # follow a running scenario task
 tail -f slurm-train-*.out        # follow a train_array.sh / train_all.sh job
-csc-quota                        # disk usage against quota
+du -sh /scratch/project_2019266/railway-fmi   # scratch usage (quota is 250 GiB;
+                                              # no csc-quota on Roihu — see MyCSC)
 ```
 
 ---
