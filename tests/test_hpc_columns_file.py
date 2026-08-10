@@ -11,6 +11,10 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BATCH_SCRIPTS = ["train_all.sh", "train_array.sh", "smoke_test.sh"]
 
+# train_scenarios.sh defaults to config/scenarios.txt, not features.txt, so it
+# joins only the tests that are agnostic about which file is the default.
+ALL_BATCH_SCRIPTS = BATCH_SCRIPTS + ["train_scenarios.sh"]
+
 
 @pytest.mark.parametrize("name", BATCH_SCRIPTS)
 def test_script_defaults_and_passes_the_columns_file(name):
@@ -19,7 +23,7 @@ def test_script_defaults_and_passes_the_columns_file(name):
     assert '--columns-file "${COLUMNS_FILE}"' in body
 
 
-@pytest.mark.parametrize("name", BATCH_SCRIPTS)
+@pytest.mark.parametrize("name", ALL_BATCH_SCRIPTS)
 def test_script_fails_before_srun_when_the_file_is_absent_or_empty(name):
     """A forgotten upload, or a truncated scp leaving a zero-byte file, must cost
     a second, not a full training run. `-s` (not `-f`) so a zero-byte file also
@@ -31,7 +35,7 @@ def test_script_fails_before_srun_when_the_file_is_absent_or_empty(name):
     assert guard_at < srun_at, "the guard must run before srun"
 
 
-@pytest.mark.parametrize("name", BATCH_SCRIPTS)
+@pytest.mark.parametrize("name", ALL_BATCH_SCRIPTS)
 def test_script_records_the_feature_set_in_the_log(name):
     body = (REPO_ROOT / "hpc" / name).read_text(encoding="utf-8")
     assert "sha256sum" in body, "the log must identify which feature set ran"
