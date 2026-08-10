@@ -9,6 +9,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "hpc" / "train_scenarios.sh"
 SCRIPT = SCRIPT_PATH.read_text(encoding="utf-8")
@@ -42,9 +44,49 @@ def test_the_model_list_matches_train_array_order():
 
 def test_the_scenario_index_is_one_based_and_scenario_major():
     """scenario = id/5 + 1 keeps a scenario's five models contiguous, so
-    cancelling a tail range loses whole scenarios rather than fragments."""
-    assert "SLURM_ARRAY_TASK_ID / 5 + 1" in SCRIPT
-    assert "SLURM_ARRAY_TASK_ID % 5" in SCRIPT
+    cancelling a tail range loses whole scenarios rather than fragments.
+
+    Pins the complete assignments, not fragments: asserting only
+    "SLURM_ARRAY_TASK_ID / 5 + 1" appears somewhere still passes when the two
+    expressions are swapped between SCENARIO and MODEL."""
+    assert "SCENARIO=$((SLURM_ARRAY_TASK_ID / 5 + 1))" in SCRIPT
+    assert 'MODEL="${MODELS[$((SLURM_ARRAY_TASK_ID % 5))]}"' in SCRIPT
+
+
+@pytest.mark.parametrize("task_id,expected_scenario,expected_model", [
+    (0, 1, "xgboost"),
+    (1, 1, "lightgbm"),
+    (4, 1, "naive_bayes"),
+    (5, 2, "xgboost"),
+    (16, 4, "lightgbm"),
+    (35, 8, "xgboost"),
+    (39, 8, "naive_bayes"),
+])
+def test_the_shells_own_arithmetic_produces_the_documented_cell(
+    task_id, expected_scenario, expected_model
+):
+    """Runs the script's actual assignment lines under bash rather than
+    asserting they appear as text.
+
+    A substring check passes even when the two expressions are swapped between
+    SCENARIO and MODEL — a mutation that trains all 40 cells wrong while every
+    static test stays green. This executes them, so it cannot.
+    """
+    lines = [line.strip() for line in SCRIPT.splitlines()]
+    models_line = next(l for l in lines if l.startswith("MODELS=("))
+    scenario_line = next(l for l in lines if l.startswith("SCENARIO="))
+    model_line = next(l for l in lines if l.startswith("MODEL="))
+    snippet = "\n".join([
+        f"SLURM_ARRAY_TASK_ID={task_id}",
+        models_line,
+        scenario_line,
+        model_line,
+        'printf "%s %s" "${SCENARIO}" "${MODEL}"',
+    ])
+    result = subprocess.run(
+        [BASH, "-c", snippet], capture_output=True, text=True, check=True
+    )
+    assert result.stdout == f"{expected_scenario} {expected_model}"
 
 
 def test_the_run_root_is_slugged_and_zero_padded():

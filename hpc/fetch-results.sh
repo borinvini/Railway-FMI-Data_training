@@ -23,6 +23,13 @@ cd "$(dirname "${0}")/.."
 REMOTE_HOST="roihu"
 SCRATCH="/scratch/project_2019266/railway-fmi"
 
+# config/scenarios.txt is gitignored and freely editable between submitting
+# and fetching, and hpc/train_scenarios.sh lets COLUMNS_FILE= override which
+# catalogue the cluster actually used. Defaulting to the same override keeps
+# the local sort from silently relabelling every folder against the wrong
+# catalogue.
+SCENARIOS_FILE="${COLUMNS_FILE:-config/scenarios.txt}"
+
 MODELS_ONLY=0
 TRAIN_ALL=0
 SCENARIOS=0
@@ -43,6 +50,10 @@ done
 if [ "${STAGES}" -eq 1 ] && [ "${SCENARIOS}" -eq 0 ]; then
     echo "ERROR: --stages applies only to --scenarios." >&2
     echo "       The other layouts fetch the prep stages by default; use --models to omit them." >&2
+    exit 1
+fi
+if [ "${STAGES}" -eq 1 ] && [ "${MODELS_ONLY}" -eq 1 ]; then
+    echo "ERROR: --stages and --models are contradictory." >&2
     exit 1
 fi
 
@@ -233,7 +244,10 @@ if [ "${SCENARIOS}" -eq 1 ]; then
     if command -v python >/dev/null 2>&1; then
         echo
         echo "Sorting into per-scenario folders..."
-        python hpc/sort_results.py results config/scenarios.txt
+        python hpc/sort_results.py results "${SCENARIOS_FILE}"
+        echo "Sorted using ${SCENARIOS_FILE}, sha256 $(sha256sum "${SCENARIOS_FILE}" | cut -c1-16)"
+        echo "That sha256 must match the 'Features:' line in the slurm log; if it"
+        echo "does not, the folder names do not describe what was trained."
     else
         echo
         echo "NOTE: python not found on PATH; results stay in run_sNN_<model>/ form."

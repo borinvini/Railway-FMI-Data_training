@@ -88,3 +88,31 @@ def test_an_unknown_slug_is_left_in_place(tmp_path):
 
     assert sort_results(results, scenarios, log=lambda _: None) == 0
     assert (results / "run_s99_xgboost").is_dir()
+
+
+def test_a_root_with_no_data_output_is_left_untouched(tmp_path):
+    """A run root that never produced output (a failed/cancelled task) must
+    not be rmtree'd or counted as consumed — that would destroy the only
+    evidence the task failed."""
+    results, scenarios = _fixture(tmp_path, [])
+    root = results / "run_s01_xgboost"
+    root.mkdir(parents=True)
+
+    assert sort_results(results, scenarios, log=lambda _: None) == 0
+    assert root.is_dir()
+    assert not (results / "1 - ALL FEATURES").exists()
+
+
+def test_a_destination_that_is_a_file_is_replaced_not_raised_on(tmp_path):
+    """A stray file at the destination path (e.g. left over from a previous,
+    differently-shaped fetch) must be replaced like a directory would be,
+    not raise NotADirectoryError mid-loop and leave results/ half-sorted."""
+    results, scenarios = _fixture(tmp_path, [
+        ("s01", "xgboost", "1000-xgboost_randomized_search"),
+    ])
+    target = results / "1 - ALL FEATURES"
+    target.mkdir(parents=True)
+    (target / "1000-xgboost_randomized_search").write_text("stale", encoding="utf-8")
+
+    assert sort_results(results, scenarios, log=lambda _: None) == 1
+    assert (target / "1000-xgboost_randomized_search" / "metrics.csv").exists()

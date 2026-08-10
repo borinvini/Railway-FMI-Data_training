@@ -41,12 +41,19 @@ def sort_results(results_dir, scenarios_file, log=print):
         if name is None:
             log(f"  ? {root.name}: slug {slug} is not in {scenarios_file} — left in place")
             continue
+        output = root / "data" / "output"
+        if not output.is_dir():
+            log(f"  ? {root.name}: no data/output directory — left in place")
+            continue
+
         target = results / name
         target.mkdir(parents=True, exist_ok=True)
-        for stage in sorted((root / "data" / "output").glob("*")):
+        for stage in sorted(output.glob("*")):
             destination = target / stage.name
-            if destination.exists():
+            if destination.is_dir():
                 shutil.rmtree(destination)
+            elif destination.exists():
+                destination.unlink()
             shutil.move(str(stage), str(destination))
             log(f"  {name}/{stage.name}")
         shutil.rmtree(root)

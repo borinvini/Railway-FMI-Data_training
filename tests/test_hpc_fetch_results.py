@@ -178,14 +178,41 @@ def test_scenarios_mode_archives_members_relative_to_scratch():
 def test_the_reshuffle_calls_the_shared_module_not_an_inline_copy():
     """The sorting logic lives in hpc/sort_results.py so the test suite can
     exercise the shipped code; an inline heredoc could only be tested by a copy."""
-    assert "python hpc/sort_results.py results config/scenarios.txt" in SCRIPT
+    assert 'python hpc/sort_results.py results "${SCENARIOS_FILE}"' in SCRIPT
     assert "load_scenarios" not in SCRIPT, "the parser is the module's job, not the script's"
+
+
+def test_the_scenarios_file_is_overridable_like_the_cluster_side_default():
+    """hpc/train_scenarios.sh lets COLUMNS_FILE= override which catalogue the
+    cluster used, and config/scenarios.txt is gitignored and freely editable
+    between submitting and fetching. The local sort must use the same
+    override, not a hardcoded path that can silently relabel every folder."""
+    assert 'SCENARIOS_FILE="${COLUMNS_FILE:-config/scenarios.txt}"' in SCRIPT
+    assert "python hpc/sort_results.py results config/scenarios.txt" not in SCRIPT
+
+
+def test_the_sort_provenance_sha256_is_echoed():
+    """The folder names describe what was trained only if the catalogue used
+    to sort them matches the one the cluster actually trained against; this
+    sha256 is what lets a user verify that against the slurm log's own
+    'Features:' line."""
+    assert 'sha256sum "${SCENARIOS_FILE}"' in SCRIPT
+    assert "Sorted using ${SCENARIOS_FILE}" in SCRIPT
 
 
 def test_the_reshuffle_degrades_gracefully_without_python():
     """Git Bash on Windows may have no python on PATH; the transfer must still
     complete, leaving the slugged directories in place."""
     assert "command -v python" in SCRIPT
+
+
+def test_stages_and_models_are_contradictory_and_rejected():
+    """--stages adds the prep stages, --models strips everything but the model
+    directories; together they contradict each other and must be rejected the
+    same way --stages without --scenarios already is, rather than silently
+    accepted with one flag winning."""
+    assert 'if [ "${STAGES}" -eq 1 ] && [ "${MODELS_ONLY}" -eq 1 ]; then' in SCRIPT
+    assert "--stages and --models are contradictory" in SCRIPT
 
 
 def test_scenarios_mode_still_opens_exactly_one_transfer_connection():
