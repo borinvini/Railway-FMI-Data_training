@@ -70,11 +70,12 @@ def test_the_default_columns_file_is_the_scenario_catalogue():
 
 
 def test_a_failed_scenario_listing_is_reported_as_itself():
-    """A bare `... --list-scenarios | wc -l` aborts correctly under pipefail —
-    the rightmost non-zero status wins — but it aborts *silently*, leaving a
-    traceback and no line saying what was being attempted. Capturing the
-    listing and checking its status lets the failure name itself in the slurm
-    .out file, which is all a finished cluster job leaves behind."""
+    """Asserts the attribution wrapper, nothing stronger. Both forms abort
+    correctly under pipefail, and main.py's argparse already prints a specific
+    message to stderr, which no pipe on stdout could hide. What this pins is
+    that the listing is captured and its status checked, so a 40-task array's
+    .out file names the scenario-listing step instead of leaving the reader to
+    infer which command produced the argparse error."""
     assert "--list-scenarios | wc -l" not in SCRIPT
     assert 'if ! SCENARIO_LIST="$(python main.py' in SCRIPT
     assert "could not read scenarios from" in SCRIPT

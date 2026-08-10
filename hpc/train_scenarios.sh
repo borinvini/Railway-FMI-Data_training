@@ -71,13 +71,13 @@ MODEL="${MODELS[$((SLURM_ARRAY_TASK_ID % 5))]}"
 # uploaded separately and could hold a different number of sections. Checking
 # here turns a silent wrong-scenario run into an immediate, legible failure.
 #
-# Captured rather than piped into wc, for the diagnostic — not for safety.
-# `... | wc -l` does abort correctly here: pipefail returns the rightmost
-# NON-ZERO status, so main.py's 1 wins over wc's 0 and set -e stops the run.
-# What it does not do is say anything. The script dies with a traceback above
-# it and no line stating what was being attempted. Capturing lets the failure
-# name itself in the slurm .out file, which is the only record a finished
-# cluster job leaves behind.
+# Captured rather than piped into wc purely to attribute the failure.
+# `... | wc -l` is not unsafe: pipefail returns the rightmost NON-ZERO status,
+# so main.py's exit beats wc's 0 and set -e stops the run either way. Nor is it
+# silent — main.py fails through argparse, which prints a specific message to
+# stderr, and the pipe only ever touched stdout. All this adds is a line naming
+# the scenario-listing step as what failed, which is worth having in a 40-task
+# array's .out files and worth little elsewhere.
 if ! SCENARIO_LIST="$(python main.py --columns-file "${COLUMNS_FILE}" --list-scenarios)"; then
     echo "ERROR: could not read scenarios from ${COLUMNS_FILE}." >&2
     echo "       main.py's own error is above this line." >&2
