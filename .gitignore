@@ -189,3 +189,8 @@ docs/superpowers/
 # (config/features.txt) stays ignored by the *.txt rule above, which is what
 # lets a feature change reach Roihu by scp instead of by commit.
 !config/features.example.txt
+
+# The scenario catalogue is committed for the same reason as the feature
+# template: config/scenarios.txt is the working copy that reaches Roihu by
+# scp, so a scenario tweak needs no commit.
+!config/scenarios.example.txt
