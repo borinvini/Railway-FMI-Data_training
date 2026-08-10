@@ -14,10 +14,10 @@ node). Values are filled in: project `project_2019266`, user `vpozzobo`.
 ## The whole loop, if nothing is broken
 
 ```bash
-# [LOCAL] features only — no commit needed
+# [LOCAL] scenarios or features only — no commit needed
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-# first run only, no config/features.txt yet: cp config/features.example.txt config/features.txt
-hpc/push-features.sh
+# first run only: cp config/scenarios.example.txt config/scenarios.txt
+hpc/push-features.sh config/scenarios.txt
 
 # [LOCAL] code changes — these still go through git
 git add -A && git commit -m "your message"
@@ -31,7 +31,8 @@ cd /projappl/project_2019266/railway-fmi-code
 git pull
 rm -rf /scratch/project_2019266/railway-fmi/run_*
 rm -f slurm-train-*.out
-sbatch hpc/train_array.sh
+sbatch hpc/train_scenarios.sh    # all 8 scenarios x 5 models
+sbatch hpc/train_array.sh        # or: single feature set, 5 models
 squeue --me
 ```
 
@@ -88,6 +89,9 @@ The script prints a sha256. The batch scripts print the same one into the slurm
 log, so you can confirm afterwards which selection actually ran.
 
 No `config/features.txt` yet? `cp config/features.example.txt config/features.txt`.
+
+`config/scenarios.txt` is gitignored for the same reason and uploads the same
+way, with the path given explicitly: `hpc/push-features.sh config/scenarios.txt`.
 
 ### Code — commit as before
 
@@ -275,24 +279,32 @@ This brings back **every** training-pipeline stage, not only the models:
 |---|---|
 | `500-merge_data_files` | The merged dataset, all months in one frame |
 | `501-filter_delay_outliers` | After the quantile cut on the delay tails |
-| `502-select_training_cols` | After `config/features.txt` was applied |
+| `502-select_training_cols` | After `config/features.txt` was applied — differs per scenario under `train_scenarios.sh` |
 | `503-split_dataset` | train / test / out-of-time holdout |
 | `504-balance_classes` | After SMOTE-Tomek |
 | `505-scale_weather_features` | The frame the trainers actually saw |
 | `700-shap_correlation_analysis` | Only after `train_all.sh` |
 | `1000-*` … `1004-*` | One per model: joblib, metrics JSON, figures |
 
-Stages 500-505 come from `run_0` alone. `train_array.sh` re-runs them in all
-five run roots from identical code and identical input, so the other four copies
-are the same bytes and five times the download. The model directories come from
-all five roots, since each task produces exactly one.
+Stages 500-505 come from `run_0` alone — that applies to `train_array.sh`
+only. `train_array.sh` re-runs them in all five run roots from identical code
+and identical input, so the other four copies are the same bytes and five
+times the download. The model directories come from all five roots, since each
+task produces exactly one.
+
+After `hpc/train_scenarios.sh`, the equivalent single-root shortcut is
+`run_s??_xgboost` per scenario: `502-select_training_cols` onward genuinely
+differs per scenario, which is why `--stages` there returns eight sets rather
+than one.
 
 The script prints what it is about to copy and how big it is before it starts —
-this is a much larger transfer than the models alone. Two variants:
+this is a much larger transfer than the models alone. Variants:
 
 ```bash
-hpc/fetch-results.sh --models     # only 1000-1004, the old behaviour
-hpc/fetch-results.sh --train-all  # after train_all.sh, which has no run_N roots
+hpc/fetch-results.sh --scenarios          # 40 model directories, sorted per scenario
+hpc/fetch-results.sh --scenarios --stages # + one prep-stage set per scenario
+hpc/fetch-results.sh --models             # only 1000-1004, the old behaviour
+hpc/fetch-results.sh --train-all          # after train_all.sh, which has no run_N roots
 ```
 
 This **overwrites** whatever is already in `results/`. Keep a previous run by
@@ -336,7 +348,12 @@ the target, and the trainers split it out by name. `python main.py
 --dump-columns` lists everything available. With no `--columns-file`, the
 frozen fallback in `config/const_training.py:69` applies instead.
 
-**Which models** — edit `MODELS=(...)` in `hpc/train_array.sh:49` and match
+**Which scenario** — `config/scenarios.txt`, then
+`hpc/push-features.sh config/scenarios.txt`. No commit, no pull. List them
+with `python main.py --columns-file config/scenarios.txt --list-scenarios`.
+Run one locally with `--scenario <index>`.
+
+**Which models** — edit `MODELS=(...)` in `hpc/train_array.sh:65` and match
 `--array=0-N` to its length. Or run one directly:
 
 ```bash

@@ -192,17 +192,27 @@ conda-forge/linux-64.
 **CHECK:**
 
 ```bash
-ssh roihu "test -s /projappl/project_2019266/railway-fmi-code/config/features.txt && echo OK"
+ssh roihu "test -s /projappl/project_2019266/railway-fmi-code/config/scenarios.txt && echo OK"
 ```
 
 `OK` → skip to step 6.
 
-**FIX:**
+**FIX — all 8 scenarios (the usual case):**
 
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-cp config/features.example.txt config/features.txt   # first run only
-# edit config/features.txt now if you want a different feature set
+cp config/scenarios.example.txt config/scenarios.txt   # first run only
+hpc/push-features.sh config/scenarios.txt
+```
+
+It prints one line per scenario with its column count. Check the count against
+what you expect before submitting 40 jobs.
+
+**FIX — a single ad-hoc feature set (the older flow):**
+
+```bash
+cp config/features.example.txt config/features.txt     # first run only
+# edit config/features.txt now
 hpc/push-features.sh
 ```
 
@@ -248,42 +258,84 @@ reads low by construction. Judge efficiency on the full run.
 
 ## Step 7 — [ROIHU] Full run
 
-Five models in parallel, one per array task. Preferred: a failure in one model
-does not cost the other four.
+**Check disk headroom first.** 40 tasks each keep their own copy of the prep
+stages, eight times the footprint of the old five-task array, and this has not
+yet been measured on a completed run:
+
+```bash
+csc-quota
+```
+
+All 8 scenarios × 5 models, 40 independent tasks:
 
 ```bash
 cd /projappl/project_2019266/railway-fmi-code
-sbatch hpc/train_array.sh
+sbatch hpc/train_scenarios.sh
 squeue --me
 ```
 
-Or all five sequentially in one job — also runs the SHAP analysis, but a
-timeout loses everything:
+Prove the chain on two cells first if anything upstream changed:
 
 ```bash
-sbatch hpc/train_all.sh
+sbatch --array=0-1 hpc/train_scenarios.sh    # scenario 1, xgboost + lightgbm
+```
+
+Any single cell can be re-run on its own — the roots are independent:
+
+```bash
+sbatch --array=16 hpc/train_scenarios.sh     # scenario 4, lightgbm
+```
+
+Task id decomposes as `scenario = id / 5 + 1`, `model = id % 5` over
+`(xgboost lightgbm random_forest logistic_regression naive_bayes)`.
+
+The older single-feature-set flows still work unchanged:
+
+```bash
+sbatch hpc/train_array.sh    # 5 models, config/features.txt
+sbatch hpc/train_all.sh      # 5 models sequentially, plus the SHAP analysis
 ```
 
 ---
 
 ## Step 8 — [LOCAL] Retrieve results
 
+After `hpc/train_scenarios.sh`:
+
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-hpc/fetch-results.sh
+hpc/fetch-results.sh --scenarios
 ```
 
-That pulls every pipeline stage — the merged, filtered, selected, split,
-balanced and scaled datasets as well as the five model directories — into
-`./results/`. It prints the total size before it starts.
+That pulls the 40 model directories and sorts them into one folder per
+scenario, named as the scenario is named in `config/scenarios.txt`:
 
-After `train_all.sh` instead, which has no per-task run roots:
+```
+results/
+  1 - ALL FEATURES (OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS + WEATHER SCENARIOS)/
+      1000-xgboost_randomized_search/
+      1001-lightgbm_randomized_search/
+      1002-random_forest_randomized_search/
+      1003-regularized_regression/
+      1004-naive_bayes/
+  2 - ONLY OPERACIONAL FEATURES/
+      ...
+```
+
+Add `--stages` for the intermediate datasets too — one set per scenario, which
+is a much larger transfer:
 
 ```bash
-hpc/fetch-results.sh --train-all
+hpc/fetch-results.sh --scenarios --stages
 ```
 
-Only want the models, as before? `hpc/fetch-results.sh --models`.
+After `hpc/train_array.sh` (the 5-job flow), unchanged:
+
+```bash
+hpc/fetch-results.sh              # every stage
+hpc/fetch-results.sh --models     # model directories only
+hpc/fetch-results.sh --train-all  # after train_all.sh
+```
 
 Scratch deletes anything untouched for 180 days — copy results off.
 
@@ -309,7 +361,8 @@ else
   echo "  NOT BUILT"
 fi
 echo "== results =="
-ls -d /scratch/project_2019266/railway-fmi/*/data/output/100[0-4]-* \
+ls -d /scratch/project_2019266/railway-fmi/run_s??_*/data/output/100[0-4]-* \
+      /scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-* \
       /scratch/project_2019266/railway-fmi/data/output/100[0-4]-* 2>/dev/null | sed 's/^/  /' || echo "  none yet"
 echo "== queue =="
 squeue --me
@@ -345,3 +398,6 @@ csc-quota                        # disk usage against quota
 | `main.py: No such file` | Wrong directory | `cd /projappl/project_2019266/railway-fmi-code` |
 | Trainer runs, produces nothing | `--search-iterations` below 10 | Minimum is 10 |
 | Post-quantum SSH warning | Server lacks PQ key exchange | Cosmetic — CSC's to fix, ignore |
+| `contains 8 scenario sections — pass --scenario` | `--columns-file` pointed at the catalogue with no scenario chosen | Add `--scenario <index>`, or use `config/features.txt` |
+| `scenario index N is out of range` | Array range and catalogue size disagree | The error names the correct `--array` range; resubmit with it |
+| `results/` holds `run_sNN_*` folders | No python on PATH during the fetch | Re-run `hpc/fetch-results.sh --scenarios` with python available |
