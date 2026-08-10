@@ -283,3 +283,65 @@ def test_load_columns_on_a_scenario_file_says_to_pass_scenario(tmp_path):
     message = str(exc.value)
     assert "2 scenario sections" in message
     assert "--scenario" in message
+
+
+def test_scenario_env_var_selects_one_section(tmp_path, monkeypatch, capsys):
+    """RAILWAY_SCENARIO picks a section; the resolved name and list are printed
+    so a finished slurm log identifies exactly what ran."""
+    import importlib
+    import config.const_training as const_training
+
+    scenarios = tmp_path / "scenarios.txt"
+    scenarios.write_text(SCENARIO_FILE, encoding="utf-8")
+    monkeypatch.setenv("RAILWAY_COLUMNS_FILE", str(scenarios))
+    monkeypatch.setenv("RAILWAY_SCENARIO", "2")
+
+    try:
+        importlib.reload(const_training)
+        assert const_training.SELECTED_COLUMNS == ["trainDelayed", "trainStopping"]
+        out = capsys.readouterr().out
+        assert "2 - ONLY OPERACIONAL FEATURES" in out, "the scenario name must reach the log"
+        assert "trainStopping" in out, "the full list must reach the log"
+    finally:
+        monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+        monkeypatch.delenv("RAILWAY_SCENARIO", raising=False)
+        importlib.reload(const_training)
+
+
+def test_scenario_env_var_accepts_a_name(tmp_path, monkeypatch):
+    import importlib
+    import config.const_training as const_training
+
+    scenarios = tmp_path / "scenarios.txt"
+    scenarios.write_text(SCENARIO_FILE, encoding="utf-8")
+    monkeypatch.setenv("RAILWAY_COLUMNS_FILE", str(scenarios))
+    monkeypatch.setenv("RAILWAY_SCENARIO", "1 - ALL FEATURES")
+
+    try:
+        importlib.reload(const_training)
+        assert const_training.SELECTED_COLUMNS == [
+            "trainDelayed",
+            "Air temperature (12h max)",
+        ]
+    finally:
+        monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+        monkeypatch.delenv("RAILWAY_SCENARIO", raising=False)
+        importlib.reload(const_training)
+
+
+def test_columns_file_without_scenario_still_uses_load_columns(tmp_path, monkeypatch):
+    """The plain features.txt path must be untouched by the scenario branch."""
+    import importlib
+    import config.const_training as const_training
+
+    features = tmp_path / "features.txt"
+    features.write_text("trainDelayed\ntrainStopping\n", encoding="utf-8")
+    monkeypatch.setenv("RAILWAY_COLUMNS_FILE", str(features))
+    monkeypatch.delenv("RAILWAY_SCENARIO", raising=False)
+
+    try:
+        importlib.reload(const_training)
+        assert const_training.SELECTED_COLUMNS == ["trainDelayed", "trainStopping"]
+    finally:
+        monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+        importlib.reload(const_training)

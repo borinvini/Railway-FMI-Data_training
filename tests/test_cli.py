@@ -1,7 +1,28 @@
 """CLI layer: flags override config defaults; no flags reproduces current behaviour."""
 import os
 
+import pytest
+
 import main as main_module
+
+
+@pytest.fixture(autouse=True)
+def _restore_railway_env():
+    """Undo RAILWAY_* variables that apply_env_overrides writes directly.
+
+    monkeypatch cannot help here: delenv on an unset variable records nothing to
+    restore, and the plain `os.environ[...] = ...` inside apply_env_overrides is
+    not tracked at all. Without this fixture, one test's export leaks into every
+    later test in the session — which config/const_training.py now consumes at
+    import time, breaking the reload-based tests in test_columns_file.py.
+    """
+    saved = {k: v for k, v in os.environ.items() if k.startswith("RAILWAY_")}
+    try:
+        yield
+    finally:
+        for key in [k for k in os.environ if k.startswith("RAILWAY_")]:
+            del os.environ[key]
+        os.environ.update(saved)
 
 
 def test_no_args_returns_all_none():

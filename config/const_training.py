@@ -157,13 +157,27 @@ SELECTED_COLUMNS = [
 # job used, since the file is outside git. Pair it with the sha256 the batch
 # scripts echo. Any parse error propagates and aborts the run — main.py has
 # already reported it far more cheaply at parse time.
+#
+# When RAILWAY_SCENARIO is also set, the file is a scenario catalogue and that
+# variable names which section to bind, by 1-based index or by exact name. The
+# resolved scenario name is printed alongside the column list: with the file
+# outside git, that log line plus the sha256 the batch scripts echo is the only
+# record of what a job actually trained on.
 _COLUMNS_FILE = os.environ.get("RAILWAY_COLUMNS_FILE", "")
+_SCENARIO = os.environ.get("RAILWAY_SCENARIO", "")
 if _COLUMNS_FILE:
-    from config.columns_file import load_columns
+    if _SCENARIO:
+        from config.columns_file import select_scenario
 
-    SELECTED_COLUMNS = load_columns(_COLUMNS_FILE)
-    print(f"const_training: SELECTED_COLUMNS loaded from {_COLUMNS_FILE} "
-          f"({len(SELECTED_COLUMNS)} columns)")
+        _scenario_name, SELECTED_COLUMNS = select_scenario(_COLUMNS_FILE, _SCENARIO)
+        print(f"const_training: SELECTED_COLUMNS loaded from {_COLUMNS_FILE} "
+              f"scenario {_scenario_name!r} ({len(SELECTED_COLUMNS)} columns)")
+    else:
+        from config.columns_file import load_columns
+
+        SELECTED_COLUMNS = load_columns(_COLUMNS_FILE)
+        print(f"const_training: SELECTED_COLUMNS loaded from {_COLUMNS_FILE} "
+              f"({len(SELECTED_COLUMNS)} columns)")
     for _column_name in SELECTED_COLUMNS:
         print(f"    {_column_name}")
 # 'intersect' rather than '' so batch jobs never block on input(): under Slurm
