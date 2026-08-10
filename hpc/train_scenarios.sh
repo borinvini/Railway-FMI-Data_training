@@ -70,7 +70,17 @@ MODEL="${MODELS[$((SLURM_ARRAY_TASK_ID % 5))]}"
 # The array range is fixed at 0-39 in the #SBATCH header, but the catalogue is
 # uploaded separately and could hold a different number of sections. Checking
 # here turns a silent wrong-scenario run into an immediate, legible failure.
-N_SCENARIOS="$(python main.py --columns-file "${COLUMNS_FILE}" --list-scenarios | wc -l)"
+#
+# Captured, not piped straight into wc: `... | wc -l` hides a Python failure
+# even under pipefail, because wc exits 0 on empty input. That would report
+# "holds only 0 scenarios" for what is really a traceback, sending you after
+# the catalogue while the actual error scrolls past.
+if ! SCENARIO_LIST="$(python main.py --columns-file "${COLUMNS_FILE}" --list-scenarios)"; then
+    echo "ERROR: could not read scenarios from ${COLUMNS_FILE}." >&2
+    echo "       main.py's own error is above this line." >&2
+    exit 1
+fi
+N_SCENARIOS="$(printf '%s\n' "${SCENARIO_LIST}" | grep -c .)"
 EXPECTED=$((N_SCENARIOS * ${#MODELS[@]} - 1))
 if [ "${SCENARIO}" -gt "${N_SCENARIOS}" ]; then
     echo "ERROR: task ${SLURM_ARRAY_TASK_ID} wants scenario ${SCENARIO}, but" >&2

@@ -69,6 +69,19 @@ def test_the_default_columns_file_is_the_scenario_catalogue():
     assert 'COLUMNS_FILE="${COLUMNS_FILE:-config/scenarios.txt}"' in SCRIPT
 
 
+def test_a_failed_scenario_listing_is_reported_as_itself():
+    """`... --list-scenarios | wc -l` would swallow a Python traceback: wc exits
+    0 on empty input, so pipefail does not fire and the count silently becomes
+    0, blaming the catalogue for what is really a crash. The listing must be
+    captured and its exit status checked before anything counts lines."""
+    assert "--list-scenarios | wc -l" not in SCRIPT
+    assert 'if ! SCENARIO_LIST="$(python main.py' in SCRIPT
+    assert "could not read scenarios from" in SCRIPT
+    failure_at = SCRIPT.index("could not read scenarios from")
+    srun_at = SCRIPT.index("srun python main.py")
+    assert failure_at < srun_at, "the listing guard must run before srun"
+
+
 def test_a_scenario_count_mismatch_fails_before_srun():
     """A catalogue with 6 sections submitted as --array=0-39 must fail
     immediately and name the correct range, not after queueing."""
