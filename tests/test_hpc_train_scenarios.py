@@ -70,10 +70,11 @@ def test_the_default_columns_file_is_the_scenario_catalogue():
 
 
 def test_a_failed_scenario_listing_is_reported_as_itself():
-    """`... --list-scenarios | wc -l` would swallow a Python traceback: wc exits
-    0 on empty input, so pipefail does not fire and the count silently becomes
-    0, blaming the catalogue for what is really a crash. The listing must be
-    captured and its exit status checked before anything counts lines."""
+    """A bare `... --list-scenarios | wc -l` aborts correctly under pipefail —
+    the rightmost non-zero status wins — but it aborts *silently*, leaving a
+    traceback and no line saying what was being attempted. Capturing the
+    listing and checking its status lets the failure name itself in the slurm
+    .out file, which is all a finished cluster job leaves behind."""
     assert "--list-scenarios | wc -l" not in SCRIPT
     assert 'if ! SCENARIO_LIST="$(python main.py' in SCRIPT
     assert "could not read scenarios from" in SCRIPT
