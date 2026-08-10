@@ -12,8 +12,12 @@ set -euo pipefail
 
 cd "$(dirname "${0}")/.."
 
-REMOTE="roihu:/projappl/project_2019266/railway-fmi-code/config/features.txt"
+# The remote basename is taken from the local file, not hardcoded: this script
+# uploads config/features.txt and config/scenarios.txt alike, and a fixed name
+# would silently land the second as the first.
+REMOTE_DIR="roihu:/projappl/project_2019266/railway-fmi-code/config"
 LOCAL="${1:-config/features.txt}"
+REMOTE="${REMOTE_DIR}/$(basename "${LOCAL}")"
 
 if [ ! -f "${LOCAL}" ]; then
     echo "ERROR: ${LOCAL} not found (paths are relative to the repo root)." >&2
@@ -31,8 +35,16 @@ fi
 if command -v python >/dev/null 2>&1; then
     RAILWAY_LOCAL_FEATURES_FILE="${LOCAL}" python -c "
 import os
-from config.columns_file import load_columns
-load_columns(os.environ['RAILWAY_LOCAL_FEATURES_FILE'])
+from config.columns_file import has_scenarios, load_columns, load_scenarios
+
+path = os.environ['RAILWAY_LOCAL_FEATURES_FILE']
+if has_scenarios(path):
+    scenarios = load_scenarios(path)
+    print(f'{len(scenarios)} scenarios:')
+    for index, (name, columns) in enumerate(scenarios, start=1):
+        print(f'  {index}. {len(columns):3d} columns  {name}')
+else:
+    load_columns(path)
 "
 else
     echo "NOTE: python not found on PATH; skipping local validation of ${LOCAL}." >&2
@@ -40,5 +52,5 @@ fi
 
 scp "${LOCAL}" "${REMOTE}"
 
-echo "Uploaded $(grep -cve '^[[:space:]]*\(#.*\)\?$' "${LOCAL}") columns, sha256 $(sha256sum "${LOCAL}" | cut -c1-16)"
+echo "Uploaded $(basename "${LOCAL}"), sha256 $(sha256sum "${LOCAL}" | cut -c1-16)"
 echo "That sha256 must match the 'Features:' line in the slurm log."
