@@ -192,7 +192,13 @@ them. Upload whichever one the run you intend to submit will read:
 `scenarios.txt` for `hpc/train_scenarios.sh`, `features.txt` for
 `hpc/train_array.sh`, `hpc/train_all.sh` and `hpc/smoke_test.sh`.
 
-**CHECK:**
+**CHECK — [ROIHU], if you are still on the login node from steps 2-4:**
+
+```bash
+test -s /projappl/project_2019266/railway-fmi-code/config/scenarios.txt && echo OK
+```
+
+**CHECK — [LOCAL], from your laptop:**
 
 ```bash
 ssh roihu "test -s /projappl/project_2019266/railway-fmi-code/config/scenarios.txt && echo OK"
@@ -200,7 +206,15 @@ ssh roihu "test -s /projappl/project_2019266/railway-fmi-code/config/scenarios.t
 
 `OK` → skip to step 6.
 
-**FIX — all 8 scenarios (the usual case):**
+⚠️ `roihu` is an alias defined in your laptop's `~/.ssh/config`. Running the
+[LOCAL] form while logged into Roihu gives
+`ssh: Could not resolve hostname roihu` — use the [ROIHU] form there instead.
+
+**The FIX below must run on your laptop either way.** `config/scenarios.txt` is
+gitignored, so it never reaches Roihu through `git pull`; the only way it gets
+there is this upload.
+
+**FIX — [LOCAL] — all 8 scenarios (the usual case):**
 
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
