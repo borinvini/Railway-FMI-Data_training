@@ -414,13 +414,40 @@ squeue --me
 
 ```bash
 squeue --me                      # your queue
-scancel <jobid>                  # cancel one job
+scancel <jobid>                  # cancel one job; on an array, the bare id kills all tasks
 seff <jobid>                     # CPU/memory efficiency after it finishes
-sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS
 tail -f slurm-scenarios-*.out    # follow a running scenario task
 tail -f slurm-train-*.out        # follow a train_array.sh / train_all.sh job
 du -sh /scratch/project_2019266/railway-fmi   # scratch usage (quota is 250 GiB;
                                               # no csc-quota on Roihu — see MyCSC)
+```
+
+**Counting a 40-task array.** Plain `squeue --me` collapses pending array tasks
+into one row — `563786_[33-39]` is seven tasks, not one — so the list looks far
+shorter than the array really is. `-r` expands them:
+
+```bash
+squeue --me -r -h | wc -l        # tasks still queued or running
+squeue --me -r -h -t R | wc -l   # running right now
+squeue --me -r -h -t PD | wc -l  # still pending
+```
+
+A task that has already finished leaves the queue entirely, so these counts drop
+below 40 as the array progresses. A gap in the running ids (0-8, then 10-...)
+means that task is done, not lost — the next command says whether it succeeded.
+
+**Tallying the whole array once it drains:**
+
+```bash
+sacct -j <arrayjobid> -X --format=State -n | sort | uniq -c
+```
+
+One line per outcome, e.g. `40 COMPLETED`. Anything other than `COMPLETED` names
+the cells to investigate and re-run; `-X` reports one row per task rather than
+one per job step. For detail on a single cell:
+
+```bash
+sacct -j <arrayjobid>_<taskid> --format=JobID,State,Elapsed,ExitCode,MaxRSS
 ```
 
 ---

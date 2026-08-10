@@ -249,20 +249,60 @@ tail -f slurm-train-*_2.out
 
 Leaving the queue is not the same as succeeding.
 
+**While it runs — how many tasks are actually left.** Plain `squeue --me`
+collapses pending array tasks into a single row, so `563786_[33-39]` looks like
+one job when it is seven. `-r` expands them:
+
 ```bash
-sacct -j <jobid> --format=JobID,State,ExitCode,Elapsed
+squeue --me -r -h | wc -l        # tasks still queued or running
+squeue --me -r -h -t R | wc -l   # running right now
+squeue --me -r -h -t PD | wc -l  # still pending
+```
+
+Finished tasks leave the queue, so these counts fall below 40 as the array
+progresses, and gaps appear in the running ids (0-8, then 10-...). A gap means
+that cell is done, not lost.
+
+**Once it drains — the tally that matters:**
+
+```bash
+sacct -j <arrayjobid> -X --format=State -n | sort | uniq -c
+```
+
+One line per outcome. `40 COMPLETED` is the goal; `-X` gives one row per task
+rather than one per job step. Anything else, drill into the specific cell:
+
+```bash
+sacct -j <arrayjobid>_<taskid> --format=JobID,State,Elapsed,ExitCode,MaxRSS
+tail -30 slurm-scenarios-<arrayjobid>_<taskid>.out
 ```
 
 Want `COMPLETED` and `0:0`. `FAILED`, or any non-zero ExitCode, means at least
-one model did not train — check that task's `.out` file.
+one model did not train. `OUT_OF_MEMORY` or a `MaxRSS` near the 32G request
+means raise `--mem`, not re-run as-is.
+
+Map a task id back to what it was training: `scenario = id / 5 + 1`,
+`model = id % 5` over
+`(xgboost lightgbm random_forest logistic_regression naive_bayes)`. Task 9 is
+scenario 2, naive_bayes.
+
+**Then confirm the output really exists** — a task can exit 0 and still leave an
+empty directory:
 
 ```bash
-ls /scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*/
+ls /scratch/project_2019266/railway-fmi/run_s??_*/data/output/100[0-4]-*/   # scenario runs
+ls /scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*/       # train_array.sh runs
 ```
 
 Each directory should hold a `.joblib` model, a metrics `.json`, and PNG/PDF
 figures. An empty directory means that model failed regardless of what the
 terminal implied.
+
+Re-run only the cells that failed — the roots are independent:
+
+```bash
+sbatch --array=9,17,23 hpc/train_scenarios.sh
+```
 
 ---
 
