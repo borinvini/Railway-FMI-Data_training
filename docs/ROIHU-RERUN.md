@@ -1,7 +1,20 @@
 # Roihu re-run — the everyday loop
 
 Setup is already done. This is the short cycle you repeat each time you want new
-results: certificate → features/push → pull → clean → run → fetch.
+results: certificate → features/code/data → pull → clean → run → fetch.
+
+Three separate things travel from your laptop to the cluster and they travel by
+three different routes. Missing one is the usual cause of a run that looks fine
+and reproduces last week's numbers:
+
+| What changed | How it gets there | Route |
+|---|---|---|
+| `features.txt`, `scenarios.txt` | `hpc/push-features.sh` | scp straight into the clone |
+| Anything under `src/`, `config/`, `hpc/` | commit, push, **then `git pull` on Roihu** | GitHub |
+| Re-preprocessed parquet in `101-preprocessed_training_ready` | `hpc/stage_data.sh` | scp into `/scratch` |
+
+Git carries none of the data — `*.parquet` is gitignored, so a `git pull` on
+Roihu will never bring new training data with it no matter how much you commit.
 
 For first-time setup see `ROIHU-QUICKSTART.md`. For the reasoning behind any
 step, `CSC-SETUP.md`.
@@ -23,6 +36,9 @@ hpc/push-features.sh config/scenarios.txt
 git status -sb    # no file lines and no "ahead"? skip the next two commands
 git add -A && git commit -m "your message"
 git push Railway-FMI-Data_training feat/csc-roihu-port
+
+# [LOCAL] re-preprocessed the data? then this, every time — git does not carry it
+hpc/stage_data.sh
 
 ssh roihu
 ```
@@ -46,10 +62,12 @@ hpc/fetch-results.sh --scenarios   # after train_scenarios.sh
 hpc/fetch-results.sh               # after train_array.sh
 ```
 
-**Both `[LOCAL]` push blocks are conditional. The `git pull` is not.** Skip
-`push-features.sh` when you have not touched the feature or scenario file, and
+**All three `[LOCAL]` upload blocks are conditional. The `git pull` is not.**
+Skip `push-features.sh` when you have not touched the feature or scenario file,
 skip the commit/push when `git status -sb` shows a clean tree with no `ahead`
-marker — pushing again with nothing to send is a no-op, not a safety net.
+marker, and skip `stage_data.sh` when you have not re-run preprocessing since
+the last time you staged. Repeating any of them with nothing new to send is a
+no-op, not a safety net.
 
 But having pushed — a minute ago or last week — is not a reason to skip
 `git pull` on Roihu. The push moves your commits to GitHub; only the pull moves
@@ -119,7 +137,7 @@ git add -A && git commit -m "your message"
 git push Railway-FMI-Data_training feat/csc-roihu-port
 ```
 
-### Already committed and pushed earlier? Skip this whole step
+### Already committed and pushed earlier? Skip the commit and push
 
 Common when you did the work in one sitting and only now got round to running
 the job. One command tells you:
@@ -148,6 +166,63 @@ week, or had nothing to push at all, Roihu's clone only advances when you run
 `git pull` on Roihu. A pull with nothing to fetch costs a second and prints
 `Already up to date.`; a pull you skipped costs an hour of allocation spent
 re-running the old code. Run it every time.
+
+### Data — re-stage after every re-preprocess
+
+**A `git pull` will never bring new training data to the cluster.** `*.parquet`
+is gitignored, so the 96 files in `data/output/101-preprocessed_training_ready`
+reach `/scratch` only by being copied there directly:
+
+```bash
+cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
+hpc/stage_data.sh
+```
+
+Run it whenever you re-ran preprocessing locally — a changed
+`TARGET_STATION_CODE`, a changed cut-off, an edited preprocessing stage, new
+months of raw input. Any of those rewrites the parquet files, and until you
+stage them the cluster keeps training on the previous set. ~25 MB, under a
+minute.
+
+Overwrite in place; do not delete first. The filenames are stable
+(`training_ready_2018_01.parquet` …), so the copy replaces each file where it
+sits, and the run roots symlink to this one directory rather than holding
+copies. **Never `rm -rf` the `data/` directory on scratch** — see the warning in
+step 4.
+
+The script ends by printing the remote file count and `du -sh`. `96` is the
+number to see.
+
+The one case that needs a delete first is a *shorter* month range than last
+time: overwriting leaves the extra old files behind, and preprocessing merges
+whatever it finds. Then, and only then:
+
+```bash
+ssh roihu 'rm -f /scratch/project_2019266/railway-fmi/data/output/101-preprocessed_training_ready/*.parquet'
+hpc/stage_data.sh
+```
+
+Because filenames repeat, the file count alone cannot tell you *which* version
+is up there — 96 stale files count the same as 96 fresh ones. When it matters,
+compare a checksum of both sides:
+
+```bash
+# [LOCAL] — both lines run on your laptop; the second reaches over to Roihu
+D=data/output/101-preprocessed_training_ready
+find "$D" -name '*.parquet' | sort | xargs sha256sum -b | awk '{print $1}' | sha256sum | cut -c1-16
+
+R=/scratch/project_2019266/railway-fmi/data/output/101-preprocessed_training_ready
+ssh roihu "find $R -name '*.parquet' | sort | xargs sha256sum -b | awk '{print \$1}' | sha256sum | cut -c1-16"
+```
+
+Same 16 characters means the cluster holds exactly what you preprocessed.
+
+The `awk '{print $1}'` is load-bearing: `sha256sum` prints `<hash>  <path>`, and
+the paths differ between the two machines, so hashing its raw output would
+report a mismatch on every comparison including the correct ones. Keeping only
+the hash column compares content alone. `sort` puts both sides in the same
+order, and `-b` forces binary reads so Git Bash does not attempt any line-ending
+translation on a parquet file.
 
 ---
 
@@ -242,6 +317,11 @@ than following it to the real data. Confirm if you want to be sure:
 ```bash
 ls -1 /scratch/project_2019266/railway-fmi/data/output/101-preprocessed_training_ready | wc -l   # 96
 ```
+
+That `96` says the files are present. It does not say they are the ones you last
+preprocessed — re-staging overwrites by filename, so a stale set counts exactly
+the same. If you changed anything about preprocessing, staging happens back in
+step 2 and is not something this step can substitute for.
 
 ---
 
@@ -580,6 +660,8 @@ not help.
 |---|---|---|
 | `Permission denied (publickey)` | Certificate older than 24 h | `hpc/roihu-auth.sh` — step 1 |
 | Results identical to last run | Forgot `git pull` on Roihu | Step 3 |
+| Results ignore a re-preprocess — wrong station, wrong date range | Forgot `hpc/stage_data.sh`; git does not carry parquet | Step 2, "Data" |
+| Staged file count is 96 but results still look stale | Overwrite-by-name hides a stale set | Compare the checksums in step 2, "Data" |
 | `pathspec ... did not match` | Clone predates a new branch | `git fetch origin` then checkout |
 | `sacct` shows FAILED | A model crashed | Read that task's `slurm-train-*_N.out` |
 | Empty model directory | That task failed | Same as above |
