@@ -14,14 +14,16 @@ node). Values are filled in: project `project_2019266`, user `vpozzobo`.
 ## The whole loop, if nothing is broken
 
 ```bash
-# [LOCAL] scenarios or features only — no commit needed
+# [LOCAL] scenarios or features — only if you edited them since the last push
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
 # first run only: cp config/scenarios.example.txt config/scenarios.txt
 hpc/push-features.sh config/scenarios.txt
 
-# [LOCAL] code changes — these still go through git
+# [LOCAL] code changes — only if you have something uncommitted or unpushed
+git status -sb    # no file lines and no "ahead"? skip the next two commands
 git add -A && git commit -m "your message"
 git push Railway-FMI-Data_training feat/csc-roihu-port
+
 ssh roihu
 ```
 
@@ -37,10 +39,23 @@ squeue --me
 ```
 
 ```bash
-# [LOCAL] once the queue is empty
+# [LOCAL] once the queue is empty — the flag must match the script you ran
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-hpc/fetch-results.sh
+scp roihu:/projappl/project_2019266/railway-fmi-code/config/scenarios.txt config/
+hpc/fetch-results.sh --scenarios   # after train_scenarios.sh
+hpc/fetch-results.sh               # after train_array.sh
 ```
+
+**Both `[LOCAL]` push blocks are conditional. The `git pull` is not.** Skip
+`push-features.sh` when you have not touched the feature or scenario file, and
+skip the commit/push when `git status -sb` shows a clean tree with no `ahead`
+marker — pushing again with nothing to send is a no-op, not a safety net.
+
+But having pushed — a minute ago or last week — is not a reason to skip
+`git pull` on Roihu. The push moves your commits to GitHub; only the pull moves
+them into the cluster's clone. Those are two different machines, and the job
+reads the second one. Step 3 is the one command in this loop that runs every
+single time.
 
 The rest of this file explains each step and what to do when one fails.
 
@@ -104,8 +119,35 @@ git add -A && git commit -m "your message"
 git push Railway-FMI-Data_training feat/csc-roihu-port
 ```
 
-Changed only the features? The push and the pull in step 3 are both unnecessary
-— skip to step 4.
+### Already committed and pushed earlier? Skip this whole step
+
+Common when you did the work in one sitting and only now got round to running
+the job. One command tells you:
+
+```bash
+git status -sb | head -1
+```
+
+```
+## feat/csc-roihu-port...Railway-FMI-Data_training/feat/csc-roihu-port
+```
+
+No `[ahead N]` on that line and no files listed underneath means everything is
+already on GitHub — there is nothing to commit and nothing to push. Go to
+step 3. `[ahead 2]` means two commits never left your laptop; push them.
+
+Plain `git push` works too if the branch has an upstream, which this one does —
+it resolves to the same remote and branch the long form spells out.
+
+Changed only `features.txt` or `scenarios.txt`? Those are gitignored, so there
+is nothing for git to carry either way — `hpc/push-features.sh` in the previous
+section already delivered them.
+
+**None of this excuses step 3.** Whether you pushed a minute ago, pushed last
+week, or had nothing to push at all, Roihu's clone only advances when you run
+`git pull` on Roihu. A pull with nothing to fetch costs a second and prints
+`Already up to date.`; a pull you skipped costs an hour of allocation spent
+re-running the old code. Run it every time.
 
 ---
 
@@ -118,7 +160,9 @@ git pull
 git log --oneline -1
 ```
 
-That hash must match what you just pushed. Skipping this is the single most
+That hash must match your laptop's `git rev-parse HEAD` — not "what you just
+pushed", because you may have pushed days ago and the point is the same either
+way. Run this even when step 2 had nothing to do. Skipping it is the single most
 expensive mistake available here: the job runs happily against the *old* code
 and you burn an hour of allocation to reproduce results you already had.
 
