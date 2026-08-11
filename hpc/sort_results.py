@@ -24,6 +24,16 @@ from config.columns_file import load_scenarios  # noqa: E402
 def sort_results(results_dir, scenarios_file, log=print):
     """Move run_sNN_<model>/data/output/* into <results_dir>/<scenario name>/.
 
+    One flat folder per scenario: the six 500-505 prep stages that scenario was
+    built from, and the five 1000-1004 directories trained out of them.
+
+    Flat works because of what the fetch selects, not by luck. The 100[0-4]-*
+    directories are differently numbered per model, and hpc/fetch-results.sh
+    takes 500-505 from each scenario's xgboost root ALONE — so exactly one root
+    per scenario contributes prep stages and nothing collides. Widening that
+    glob to run_s??_* without changing this function would silently let five
+    identically-named copies overwrite each other.
+
     The slug -> name map comes from the same parser the cluster used, so the two
     cannot drift. A slug with no matching scenario is left in place rather than
     guessed at. Returns the number of run roots consumed.
@@ -55,7 +65,7 @@ def sort_results(results_dir, scenarios_file, log=print):
             elif destination.exists():
                 destination.unlink()
             shutil.move(str(stage), str(destination))
-            log(f"  {name}/{stage.name}")
+            log(f"  {destination.relative_to(results)}")
         shutil.rmtree(root)
         consumed += 1
     return consumed

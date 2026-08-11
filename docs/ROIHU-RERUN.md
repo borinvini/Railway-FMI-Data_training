@@ -290,13 +290,25 @@ scenario 2, naive_bayes.
 empty directory:
 
 ```bash
-ls /scratch/project_2019266/railway-fmi/run_s??_*/data/output/100[0-4]-*/   # scenario runs
-ls /scratch/project_2019266/railway-fmi/run_*/data/output/100[0-4]-*/       # train_array.sh runs
+ls /scratch/project_2019266/railway-fmi/run_s??_*/data/output/100[0-4]-*/    # scenario runs
+ls /scratch/project_2019266/railway-fmi/run_[0-9]/data/output/100[0-4]-*/    # train_array.sh runs
 ```
 
-Each directory should hold a `.joblib` model, a metrics `.json`, and PNG/PDF
-figures. An empty directory means that model failed regardless of what the
-terminal implied.
+Each directory should hold **six** files: a `_best_model_selected.pkl`, an
+`_iteration_analysis_selected.json` of metrics, a `_feature_importance_selected.csv`,
+and three PNGs. An empty or short directory means that model failed regardless
+of what the terminal implied.
+
+This counts the whole 40-task array in one line — `40` means every cell
+produced a model:
+
+```bash
+ls -d /scratch/project_2019266/railway-fmi/run_s??_*/data/output/100[0-4]-*/*_best_model_selected.pkl | wc -l
+```
+
+Note the `run_[0-9]` above rather than `run_*`: the bare `run_*` also matches
+the `run_sNN_<model>` scenario roots, so it silently mixes two different runs
+into one listing.
 
 Re-run only the cells that failed — the roots are independent:
 
@@ -308,12 +320,113 @@ sbatch --array=9,17,23 hpc/train_scenarios.sh
 
 ## 8. [LOCAL] Fetch the results
 
+After `hpc/train_scenarios.sh` — the 40-task array — this is the whole step:
+
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
+scp roihu:/projappl/project_2019266/railway-fmi-code/config/scenarios.txt config/
+hpc/fetch-results.sh --scenarios
+```
+
+**Do not run `hpc/fetch-results.sh` with no flags after a scenario array.** Its
+default glob is `run_*`, which also matches `run_s01_xgboost`, and the default
+mode archives by basename alone. All eight scenarios' `1000-xgboost_randomized_search`
+then land on one path in `results/`, each overwriting the last: 40 directories
+arrive, 5 survive, and nothing says which scenario won. `--scenarios` keeps the
+`run_sNN_` prefix through the transfer and sorts it out locally.
+
+The `scp` line is not optional, and it is not fetching results — it is fetching
+the **catalogue**. `config/scenarios.txt` is gitignored and uploaded straight to
+the cluster, so a fresh clone does not have it. Without it the transfer still
+succeeds but the sort is skipped, leaving `results/run_s01_xgboost/...` slugs
+instead of scenario names — and the "Compare runs" snippet below globs
+`results/*/100[0-4]-*/`, which a slugged root's extra `data/output/` levels do
+not match, so it finds nothing.
+
+The sort is only as honest as the catalogue it uses. Confirm the copy you just
+pulled is the one the cluster actually trained against — these two must print
+the same 16 characters:
+
+```bash
+sha256sum config/scenarios.txt | cut -c1-16
+ssh roihu 'grep -h "^Features:" /projappl/project_2019266/railway-fmi-code/slurm-scenarios-<arrayjobid>_*.out | sed "s/.*sha256 //" | sort -u'
+```
+
+One line out of the second command means all 40 tasks agreed. If they differ,
+the catalogue was edited mid-run and the folder names do not describe what was
+trained.
+
+The prep stages make this a bigger transfer than the models alone —
+`500-merge_data_files` holds the full merged dataset, once per scenario. The
+script prints the total size before it moves a single byte, so read that line
+and Ctrl-C if it is more than you meant to pull.
+`hpc/fetch-results.sh --scenarios --models` fetches the models alone.
+
+**What you should end up with:**
+
+```bash
+ls -d results/*/ | wc -l                       # 8   — one folder per scenario
+ls -d results/*/100[0-4]-*/ | wc -l            # 40  — five model dirs per scenario
+ls -d results/*/50[0-5]-*/ | wc -l             # 48  — one prep set per scenario
+find results -type d -empty                    # nothing
+find results -name '*_best_model_selected.pkl' | wc -l   # 40
+```
+
+Folders are named from the catalogue, e.g. `results/2 - ONLY OPERACIONAL FEATURES/`.
+Each holds one flat set of eleven directories — the six stages that scenario was
+prepared from, and the five models trained out of them:
+
+```
+results/2 - ONLY OPERACIONAL FEATURES/
+├── 500-merge_data_files/
+├── 501-filter_delay_outliers/
+├── 502-select_training_cols/
+├── 503-split_dataset/
+├── 504-balance_classes/
+├── 505-scale_weather_features/
+├── 1000-xgboost_randomized_search/       ← the six files below
+├── 1001-lightgbm_randomized_search/
+├── 1002-random_forest_randomized_search/
+├── 1003-regularized_regression/
+└── 1004-naive_bayes/
+```
+
+**One prep set per scenario, not per model.** All five models in a scenario
+re-run stages 500-505 from identical code over identical input, so the fetch
+takes them from that scenario's `run_s??_xgboost` root alone — the other four
+copies would be the same bytes and five times the transfer. That is also what
+makes the flat layout safe: only one root per scenario carries a
+`500-merge_data_files`, so nothing collides on arrival.
+
+The saving does not extend across scenarios. `502-select_training_cols` onward
+sits downstream of the feature selection, so each scenario's split, balance and
+scaling genuinely differ; only `500-` and `501-` are identical everywhere. That
+is why it is eight sets rather than one.
+
+Each `100[0-4]-*` directory holds exactly six files:
+
+| File | What it is |
+|---|---|
+| `<model>_best_model_selected.pkl` | The fitted model |
+| `<model>_iteration_analysis_selected.json` | Metrics — what "Compare runs" reads |
+| `<model>_iteration_analysis_selected.png` | Search iterations plotted |
+| `<model>_feature_importance_selected.csv` | Importances, ranked |
+| `<model>_feature_importance_selected.png` | The same, plotted |
+| `<model>_confusion_matrix_selected.png` | Test-set confusion matrix |
+
+Fewer than six files, or an empty directory, means that cell failed no matter
+what Slurm reported — go back to step 7 and re-run it.
+
+### Older layouts
+
+`hpc/train_array.sh` (5 tasks, one model each, `run_0`..`run_4`) is what the
+bare command was written for:
+
+```bash
 hpc/fetch-results.sh
 ```
 
-This brings back **every** training-pipeline stage, not only the models:
+That brings back **every** training-pipeline stage, not only the models:
 
 | Directory | What it holds |
 |---|---|
@@ -324,28 +437,31 @@ This brings back **every** training-pipeline stage, not only the models:
 | `504-balance_classes` | After SMOTE-Tomek |
 | `505-scale_weather_features` | The frame the trainers actually saw |
 | `700-shap_correlation_analysis` | Only after `train_all.sh` |
-| `1000-*` … `1004-*` | One per model: joblib, metrics JSON, figures |
+| `1000-*` … `1004-*` | One per model: the six files listed above |
 
-Stages 500-505 come from `run_0` alone — that applies to `train_array.sh`
-only. `train_array.sh` re-runs them in all five run roots from identical code
-and identical input, so the other four copies are the same bytes and five
-times the download. The model directories come from all five roots, since each
-task produces exactly one.
+In this older layout stages 500-505 come from `run_0` alone. `train_array.sh`
+re-runs them in all five run roots from identical code and identical input, so
+the other four copies are the same bytes and five times the download. There is
+only ever one scenario in play, so one set is all there is.
 
-After `hpc/train_scenarios.sh`, the equivalent single-root shortcut is
-`run_s??_xgboost` per scenario: `502-select_training_cols` onward genuinely
-differs per scenario, which is why `--stages` there returns eight sets rather
-than one.
+`--scenarios` applies the same rule one level down: one set per scenario rather
+than one overall, taken from each scenario's `run_s??_xgboost` root.
 
 The script prints what it is about to copy and how big it is before it starts —
-this is a much larger transfer than the models alone. Variants:
+the stages are a much larger transfer than the models alone. All variants:
 
 ```bash
-hpc/fetch-results.sh --scenarios          # 40 model directories, sorted per scenario
-hpc/fetch-results.sh --scenarios --stages # + one prep-stage set per scenario
-hpc/fetch-results.sh --models             # only 1000-1004, the old behaviour
+hpc/fetch-results.sh --scenarios          # 40 model dirs + 8 prep sets, sorted per scenario
+hpc/fetch-results.sh --scenarios --models # the 40 model directories alone
+hpc/fetch-results.sh                      # train_array.sh: 5 models + run_0 stages
+hpc/fetch-results.sh --models             # train_array.sh: only 1000-1004
 hpc/fetch-results.sh --train-all          # after train_all.sh, which has no run_N roots
 ```
+
+`--models` subtracts from the default in every mode. There used to be a
+`--stages` flag that added the prep stages to `--scenarios`; the stages now come
+down by default, so the flag is accepted, ignored, and can be dropped from any
+command you have written down.
 
 This **overwrites** whatever is already in `results/`. Keep a previous run by
 renaming first:
@@ -360,18 +476,22 @@ Scratch deletes anything untouched for 180 days, so copy results off.
 
 ## Compare runs
 
-Metrics live in `results/*/[model]_iteration_analysis_selected.json`. This prints
-the headline table:
+Metrics live in
+`results/<scenario>/100[0-4]-*/[model]_iteration_analysis_selected.json`. The
+`100[0-4]-` in the glob is what keeps the prep stages out of the table — they
+sit flat beside the model directories and hold no metrics, only the frames the
+trainers were handed. This prints the headline table, all 40 rows:
 
 ```bash
 python -c "
 import json, glob, os
-print(f'{\"model\":<22}{\"TEST f1\":>9}{\"TEST auc\":>9}{\"HOLD f1\":>9}{\"HOLD auc\":>9}')
-for f in sorted(glob.glob('results/*/*_iteration_analysis_selected.json')):
+print(f'{\"scenario\":<28}{\"model\":<22}{\"TEST f1\":>9}{\"TEST auc\":>9}{\"HOLD f1\":>9}{\"HOLD auc\":>9}')
+for f in sorted(glob.glob('results/*/100[0-4]-*/*_iteration_analysis_selected.json')):
     d = json.load(open(f))
-    n = os.path.basename(os.path.dirname(f)).split('-', 1)[1][:21]
+    m = os.path.basename(os.path.dirname(f)).split('-', 1)[1][:21]
+    s = os.path.basename(os.path.dirname(os.path.dirname(f)))[:27]
     t, h = d['final_metrics'], d['holdout_metrics']
-    print(f\"{n:<22}{t['test_f1']:9.4f}{t['test_auc']:9.4f}{h['f1']:9.4f}{h['auc']:9.4f}\")
+    print(f\"{s:<28}{m:<22}{t['test_f1']:9.4f}{t['test_auc']:9.4f}{h['f1']:9.4f}{h['auc']:9.4f}\")
 "
 ```
 

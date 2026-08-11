@@ -347,12 +347,19 @@ cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
 hpc/fetch-results.sh --scenarios
 ```
 
-That pulls the 40 model directories and sorts them into one folder per
+That pulls the 40 model directories *and* one set of the `500-*`…`505-*`
+intermediate datasets per scenario, sorting them into one flat folder per
 scenario, named as the scenario is named in `config/scenarios.txt`:
 
 ```
 results/
   1 - ALL FEATURES (OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS + WEATHER SCENARIOS)/
+      500-merge_data_files/
+      501-filter_delay_outliers/
+      502-select_training_cols/
+      503-split_dataset/
+      504-balance_classes/
+      505-scale_weather_features/
       1000-xgboost_randomized_search/
       1001-lightgbm_randomized_search/
       1002-random_forest_randomized_search/
@@ -362,11 +369,17 @@ results/
       ...
 ```
 
-Add `--stages` for the intermediate datasets too — one set per scenario, which
-is a much larger transfer:
+One prep set per scenario, not per model: all five models in a scenario re-run
+500-505 over identical input, so the fetch takes them from that scenario's
+`run_s??_xgboost` root alone. Across scenarios they do differ from
+`502-select_training_cols` onward, which is why it is eight sets and not one.
+
+The prep stages still dominate the transfer — `500-merge_data_files` is the full
+merged dataset. The script prints the size before it copies anything. For the
+models by themselves:
 
 ```bash
-hpc/fetch-results.sh --scenarios --stages
+hpc/fetch-results.sh --scenarios --models
 ```
 
 After `hpc/train_array.sh` (the 5-job flow), unchanged:

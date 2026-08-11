@@ -103,6 +103,70 @@ def test_a_root_with_no_data_output_is_left_untouched(tmp_path):
     assert not (results / "1 - ALL FEATURES").exists()
 
 
+def test_a_scenario_folder_holds_one_prep_set_beside_its_five_models(tmp_path):
+    """The shape of a finished scenario folder: six prep stages and five model
+    directories, all flat, no intermediate level.
+
+    The prep stages arrive from the xgboost root alone — that is what
+    hpc/fetch-results.sh selects, and it is the reason flat is safe. The other
+    four roots contribute only their differently-numbered 100N-* directory.
+    """
+    results, scenarios = _fixture(tmp_path, [
+        ("s01", "xgboost", stage) for stage in [
+            "500-merge_data_files", "501-filter_delay_outliers",
+            "502-select_training_cols", "503-split_dataset",
+            "504-balance_classes", "505-scale_weather_features",
+            "1000-xgboost_randomized_search",
+        ]
+    ] + [
+        ("s01", "lightgbm", "1001-lightgbm_randomized_search"),
+        ("s01", "random_forest", "1002-random_forest_randomized_search"),
+        ("s01", "logistic_regression", "1003-regularized_regression"),
+        ("s01", "naive_bayes", "1004-naive_bayes"),
+    ])
+
+    assert sort_results(results, scenarios, log=lambda _: None) == 5
+
+    target = results / "1 - ALL FEATURES"
+    assert sorted(p.name for p in target.iterdir()) == [
+        "1000-xgboost_randomized_search",
+        "1001-lightgbm_randomized_search",
+        "1002-random_forest_randomized_search",
+        "1003-regularized_regression",
+        "1004-naive_bayes",
+        "500-merge_data_files",
+        "501-filter_delay_outliers",
+        "502-select_training_cols",
+        "503-split_dataset",
+        "504-balance_classes",
+        "505-scale_weather_features",
+    ]
+    assert all(p.is_dir() for p in target.iterdir())
+
+
+def test_a_second_root_bringing_prep_stages_would_overwrite_the_first(tmp_path):
+    """Documents the coupling this flat layout rests on, so widening the fetch
+    glob fails visibly here rather than quietly deleting data on a real run.
+
+    Two roots in one scenario carrying the same 500-* name cannot both survive:
+    the sort rmtree's the destination before moving. That is fine only because
+    hpc/fetch-results.sh takes 500-505 from run_s??_xgboost alone. If that glob
+    ever becomes run_s??_*, this function needs a model level again — see
+    test_scenarios_prep_comes_from_one_run_root_per_scenario, which pins the
+    fetch side of the same invariant.
+    """
+    results, scenarios = _fixture(tmp_path, [
+        ("s01", "xgboost", "500-merge_data_files"),
+        ("s01", "lightgbm", "500-merge_data_files"),
+    ])
+
+    assert sort_results(results, scenarios, log=lambda _: None) == 2
+
+    target = results / "1 - ALL FEATURES"
+    assert (target / "500-merge_data_files" / "metrics.csv").exists()
+    assert len(list(target.iterdir())) == 1, "one survivor, by design of the fetch glob"
+
+
 def test_a_destination_that_is_a_file_is_replaced_not_raised_on(tmp_path):
     """A stray file at the destination path (e.g. left over from a previous,
     differently-shaped fetch) must be replaced like a directory would be,

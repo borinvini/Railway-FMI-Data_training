@@ -142,9 +142,10 @@ def test_the_scenarios_flag_is_handled():
     assert "--stages)" in SCRIPT
 
 
-def test_scenarios_mode_puts_the_prep_stages_behind_a_flag():
-    """Inverted relative to the other modes: with 8 distinct prep sets instead
-    of one, pulling them every time is the wrong default.
+def test_scenarios_mode_subtracts_the_prep_stages_like_every_other_mode():
+    """--scenarios once ADDED prep with --stages while the other modes
+    SUBTRACTED it with --models. That asymmetry is gone: prep is default-on
+    everywhere and --models is the single way to drop it.
 
     Asserted by position against the inner `fi`, not by slicing to the end of
     the branch: the model glob sits immediately after that `fi`, so an
@@ -153,20 +154,37 @@ def test_scenarios_mode_puts_the_prep_stages_behind_a_flag():
     block = SCRIPT[SCRIPT.index("CANDIDATES=()"):SCRIPT.index("# Resolve first, transfer second")]
     scenarios_part = block.split('\nelif [ "${TRAIN_ALL}" -eq 1 ]; then\n', 1)[0]
 
-    stages_open = scenarios_part.index('if [ "${STAGES}" -eq 1 ]; then')
-    stages_close = scenarios_part.index("\n    fi", stages_open)
+    guard_open = scenarios_part.index('if [ "${MODELS_ONLY}" -eq 0 ]; then')
+    guard_close = scenarios_part.index("\n    fi", guard_open)
     prep_at = scenarios_part.index("50[0-5]-*")
     models_at = scenarios_part.index("100[0-4]-*")
 
-    assert stages_open < prep_at < stages_close, "prep stages must be inside the --stages guard"
-    assert models_at > stages_close, "model dirs must be outside it"
+    assert guard_open < prep_at < guard_close, "prep stages must be inside the --models guard"
+    assert models_at > guard_close, "model dirs must be outside it"
+    assert '"${STAGES}" -eq 1' not in scenarios_part, "--stages must not select globs any more"
 
 
 def test_scenarios_prep_comes_from_one_run_root_per_scenario():
     """run_s??_xgboost, not run_s??_*: the five models within a scenario produce
-    byte-identical prep output, so the other four are pure transfer waste."""
+    byte-identical prep output, so the other four are pure transfer waste.
+
+    hpc/sort_results.py depends on this directly, not just for bandwidth. It
+    files 500-505 flat into results/<scenario>/, which is only safe while
+    exactly one root per scenario carries them. Widening this glob would make
+    five identically-named copies race for one destination and four would be
+    rmtree'd on arrival — see the matching test in test_fetch_reshuffle.py.
+    """
     assert f"{SCRATCH}/run_s??_xgboost/data/output/50[0-5]-*" in SCRIPT
     assert f"{SCRATCH}/run_s??_*/data/output/50[0-5]-*" not in SCRIPT
+
+
+def test_stages_is_accepted_and_ignored_rather_than_rejected():
+    """The flag is written down in notebooks and in older revisions of
+    docs/ROIHU-RERUN.md. Rejecting it would turn a command that now does exactly
+    what its author meant into an error."""
+    assert "--stages)" in SCRIPT
+    assert "--stages is now the default" in SCRIPT
+    assert "--stages applies only to --scenarios" not in SCRIPT
 
 
 def test_scenarios_mode_archives_members_relative_to_scratch():
@@ -207,10 +225,10 @@ def test_the_reshuffle_degrades_gracefully_without_python():
 
 
 def test_stages_and_models_are_contradictory_and_rejected():
-    """--stages adds the prep stages, --models strips everything but the model
-    directories; together they contradict each other and must be rejected the
-    same way --stages without --scenarios already is, rather than silently
-    accepted with one flag winning."""
+    """--stages is otherwise ignored, but --models strips everything but the
+    model directories — so together they ask for opposite things and --models
+    would silently win, leaving someone who typed --stages with no prep stages
+    at all. The one case where the retired flag still has to fail loudly."""
     assert 'if [ "${STAGES}" -eq 1 ] && [ "${MODELS_ONLY}" -eq 1 ]; then' in SCRIPT
     assert "--stages and --models are contradictory" in SCRIPT
 

@@ -1,21 +1,24 @@
 #!/bin/bash
 # Fetch training-pipeline output from Roihu into ./results/.
 #
-# Usage: hpc/fetch-results.sh [--models] [--train-all] [--scenarios] [--stages]
+# Usage: hpc/fetch-results.sh [--models] [--train-all] [--scenarios]
 #   (no flags)    hpc/train_array.sh layout: every stage, 500 through 1004
 #   --models      only the model directories, 100[0-4]-*
 #   --train-all   hpc/train_all.sh layout: everything under data/output/ directly
 #   --scenarios   hpc/train_scenarios.sh layout: the 40 run_sNN_<model> roots,
-#                 model directories only, sorted into results/<scenario name>/
-#   --stages      --scenarios only: also pull the prep stages, one set per scenario
+#                 models plus one prep set per scenario, sorted into
+#                 results/<scenario name>/
+#   --stages      accepted and ignored; it is now the default. Kept so commands
+#                 already written down keep working.
 #
 # --models and --train-all are orthogonal — one picks the subset, the other the
-# layout — so `--train-all --models` is valid and means what it says.
+# layout — so `--train-all --models` is valid and means what it says. --models
+# subtracts in every mode, --scenarios included.
 #
-# Note the deliberate asymmetry: the older modes SUBTRACT with --models, while
-# --scenarios ADDS with --stages. With eight distinct prep sets rather than one,
-# pulling them on every fetch is the wrong default; the older modes keep their
-# behaviour so existing habits and docs stay correct.
+# --scenarios pulls one prep set per scenario, from that scenario's xgboost root.
+# Stages 502-505 genuinely differ per scenario, so one set overall would be
+# wrong; the five models WITHIN a scenario produce identical prep, so all five
+# would be five times the transfer for the same bytes.
 set -euo pipefail
 
 cd "$(dirname "${0}")/.."
@@ -42,16 +45,21 @@ for arg in "$@"; do
         --stages)    STAGES=1 ;;
         *)
             echo "ERROR: unknown argument: ${arg}" >&2
-            echo "       Usage: hpc/fetch-results.sh [--models] [--train-all] [--scenarios] [--stages]" >&2
+            echo "       Usage: hpc/fetch-results.sh [--models] [--train-all] [--scenarios]" >&2
             exit 1
             ;;
     esac
 done
-if [ "${STAGES}" -eq 1 ] && [ "${SCENARIOS}" -eq 0 ]; then
-    echo "ERROR: --stages applies only to --scenarios." >&2
-    echo "       The other layouts fetch the prep stages by default; use --models to omit them." >&2
-    exit 1
+# --stages no longer selects anything: every mode now fetches the prep stages
+# unless --models says otherwise. Accepted rather than rejected so a command
+# written down in a notebook or an older revision of docs/ROIHU-RERUN.md still
+# does what its author meant.
+if [ "${STAGES}" -eq 1 ]; then
+    echo "NOTE: --stages is now the default and can be dropped."
 fi
+# Still worth failing on, because here the two flags ask for opposite things and
+# --models would silently win — leaving someone who typed --stages with no prep
+# stages at all.
 if [ "${STAGES}" -eq 1 ] && [ "${MODELS_ONLY}" -eq 1 ]; then
     echo "ERROR: --stages and --models are contradictory." >&2
     exit 1
@@ -62,11 +70,17 @@ fi
 # hpc/stage_data.sh, and would come back down once per run directory.
 CANDIDATES=()
 if [ "${SCENARIOS}" -eq 1 ]; then
-    if [ "${STAGES}" -eq 1 ]; then
+    if [ "${MODELS_ONLY}" -eq 0 ]; then
         # One prep set per scenario, from that scenario's xgboost root alone.
-        # The five models within a scenario re-run stages 500-505 from identical
-        # code and identical input, so the other four copies are redundant and
-        # five times the transfer.
+        # The five models within a scenario re-run 500-505 from identical code
+        # and identical input, so the other four copies are byte-for-byte
+        # redundant and five times the transfer. Taking one root per scenario is
+        # also what lets the sort file them flat: only the xgboost roots carry
+        # 500-505, so nothing collides in results/<scenario>/.
+        #
+        # Per scenario, not once overall: 502-select_training_cols sits
+        # downstream of the feature selection, so 502-505 genuinely differ from
+        # one scenario to the next. Only 500-501 are identical everywhere.
         CANDIDATES+=("${SCRATCH}/run_s??_xgboost/data/output/50[0-5]-*")
     fi
     # Model directories from every run root: each task enables exactly one
