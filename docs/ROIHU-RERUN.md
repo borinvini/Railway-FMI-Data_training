@@ -402,8 +402,10 @@ tail -30 slurm-scenarios-<arrayjobid>_<taskid>.out
 ```
 
 Want `COMPLETED` and `0:0`. `FAILED`, or any non-zero ExitCode, means at least
-one model did not train. `OUT_OF_MEMORY` or a `MaxRSS` near the 32G request
-means raise `--mem`, not re-run as-is.
+one model did not train. `OUT_OF_MEMORY` or a `MaxRSS` near the 64G request
+means raise `--mem`, not re-run as-is. Likewise `TIMEOUT` against the 24h
+walltime means raise `--time` — on run 580873 that state only ever hit
+logistic_regression, whose cost grows with the width of the feature set.
 
 Map a task id back to what it was training: `scenario = id / 5 + 1`,
 `model = id % 5` over

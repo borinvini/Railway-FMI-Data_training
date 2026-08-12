@@ -2,12 +2,19 @@
 #SBATCH --job-name=railway-train
 #SBATCH --account=project_2019266
 #SBATCH --partition=small
-#SBATCH --time=08:00:00
+#SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --array=0-4
 #SBATCH --output=slurm-train-%A_%a.out
+#
+# Same five trainers and the same per-task shape as train_scenarios.sh, so the
+# 32G / 8h header would fail here exactly the way it failed there on run 580873:
+# OOM on the widest feature sets, walltime on logistic_regression. See the
+# header of hpc/train_scenarios.sh for the measurements behind these numbers.
+# Whichever feature set config/features.txt happens to hold, it can be the wide
+# one, so this script gets the same limits rather than a guess about the input.
 #
 # One model per array task. Each task re-runs the shared preparation stages
 # (merge, filter, select, split, balance, scale) because they are cheap relative

@@ -185,7 +185,7 @@ exports in the batch script.
 ## 7. Full run
 
 Five models in parallel, one per array task — the recommended default, since
-each task's 8h walltime is checkpointed independently: a timeout or failure in
+each task's 24h walltime is checkpointed independently: a timeout or failure in
 one model does not cost the other four.
 
 ```bash

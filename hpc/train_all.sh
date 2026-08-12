@@ -2,11 +2,18 @@
 #SBATCH --job-name=railway-train-all
 #SBATCH --account=project_2019266
 #SBATCH --partition=small
-#SBATCH --time=12:00:00
+#SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --output=slurm-train-all-%j.out
+#
+# The sequential path pays the array's per-model costs end to end, so the old
+# 12h / 32G header was the least survivable of the three scripts: on run 580873
+# logistic_regression alone exceeded 8h on the wider feature sets, which leaves
+# nothing for the other four models. 48h covers the whole chain with margin and
+# stays inside the partition's 3-day cap; 64G matches the array scripts, and at
+# 64 cores the free memory entitlement is ~124G, so it costs nothing extra.
 #
 # All five models sequentially in one job, using the full TRAINING_STATE_MACHINE
 # from config (including shap_correlation_analysis).

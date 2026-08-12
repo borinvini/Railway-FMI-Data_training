@@ -2,12 +2,32 @@
 #SBATCH --job-name=railway-scenarios
 #SBATCH --account=project_2019266
 #SBATCH --partition=small
-#SBATCH --time=08:00:00
+#SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --array=0-39
 #SBATCH --output=slurm-scenarios-%A_%a.out
+#
+# time and mem are both sized off run 580873 (2026-08-11), which lost 8 of 40
+# tasks: 4 OOM and 4 walltime.
+#
+#   mem   32G killed s01/{lightgbm,logistic_regression,naive_bayes} and
+#         s07/lightgbm at a MaxRSS of 33.4G, and the s01 tasks that did survive
+#         peaked at 30.4G and 32.3G — the whole scenario was riding the limit,
+#         not just the four that died. 64G doubles the headroom on the widest
+#         feature sets. It is also still free: a small-partition node is
+#         762590M / 384 cores = ~1985 MB per core, so 40 cores already entitle
+#         this task to ~79G before memory rather than CPU starts driving the
+#         billing.
+#
+#   time  8h killed logistic_regression on s05-s08. That trainer's cost climbs
+#         with feature count (s02 1:43, s03 3:00, s04 4:05, then s05+ ran past
+#         the limit) because it refits the saga solver 750 times: five n_iter
+#         steps of RandomizedSearchCV (10..50) x 5 CV folds, each at
+#         max_iter=5000. 24h is a 3x margin and well inside the partition's
+#         3-day cap. Walltime is billed on actual use, so a task that finishes
+#         in 30 minutes costs the same as it did under the old header.
 #
 # Every feature scenario against every model: 8 x 5 = 40 independent tasks.
 #
