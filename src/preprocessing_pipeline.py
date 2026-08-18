@@ -1766,7 +1766,8 @@ class PreprocessingPipeline:
             traceback.print_exc()
             return None
 
-    def _one_hot_encode_scenario_column(self, df, scenario_col):
+    def _one_hot_encode_scenario_column(self, df, scenario_col,
+                                        categories=None, fill_value=None):
         """
         One-hot encode a single weather-scenario categorical column in place, using
         scikit-learn's OneHotEncoder over the shared WEATHER_SCENARIO_CATEGORIES vocabulary.
@@ -1781,22 +1782,49 @@ class PreprocessingPipeline:
         scenario_col : str
             Name of the categorical scenario column to encode (e.g. 'weather_scenario',
             'weather_scenario_24h'). If not present in df, df is returned unchanged.
+        categories : list of str, optional
+            Vocabulary to encode over. Defaults to WEATHER_SCENARIO_CATEGORIES.
+            Fixing it here rather than inferring it from the data is what makes
+            every month file emit the same columns in the same order.
+        fill_value : str, optional
+            Category used for nulls. Defaults to 'Normal/Clear'.
 
         Returns:
         --------
         pandas.DataFrame
             The dataframe with scenario_col replaced by its one-hot encoded columns.
         """
+        # Defaults keep every existing weather_scenario call site byte-identical;
+        # the wawa stage passes its own 14-group vocabulary.
+        categories = categories if categories is not None else WEATHER_SCENARIO_CATEGORIES
+        fill_value = fill_value if fill_value is not None else 'Normal/Clear'
+
         if scenario_col not in df.columns:
             print(f"  ⊝ '{scenario_col}' not found in dataframe - skipping")
+            return df
+
+        # OneHotEncoder rejects a zero-row array ("Found array with 0 sample(s)"),
+        # so build the empty block directly. An empty month must still carry the
+        # full set of columns or the merge of the per-month parquets misaligns.
+        if df.empty:
+            encoded_column_names = [
+                f'{scenario_col}_{category.replace("/", "_").replace(" ", "_")}'
+                for category in categories
+            ]
+            position = df.columns.get_loc(scenario_col)
+            df = df.drop(columns=[scenario_col])
+            for i, encoded_col in enumerate(encoded_column_names):
+                df.insert(position + i, encoded_col, pd.Series(dtype=int))
+            print(f"  ⊝ '{scenario_col}': empty dataframe - inserted "
+                  f"{len(encoded_column_names)} empty one-hot columns")
             return df
 
         # Check for missing values
         missing_count = df[scenario_col].isnull().sum()
         if missing_count > 0:
             print(f"⚠ Warning: {missing_count} missing values in {scenario_col} column")
-            print(f"  Filling missing values with 'Normal/Clear'")
-            df[scenario_col] = df[scenario_col].fillna('Normal/Clear')
+            print(f"  Filling missing values with {fill_value!r}")
+            df[scenario_col] = df[scenario_col].fillna(fill_value)
 
         # Display current distribution
         print(f"\n{scenario_col} Distribution (before encoding):")
@@ -1807,7 +1835,7 @@ class PreprocessingPipeline:
 
         # Check for any unexpected categories
         unique_scenarios = set(df[scenario_col].unique())
-        expected_scenarios = set(WEATHER_SCENARIO_CATEGORIES)
+        expected_scenarios = set(categories)
         unexpected = unique_scenarios - expected_scenarios
         if unexpected:
             print(f"\n⚠ Warning: Found unexpected weather scenarios: {unexpected}")
@@ -1816,7 +1844,7 @@ class PreprocessingPipeline:
         # handle_unknown='ignore' handles unexpected categories gracefully
         # sparse_output=False returns a dense array (easier to work with)
         encoder = OneHotEncoder(
-            categories=[WEATHER_SCENARIO_CATEGORIES],
+            categories=[categories],
             sparse_output=False,
             handle_unknown='ignore',
             dtype=int
@@ -1828,7 +1856,7 @@ class PreprocessingPipeline:
         # Format: {scenario_col}_CategoryName
         encoded_column_names = [
             f'{scenario_col}_{category.replace("/", "_").replace(" ", "_")}'
-            for category in WEATHER_SCENARIO_CATEGORIES
+            for category in categories
         ]
 
         encoded_df = pd.DataFrame(

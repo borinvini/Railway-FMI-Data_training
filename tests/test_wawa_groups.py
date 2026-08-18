@@ -202,3 +202,91 @@ def test_empty_dataframe_is_handled(mock_save, tmp_path):
     assert result is not None
     assert len(result) == 0
     assert "wawa_group" in result.columns
+
+
+# ---------------------------------------------------------------------------
+# _one_hot_encode_scenario_column — the shared helper
+# ---------------------------------------------------------------------------
+
+def test_scenario_encoding_is_unchanged_by_parameterization(tmp_path):
+    """The helper gains optional parameters; called without them it must behave
+    exactly as before for the existing weather_scenario path."""
+    from config.const_preprocessing import WEATHER_SCENARIO_CATEGORIES
+
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({
+        "weather_scenario": ["Normal/Clear", "Heavy Snow", "Black Ice", "Normal/Clear"],
+        "Air temperature": [1.0, -5.0, -1.0, 2.0],
+    })
+
+    result = pipeline._one_hot_encode_scenario_column(df.copy(), "weather_scenario")
+
+    expected_names = [
+        f'weather_scenario_{c.replace("/", "_").replace(" ", "_")}'
+        for c in WEATHER_SCENARIO_CATEGORIES
+    ]
+    assert [c for c in result.columns if c.startswith("weather_scenario_")] == expected_names
+    assert "weather_scenario" not in result.columns
+    assert list(result["weather_scenario_Normal_Clear"]) == [1, 0, 0, 1]
+    assert list(result["weather_scenario_Heavy_Snow"]) == [0, 1, 0, 0]
+    assert list(result["weather_scenario_Black_Ice"]) == [0, 0, 1, 0]
+    assert result[expected_names].sum(axis=1).eq(1).all()
+
+
+def test_helper_accepts_a_custom_vocabulary(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"wawa_group": ["snow", "rain", "clear"]})
+
+    result = pipeline._one_hot_encode_scenario_column(
+        df.copy(), "wawa_group",
+        categories=["clear", "rain", "snow"],
+        fill_value="clear",
+    )
+
+    assert list(result.columns) == ["wawa_group_clear", "wawa_group_rain", "wawa_group_snow"]
+    assert list(result["wawa_group_snow"]) == [1, 0, 0]
+
+
+def test_helper_handles_an_empty_frame(tmp_path):
+    """sklearn's OneHotEncoder rejects a zero-row array outright, so the helper
+    must build the empty block itself — an empty month still needs the columns."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({
+        "Air temperature": pd.Series([], dtype=float),
+        "wawa_group": pd.Series([], dtype=object),
+    })
+
+    result = pipeline._one_hot_encode_scenario_column(
+        df.copy(), "wawa_group",
+        categories=["clear", "snow"],
+        fill_value="clear",
+    )
+
+    assert list(result.columns) == ["Air temperature", "wawa_group_clear", "wawa_group_snow"]
+    assert len(result) == 0
+
+
+def test_helper_handles_an_empty_scenario_frame(tmp_path):
+    """Same guard on the pre-existing weather_scenario path, which raised before."""
+    from config.const_preprocessing import WEATHER_SCENARIO_CATEGORIES
+
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"weather_scenario": pd.Series([], dtype=object)})
+
+    result = pipeline._one_hot_encode_scenario_column(df.copy(), "weather_scenario")
+
+    assert len(result.columns) == len(WEATHER_SCENARIO_CATEGORIES)
+    assert "weather_scenario" not in result.columns
+
+
+def test_helper_custom_vocabulary_fills_nulls_with_given_value(tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"wawa_group": ["snow", None]})
+
+    result = pipeline._one_hot_encode_scenario_column(
+        df.copy(), "wawa_group",
+        categories=["clear", "snow"],
+        fill_value="clear",
+    )
+
+    assert list(result["wawa_group_clear"]) == [0, 1]
