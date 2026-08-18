@@ -114,6 +114,117 @@ def _weather_scenario_one_hot_names(prefix):
         for category in WEATHER_SCENARIO_CATEGORIES
     ]
 
+# Define weather scenario feature columns (instant + rolling windows)
+VALID_WEATHER_SCENARIO_FEATURES = [
+    *_weather_scenario_one_hot_names("weather_scenario"),
+    *[name
+      for window in ROLLING_WINDOWS
+      for name in _weather_scenario_one_hot_names(f"weather_scenario_{window}")],
+]
+
+# ---------------------------------------------------------------------------
+# wawa — WMO code table 4680 "present weather reported from an automatic
+# weather station", the FMI column "Present weather (auto)".
+#
+# The codes are nominal, not ordinal: 71 ("snow, slight") is not ten more of
+# anything than 61 ("rain, slight"). They are folded into meteorologically
+# coherent groups and one-hot encoded. Groupings are transcribed from
+# docs/wawa-group-proposal.txt — that file is the source of truth.
+# ---------------------------------------------------------------------------
+
+WAWA_SOURCE_COLUMN = 'Present weather (auto)'
+
+# Missing, non-numeric, out-of-table, and non-emitted codes all fold to this.
+WAWA_FALLBACK_GROUP = 'clear'
+
+# The 14 groups that become one-hot columns. Order is fixed: every month file
+# must emit the same columns in the same order or the downstream merge of the
+# per-month parquets misaligns.
+WAWA_EMITTED_GROUPS = [
+    'clear',
+    'haze',
+    'mist',
+    'fog',
+    'precip_unspec',
+    'drizzle',
+    'rain',
+    'freezing',
+    'sleet',
+    'snow',
+    'ice_particles',
+    'rain_shower',
+    'snow_shower',
+    'hail',
+]
+
+# Mapped so that no code falls through unassigned, but never emitted: these
+# have zero occurrences in the 41.7M-row record, so a column for them would be
+# always-zero. Rows landing here fold to WAWA_FALLBACK_GROUP, and
+# add_wawa_group_col logs the count per group so a station that does report
+# them announces itself instead of silently losing the rows.
+WAWA_NON_EMITTED_GROUPS = [
+    'thunder',
+    'blowing_snow',
+    'squall',
+    'tornado',
+]
+
+
+def _wawa_codes(*spans):
+    """Expand a mix of single codes and inclusive (start, end) ranges."""
+    codes = []
+    for span in spans:
+        if isinstance(span, tuple):
+            start, end = span
+            codes.extend(range(start, end + 1))
+        else:
+            codes.append(span)
+    return codes
+
+
+# Codes 20-26 report the preceding hour rather than the observation instant.
+# By the agreed design they merge into their corresponding "now" group
+# (20 -> fog, 21 -> precip_unspec, 22 -> drizzle, 23 -> rain, 24 -> snow,
+# 25 -> freezing) rather than forming a separate group.
+WAWA_GROUP_CODES = {
+    'clear':         _wawa_codes((0, 3), (6, 9), (13, 17), 19, (36, 39), 49, 59, 69, 79, 88, (97, 98)),
+    'haze':          _wawa_codes(4, 5),
+    'mist':          _wawa_codes(10),
+    'fog':           _wawa_codes(20, (30, 35)),
+    'precip_unspec': _wawa_codes(21, (40, 42)),
+    'drizzle':       _wawa_codes(22, (50, 53), 57, 58),
+    'rain':          _wawa_codes(23, 43, 44, (60, 63)),
+    'freezing':      _wawa_codes(25, 47, 48, (54, 56), (64, 66)),
+    'sleet':         _wawa_codes(67, 68),
+    'snow':          _wawa_codes(24, 45, 46, (70, 73)),
+    'ice_particles': _wawa_codes(11, (74, 78)),
+    'rain_shower':   _wawa_codes((80, 84)),
+    'snow_shower':   _wawa_codes((85, 87)),
+    'hail':          _wawa_codes(89),
+    # not emitted
+    'thunder':       _wawa_codes(12, 26, (90, 96)),
+    'blowing_snow':  _wawa_codes((27, 29)),
+    'squall':        _wawa_codes(18),
+    'tornado':       _wawa_codes(99),
+}
+
+WAWA_CODE_TO_GROUP = {
+    code: group
+    for group, codes in WAWA_GROUP_CODES.items()
+    for code in codes
+}
+
+
+def _wawa_one_hot_names():
+    """Build the one-hot column names for the emitted wawa groups."""
+    return [f'wawa_group_{group}' for group in WAWA_EMITTED_GROUPS]
+
+
+VALID_WAWA_FEATURES = _wawa_one_hot_names()
+
+FOLDER_ADD_WAWA_GROUP_COL = "data/output/7c-add_wawa_group_col"
+FOLDER_WAWA_GROUP_ONE_HOT_ENCODER = "data/output/8b-wawa_group_one_hot_encoder"
+
 # Multi category features
 CATEGORICAL_FEATURES = [
     "month",
@@ -127,14 +238,8 @@ CATEGORICAL_FEATURES = [
     *[name
       for window in ROLLING_WINDOWS
       for name in _weather_scenario_one_hot_names(f"weather_scenario_{window}")],
-]
-
-# Define weather scenario feature columns (instant + rolling windows)
-VALID_WEATHER_SCENARIO_FEATURES = [
-    *_weather_scenario_one_hot_names("weather_scenario"),
-    *[name
-      for window in ROLLING_WINDOWS
-      for name in _weather_scenario_one_hot_names(f"weather_scenario_{window}")],
+    # wawa (WMO 4680) group one-hot encoded features
+    *_wawa_one_hot_names(),
 ]
 
 # Set to True to drop trainStopping and commercialStop from training
