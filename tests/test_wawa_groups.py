@@ -11,6 +11,7 @@ from config.const_preprocessing import (
     WAWA_FALLBACK_GROUP,
     WAWA_SOURCE_COLUMN,
     VALID_WAWA_FEATURES,
+    ALL_WEATHER_FEATURES,
 )
 
 
@@ -140,6 +141,33 @@ def test_non_emitted_groups_fold_to_clear(mock_save, tmp_path):
     result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
 
     assert list(result["wawa_group"]) == ["clear", "clear", "clear", "clear", "snow"]
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_infinite_codes_fold_to_clear_without_aborting(mock_save, tmp_path):
+    """inf/-inf would raise OverflowError inside the Int64 cast if not filtered out
+    first; the stage must not return None (that would stop the whole month file) and
+    must instead fold these into the fallback group like any other out-of-table code."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [float('inf'), float('-inf'), 71.0]})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert list(result["wawa_group"]) == ["clear", "clear", "snow"]
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_huge_float_code_folds_to_clear_without_aborting(mock_save, tmp_path):
+    """A value like 1e30 raises 'cannot safely cast non-equivalent float64 to int64'
+    inside the Int64 cast if not filtered out first."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [1e30, 71.0]})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert list(result["wawa_group"]) == ["clear", "snow"]
 
 
 @patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
@@ -480,3 +508,67 @@ def test_features_example_lists_the_wawa_columns():
     text = Path("config/features.example.txt").read_text(encoding="utf-8")
     for name in VALID_WAWA_FEATURES:
         assert name in text, f"{name} missing from config/features.example.txt"
+
+
+# ---------------------------------------------------------------------------
+# wawa columns must survive handle_missing_values' weather-threshold drop,
+# and must NOT be picked up by scale_weather_features' weather-feature
+# selection (they are 0/1 indicators and must reach the model unscaled).
+# ---------------------------------------------------------------------------
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_wawa_columns_survive_handle_missing_values_threshold_drop(mock_save, tmp_path):
+    """handle_missing_values drops weather columns selected by substring match
+    against IMPORTANT_WEATHER_FEATURES when their missing share exceeds
+    WEATHER_MISSING_THRESHOLD. wawa_group_* names don't contain any of those
+    substrings, so they must never be candidates for that drop — even when a
+    real weather column in the same frame is heavily missing and gets dropped."""
+    pipeline = _make_pipeline(tmp_path)
+
+    n = 20
+    df = pd.DataFrame({
+        "differenceInMinutes": [5.0] * n,
+        "month": [1] * n,
+        # Heavily missing (>30%) so it gets dropped by the threshold check —
+        # proves the threshold logic actually ran on this frame.
+        "Air temperature": [None] * 15 + [1.0] * 5,
+        "Wind speed": [5.0] * n,
+        "Gust speed": [8.0] * n,
+        "Relative humidity": [75.0] * n,
+        "Precipitation amount": [0.0] * n,
+        "Precipitation intensity": [0.0] * n,
+        "Snow depth": [0.0] * n,
+        "Pressure (msl)": [1013.0] * n,
+        "Horizontal visibility": [10000.0] * n,
+        "Cloud amount": [2.0] * n,
+        **{name: [1, 0] * (n // 2) for name in VALID_WAWA_FEATURES},
+    })
+
+    with patch.object(pipeline, "get_logger", _null_logger):
+        result = pipeline.handle_missing_values(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert "Air temperature" not in result.columns, "test setup did not exercise the threshold drop"
+    for name in VALID_WAWA_FEATURES:
+        assert name in result.columns, f"{name} was dropped by the weather-threshold check"
+
+
+def test_wawa_columns_are_not_selected_as_scalable_weather_features():
+    """scale_weather_features selects weather columns by exact match against
+    ALL_WEATHER_FEATURES, plus a substring test for the rolling-window suffixes
+    '(12h', '(24h', '(72h' (see src/training_pipeline.py::scale_weather_features).
+    wawa_group_* columns must match neither, or they would get RobustScaler-fitted
+    like a continuous feature instead of staying a 0/1 indicator like
+    weather_scenario_*. This pins the selection logic itself, so it fails the moment
+    someone adds a wawa_group_* name to ALL_WEATHER_FEATURES."""
+    columns = VALID_WAWA_FEATURES + ALL_WEATHER_FEATURES
+
+    available_weather_features = [col for col in ALL_WEATHER_FEATURES if col in columns]
+    window_patterns = ('(12h', '(24h', '(72h')
+    available_window_features = [col for col in columns if any(p in col for p in window_patterns)]
+    available_weather_features = available_weather_features + available_window_features
+
+    for name in VALID_WAWA_FEATURES:
+        assert name not in available_weather_features, (
+            f"{name} would be selected for scaling — it must reach the model unscaled"
+        )

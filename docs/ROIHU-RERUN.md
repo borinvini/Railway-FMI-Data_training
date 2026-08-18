@@ -184,6 +184,19 @@ months of raw input. Any of those rewrites the parquet files, and until you
 stage them the cluster keeps training on the previous set. ~25 MB, under a
 minute.
 
+⚠️ **On Windows, run the re-preprocess with `PYTHONIOENCODING=utf-8` set.**
+The pipeline prints `→`/`✓`/`✗`, and a plain Git Bash console defaults to
+cp1252, which raises `UnicodeEncodeError` on the first arrow — including
+inside the exception handler's own `✗`, so the run dies without a usable
+error. `PYTHONIOENCODING=utf-8 python main.py ...` avoids it.
+
+⚠️ **Re-preprocess every month file, not just the ones you're curious about.**
+`SCHEMA_MISMATCH_STRATEGY = 'intersect'` (`config/const_training.py:185`)
+silently drops any column missing from even one file when the months get
+merged. A partial re-preprocess makes new columns disappear quietly here and
+surfaces as an opaque `SELECTED_COLUMNS references columns not in DataFrame`
+much later, at training time.
+
 Overwrite in place; do not delete first. The filenames are stable
 (`training_ready_2018_01.parquet` …), so the copy replaces each file where it
 sits, and the run roots symlink to this one directory rather than holding

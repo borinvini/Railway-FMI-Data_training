@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+from imblearn.over_sampling import SMOTENC
+
 
 def test_balanced_folder_constant_exists():
     from config.const_training import MERGED_BALANCED_OUTPUT_FOLDER
@@ -309,6 +311,66 @@ def test_one_hot_columns_stay_binary(tmp_path):
     saved = pd.read_parquet(result["train_output_path"])
     for col in ("weather_scenario_Blizzard", "weather_scenario_Clear", "weather_scenario_Rain"):
         assert set(saved[col].unique()) <= {0, 1}, f"{col} was interpolated into a fractional value"
+
+
+def _make_wawa_df(n_punctual=300, n_delayed=100, seed=11):
+    """Imbalanced df with wawa_group_* one-hot columns (exactly one hot per row) plus a
+    bool column, so SMOTENC (not plain SMOTE) is exercised — the same as production,
+    where other categorical columns are always present alongside the wawa ones."""
+    rng = np.random.default_rng(seed)
+    punctual = rng.uniform(-4, 5, n_punctual)
+    delayed = rng.uniform(6, 60, n_delayed)
+    diff = np.concatenate([punctual, delayed])
+    n = n_punctual + n_delayed
+    group_idx = rng.integers(0, 3, n)
+    wawa_clear = (group_idx == 0).astype(int)
+    wawa_rain = (group_idx == 1).astype(int)
+    wawa_snow = (group_idx == 2).astype(int)
+    return pd.DataFrame({
+        "differenceInMinutes": diff,
+        "trainDelayed": diff > TRAIN_DELAY_MINUTES,
+        "feature_a": rng.normal(0, 1, n),
+        "wawa_group_clear": wawa_clear,
+        "wawa_group_rain": wawa_rain,
+        "wawa_group_snow": wawa_snow,
+        "trainStopping": rng.integers(0, 2, n).astype(bool),
+    })
+
+
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
+def test_wawa_group_columns_are_passed_to_smotenc_as_categorical(tmp_path):
+    """wawa_group_* one-hot columns must land in SMOTENC's categorical_features
+    index list, the same as weather_scenario_* — otherwise SMOTENC treats them
+    as continuous and interpolates fractional values like wawa_group_snow = 0.41,
+    breaking the one-hot invariant. Asserting on the actual constructor call
+    (rather than the resampled output) makes this deterministic: whether a
+    buggy run happens to produce a fraction depends on which neighbors SMOTE
+    picks, so checking the output alone can pass by luck."""
+    pipeline = _make_pipeline(tmp_path)
+    train_df = _make_wawa_df()
+    test_df = _make_test_df()
+    data_dir = _write_train_test(tmp_path, train_df, test_df)
+
+    real_smotenc = SMOTENC
+    captured = {}
+
+    def _spy(*args, **kwargs):
+        captured["categorical_features"] = kwargs.get("categorical_features")
+        return real_smotenc(*args, **kwargs)
+
+    with patch("src.training_pipeline.SMOTENC", side_effect=_spy):
+        result = pipeline.balance_classes(data_dir=data_dir)
+
+    assert result["success"] is True
+    feature_cols = [c for c in train_df.columns if c not in ("differenceInMinutes", "trainDelayed")]
+    wawa_indices = {
+        feature_cols.index(c)
+        for c in ("wawa_group_clear", "wawa_group_rain", "wawa_group_snow")
+    }
+    assert wawa_indices <= set(captured["categorical_features"]), (
+        f"wawa_group_* indices {wawa_indices} missing from "
+        f"categorical_features={captured['categorical_features']}"
+    )
 
 
 @patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")

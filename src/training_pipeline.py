@@ -933,6 +933,7 @@ class TrainingPipeline:
                 c for c in numeric_cols
                 if c in bool_cols
                 or c.startswith("weather_scenario_")
+                or c.startswith("wawa_group_")
                 or c.endswith("_sin")
                 or c.endswith("_cos")
             ]

@@ -1778,6 +1778,16 @@ class PreprocessingPipeline:
                 # The column is a float: only integral values are real WMO codes,
                 # so 71.5 is not code 71 and must fall back rather than round.
                 codes = codes.where(codes == codes.round())
+
+                # A non-finite or extremely large float (inf, 1e30, ...) would raise
+                # inside the Int64 cast below (OverflowError / TypeError), aborting the
+                # whole month file. Such values are not valid WMO codes either way, so
+                # fold them into the existing "outside the table" bucket — via a sentinel
+                # that is finite, integral, and not a key in WAWA_CODE_TO_GROUP — instead
+                # of letting the cast crash.
+                out_of_castable_range = codes.notna() & ~codes.between(-(2**63), 2**63 - 1)
+                codes = codes.mask(out_of_castable_range, -1)
+
                 codes = codes.astype('Int64')
 
                 groups = codes.map(WAWA_CODE_TO_GROUP)
