@@ -28,6 +28,7 @@ from config.const_preprocessing import (
     WAWA_FALLBACK_GROUP,
     WAWA_EMITTED_GROUPS,
     FOLDER_WAWA_GROUP_ONE_HOT_ENCODER,
+    VALID_WAWA_FEATURES,
     ROLLING_WINDOWS,
     WEATHER_SCENARIO_CATEGORIES,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
@@ -526,6 +527,60 @@ class PreprocessingPipeline:
                 result["errors"].append("weather_scenario_one_hot_encoder skipped - no data available")
         else:
             print(f"    ⊝ weather_scenario_one_hot_encoder (disabled)")
+
+        if state_machine.get("add_wawa_group_col", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → add_wawa_group_col")
+                    wawa_df = self.add_wawa_group_col(dataframe=result["data"], month_id=file_id)
+
+                    if wawa_df is not None:
+                        result["data"] = wawa_df
+                        result["steps_executed"].append("add_wawa_group_col")
+                        result["file_info"]["rows"] = len(wawa_df)
+                        result["file_info"]["columns"] = len(wawa_df.columns)
+                        print(f"      ✓ Added wawa group column for {len(wawa_df)} rows")
+                    else:
+                        result["errors"].append("add_wawa_group_col failed")
+                        print(f"      ✗ Failed to add wawa group column")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"add_wawa_group_col failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ add_wawa_group_col (no data available)")
+                result["errors"].append("add_wawa_group_col skipped - no data available")
+        else:
+            print(f"    ⊝ add_wawa_group_col (disabled)")
+
+        if state_machine.get("wawa_group_one_hot_encoder", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → wawa_group_one_hot_encoder")
+                    wawa_one_hot_df = self.wawa_group_one_hot_encoder(dataframe=result["data"], month_id=file_id)
+
+                    if wawa_one_hot_df is not None:
+                        result["data"] = wawa_one_hot_df
+                        result["steps_executed"].append("wawa_group_one_hot_encoder")
+                        result["file_info"]["rows"] = len(wawa_one_hot_df)
+                        result["file_info"]["columns"] = len(wawa_one_hot_df.columns)
+                        print(f"      ✓ Processed wawa group encoding for {len(wawa_one_hot_df)} rows")
+                    else:
+                        result["errors"].append("wawa_group_one_hot_encoder failed")
+                        print(f"      ✗ Failed to process wawa group encoding")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"wawa_group_one_hot_encoder failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ wawa_group_one_hot_encoder (no data available)")
+                result["errors"].append("wawa_group_one_hot_encoder skipped - no data available")
+        else:
+            print(f"    ⊝ wawa_group_one_hot_encoder (disabled)")
 
         if state_machine.get("process_actual_time_column", False):
             if result["data"] is not None:
@@ -2311,6 +2366,14 @@ class PreprocessingPipeline:
                 columns_to_keep.extend(weather_scenario_cols_found)
                 print(f"Weather scenario columns found: {weather_scenario_cols_found}")
                 logger.info(f"Weather scenario columns found: {weather_scenario_cols_found}")
+
+                # Add wawa (WMO 4680) group one-hot features that exist in the dataframe.
+                # The raw WAWA_SOURCE_COLUMN is deliberately absent from every keep-list:
+                # add_wawa_group_col has already consumed it, so it is dropped here.
+                wawa_cols_found = [col for col in VALID_WAWA_FEATURES if col in df.columns]
+                columns_to_keep.extend(wawa_cols_found)
+                print(f"Wawa group columns found: {wawa_cols_found}")
+                logger.info(f"Wawa group columns found: {wawa_cols_found}")
 
                 # Add rolling window columns matching (12h, (24h, (72h patterns
                 window_patterns = ('(12h', '(24h', '(72h')

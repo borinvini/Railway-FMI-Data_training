@@ -88,3 +88,22 @@ Precipitation amount (24h mean)
 Precipitation amount (24h cumulative)
 Precipitation amount (72h mean)
 Precipitation amount (72h cumulative)
+
+# wawa — WMO 4680 present-weather groups, one-hot. Mutually exclusive: exactly
+# one is 1 per row. Instant observation only; there are no rolling variants,
+# because the input data carries no rolling aggregate for the wawa code.
+# Uncomment to train on them.
+#wawa_group_clear
+#wawa_group_haze
+#wawa_group_mist
+#wawa_group_fog
+#wawa_group_precip_unspec
+#wawa_group_drizzle
+#wawa_group_rain
+#wawa_group_freezing
+#wawa_group_sleet
+#wawa_group_snow
+#wawa_group_ice_particles
+#wawa_group_rain_shower
+#wawa_group_snow_shower
+#wawa_group_hail

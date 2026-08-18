@@ -396,3 +396,87 @@ def test_stages_compose(mock_save, tmp_path):
     assert list(result["wawa_group_rain"]) == [0, 1, 0, 0]
     # NaN and thunder (93, non-emitted) both fold to clear
     assert list(result["wawa_group_clear"]) == [0, 0, 1, 1]
+
+
+# ---------------------------------------------------------------------------
+# Pipeline wiring
+# ---------------------------------------------------------------------------
+
+def test_state_machine_declares_both_stages():
+    from config.const_preprocessing import PREPROCESSING_STATE_MACHINE
+
+    assert PREPROCESSING_STATE_MACHINE["add_wawa_group_col"] is True
+    assert PREPROCESSING_STATE_MACHINE["wawa_group_one_hot_encoder"] is True
+
+
+def test_stages_run_before_filter_columns():
+    """The raw code column is dropped by omission in filter_columns, which only
+    works if both wawa stages have already consumed it."""
+    from config.const_preprocessing import PREPROCESSING_STATE_MACHINE
+
+    order = list(PREPROCESSING_STATE_MACHINE.keys())
+    assert order.index("add_wawa_group_col") < order.index("wawa_group_one_hot_encoder")
+    assert order.index("wawa_group_one_hot_encoder") < order.index("filter_columns")
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_filter_columns_keeps_wawa_and_drops_the_raw_code(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({
+        "trainDelayed": [1, 0],
+        "Air temperature": [2.0, 3.0],
+        WAWA_SOURCE_COLUMN: [71.0, 61.0],
+        "wawa_group_snow": [1, 0],
+        "wawa_group_rain": [0, 1],
+        "wawa_group_hail": [0, 0],
+        "stationShortCode": ["OL", "OL"],
+    })
+
+    with patch.object(pipeline, "get_logger", _null_logger):
+        result = pipeline.filter_columns(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert "wawa_group_snow" in result.columns
+    assert "wawa_group_rain" in result.columns
+    assert "wawa_group_hail" in result.columns, "all-zero group columns must survive too"
+    assert WAWA_SOURCE_COLUMN not in result.columns, "the raw WMO code must not reach training"
+    assert "stationShortCode" not in result.columns
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_executor_runs_both_stages(mock_save, tmp_path):
+    """End-to-end through execute_preprocessing_pipeline_steps with only the two
+    wawa stages enabled — proves the state machine blocks are wired, not just declared."""
+    pipeline = _make_pipeline(tmp_path)
+
+    input_path = tmp_path / "matched_data_flat_2023_01.parquet"
+    pd.DataFrame({
+        WAWA_SOURCE_COLUMN: [71.0, 61.0, np.nan],
+        "Air temperature": [1.0, 2.0, 3.0],
+    }).to_parquet(input_path)
+
+    result = pipeline.execute_preprocessing_pipeline_steps(
+        input_file_path=str(input_path),
+        file_id="2023_01",
+        year="2023",
+        state_machine={
+            "add_wawa_group_col": True,
+            "wawa_group_one_hot_encoder": True,
+        },
+    )
+
+    assert result["errors"] == []
+    assert "add_wawa_group_col" in result["steps_executed"]
+    assert "wawa_group_one_hot_encoder" in result["steps_executed"]
+    out = result["data"]
+    assert list(out["wawa_group_snow"]) == [1, 0, 0]
+    assert list(out["wawa_group_clear"]) == [0, 0, 1]
+
+
+def test_features_example_lists_the_wawa_columns():
+    """features.example.txt is the catalogue of every selectable column."""
+    from pathlib import Path
+
+    text = Path("config/features.example.txt").read_text(encoding="utf-8")
+    for name in VALID_WAWA_FEATURES:
+        assert name in text, f"{name} missing from config/features.example.txt"

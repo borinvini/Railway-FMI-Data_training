@@ -7,6 +7,8 @@ PREPROCESSING_STATE_MACHINE = {
     "add_weather_scenarios_col": True,
     "add_rolling_weather_scenarios_col": True,
     "weather_scenario_one_hot_encoder": True,
+    "add_wawa_group_col": True,
+    "wawa_group_one_hot_encoder": True,
     "process_actual_time_column": True,
     "filter_columns": True,
     "convert_boolean_to_numeric": True,
