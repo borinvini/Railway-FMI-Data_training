@@ -290,3 +290,109 @@ def test_helper_custom_vocabulary_fills_nulls_with_given_value(tmp_path):
     )
 
     assert list(result["wawa_group_clear"]) == [0, 1]
+
+
+# ---------------------------------------------------------------------------
+# wawa_group_one_hot_encoder
+# ---------------------------------------------------------------------------
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_encoder_emits_all_fourteen_columns_in_order(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"wawa_group": ["snow", "rain", "clear"]})
+
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert list(result.columns) == VALID_WAWA_FEATURES
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_encoder_drops_the_categorical_column(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"wawa_group": ["snow", "rain"]})
+
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=df, month_id="2023_01")
+
+    assert "wawa_group" not in result.columns
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_encoding_is_one_hot(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"wawa_group": ["snow", "rain", "clear", "hail"]})
+
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=df, month_id="2023_01")
+
+    assert result[VALID_WAWA_FEATURES].sum(axis=1).eq(1).all()
+    assert list(result["wawa_group_snow"]) == [1, 0, 0, 0]
+    assert list(result["wawa_group_hail"]) == [0, 0, 0, 1]
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_absent_group_still_gets_an_all_zero_column(mock_save, tmp_path):
+    """A month with no hail must still emit wawa_group_hail, or the merge of the
+    per-month parquets misaligns."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"wawa_group": ["clear", "clear", "clear"]})
+
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=df, month_id="2023_01")
+
+    assert "wawa_group_hail" in result.columns
+    assert result["wawa_group_hail"].sum() == 0
+    assert result["wawa_group_clear"].sum() == 3
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_encoder_preserves_other_columns(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({
+        "Air temperature": [1.0, 2.0],
+        "wawa_group": ["snow", "rain"],
+        "trainDelayed": [1, 0],
+    })
+
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=df, month_id="2023_01")
+
+    assert list(result["Air temperature"]) == [1.0, 2.0]
+    assert list(result["trainDelayed"]) == [1, 0]
+    assert len(result.columns) == 2 + 14
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_encoder_without_the_group_column_does_not_abort(mock_save, tmp_path):
+    """Mirrors weather_scenario_one_hot_encoder's tolerance of a missing column."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"Air temperature": [1.0]})
+
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert list(result.columns) == ["Air temperature"]
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_encoder_handles_an_empty_frame(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"wawa_group": pd.Series([], dtype=object)})
+
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert list(result.columns) == VALID_WAWA_FEATURES
+    assert len(result) == 0
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_stages_compose(mock_save, tmp_path):
+    """add_wawa_group_col followed by the encoder, on raw float codes."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [71.0, 61.0, np.nan, 93.0]})
+
+    grouped = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+    result = pipeline.wawa_group_one_hot_encoder(dataframe=grouped, month_id="2023_01")
+
+    assert list(result["wawa_group_snow"]) == [1, 0, 0, 0]
+    assert list(result["wawa_group_rain"]) == [0, 1, 0, 0]
+    # NaN and thunder (93, non-emitted) both fold to clear
+    assert list(result["wawa_group_clear"]) == [0, 0, 1, 1]

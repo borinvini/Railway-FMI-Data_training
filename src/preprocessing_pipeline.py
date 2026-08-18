@@ -26,6 +26,8 @@ from config.const_preprocessing import (
     WAWA_CODE_TO_GROUP,
     WAWA_NON_EMITTED_GROUPS,
     WAWA_FALLBACK_GROUP,
+    WAWA_EMITTED_GROUPS,
+    FOLDER_WAWA_GROUP_ONE_HOT_ENCODER,
     ROLLING_WINDOWS,
     WEATHER_SCENARIO_CATEGORIES,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
@@ -1961,6 +1963,70 @@ class PreprocessingPipeline:
 
         except Exception as e:
             print(f"✗ Error in weather_scenario_one_hot_encoder: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def wawa_group_one_hot_encoder(self, dataframe, month_id=None):
+        """
+        Replace the categorical 'wawa_group' column produced by add_wawa_group_col with
+        14 binary columns, one per emitted group, named wawa_group_<group>.
+
+        The vocabulary comes from WAWA_EMITTED_GROUPS rather than from the data, so every
+        month file emits the same 14 columns in the same order — a month with no hail
+        still gets an all-zero wawa_group_hail. The downstream merge of the per-month
+        parquets depends on that.
+
+        Unlike weather_scenario_one_hot_encoder, a missing input column is not an error:
+        add_wawa_group_col always produces one, so its absence means the stage was
+        disabled, which should not stop the run.
+
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            Input dataframe containing the 'wawa_group' column.
+        month_id : str, optional
+            Identifier for the month being processed (e.g. '2024_01').
+
+        Returns:
+        --------
+        pandas.DataFrame
+            Dataframe with 'wawa_group' replaced by its one-hot columns, or None on error.
+        """
+        try:
+            df = dataframe.copy()
+
+            print(f"\n{'='*60}")
+            print(f"WAWA GROUP ONE-HOT ENCODING")
+            print(f"{'='*60}")
+            print(f"Processing {len(df):,} rows")
+
+            df = self._one_hot_encode_scenario_column(
+                df,
+                'wawa_group',
+                categories=WAWA_EMITTED_GROUPS,
+                fill_value=WAWA_FALLBACK_GROUP,
+            )
+
+            print(f"\n{'='*60}")
+            print(f"ENCODING RESULTS:")
+            print(f"{'='*60}")
+            print(f"✓ Final dataframe shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+            print(f"{'='*60}\n")
+
+            print(f"--- SAVING wawa_group_one_hot_encoder DATA ---")
+            saved_file_path = save_dataframe_to_parquet(
+                folder_path=FOLDER_WAWA_GROUP_ONE_HOT_ENCODER,
+                month_id=month_id if month_id else self.current_file_id,
+                df=df,
+                file_prefix="wawa_group_one_hot_encoder"
+            )
+            print(f"✓ Successfully saved one-hot encoded data to: {saved_file_path}")
+
+            return df
+
+        except Exception as e:
+            print(f"✗ Error in wawa_group_one_hot_encoder: {e}")
             import traceback
             traceback.print_exc()
             return None
