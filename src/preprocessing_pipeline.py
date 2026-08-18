@@ -21,6 +21,11 @@ from config.const_preprocessing import (
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
     FOLDER_ADD_WEATHER_SCENARIOS_COL,
     FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL,
+    FOLDER_ADD_WAWA_GROUP_COL,
+    WAWA_SOURCE_COLUMN,
+    WAWA_CODE_TO_GROUP,
+    WAWA_NON_EMITTED_GROUPS,
+    WAWA_FALLBACK_GROUP,
     ROLLING_WINDOWS,
     WEATHER_SCENARIO_CATEGORIES,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
@@ -1666,6 +1671,100 @@ class PreprocessingPipeline:
             print("Continuing with processing, but data was not saved to folder.")
 
         return df
+
+    def add_wawa_group_col(self, dataframe, month_id=None):
+        """
+        Add a categorical 'wawa_group' column derived from the WMO 4680 present-weather
+        code in WAWA_SOURCE_COLUMN ("Present weather (auto)").
+
+        The raw code is nominal, not ordinal — 71 ("snow, slight") is not ten more of
+        anything than 61 ("rain, slight") — so it is folded into the 14 meteorologically
+        coherent groups defined in config (plus 4 groups that are mapped but never
+        emitted). wawa_group_one_hot_encoder turns the result into binary columns.
+
+        Fallback to WAWA_FALLBACK_GROUP ('clear') applies to missing/non-numeric codes,
+        non-integral values, codes outside the 0-99 table, and codes belonging to a
+        non-emitted group. Each of those three reasons is counted and printed separately:
+        the "zero occurrences in the record" claim behind the non-emitted groups is
+        inherited from docs/wawa-group-proposal.txt rather than re-verified here, so a
+        station where it turns out to be false must announce itself rather than silently
+        discard real thunderstorms.
+
+        The source column is left in place; filter_columns drops it later by omission.
+
+        Parameters:
+        -----------
+        dataframe : pandas.DataFrame
+            Input dataframe, normally containing WAWA_SOURCE_COLUMN.
+        month_id : str, optional
+            Identifier for the month being processed (e.g. '2024_01').
+
+        Returns:
+        --------
+        pandas.DataFrame
+            The dataframe with an added string column 'wawa_group', or None on error.
+        """
+        try:
+            df = dataframe.copy()
+            month_str = f" for {month_id}" if month_id else ""
+
+            print(f"\n{'='*60}")
+            print(f"WAWA GROUP MAPPING{month_str}")
+            print(f"{'='*60}")
+
+            if WAWA_SOURCE_COLUMN not in df.columns:
+                print(f"⚠ '{WAWA_SOURCE_COLUMN}' not found in dataframe")
+                print(f"  Filling 'wawa_group' with '{WAWA_FALLBACK_GROUP}' for all {len(df):,} rows")
+                df['wawa_group'] = WAWA_FALLBACK_GROUP
+            else:
+                codes = pd.to_numeric(df[WAWA_SOURCE_COLUMN], errors='coerce')
+                # The column is a float: only integral values are real WMO codes,
+                # so 71.5 is not code 71 and must fall back rather than round.
+                codes = codes.where(codes == codes.round())
+                codes = codes.astype('Int64')
+
+                groups = codes.map(WAWA_CODE_TO_GROUP)
+
+                missing_count = int(codes.isna().sum())
+                unmapped_count = int((codes.notna() & groups.isna()).sum())
+
+                print(f"Processing {len(df):,} rows")
+                print(f"- missing / non-integral codes → '{WAWA_FALLBACK_GROUP}': {missing_count:,}")
+                print(f"- codes outside the WMO 4680 table → '{WAWA_FALLBACK_GROUP}': {unmapped_count:,}")
+                for group in WAWA_NON_EMITTED_GROUPS:
+                    count = int((groups == group).sum())
+                    print(f"- non-emitted group '{group}' → '{WAWA_FALLBACK_GROUP}': {count:,}")
+
+                groups = groups.where(~groups.isin(WAWA_NON_EMITTED_GROUPS))
+                df['wawa_group'] = groups.fillna(WAWA_FALLBACK_GROUP).astype(str)
+
+            print(f"\nwawa_group distribution:")
+            group_counts = df['wawa_group'].value_counts()
+            for group, count in group_counts.items():
+                percentage = (count / len(df)) * 100 if len(df) else 0.0
+                print(f"  {group:<20} : {count:>8,} ({percentage:>6.2f}%)")
+            print(f"{'='*60}\n")
+
+            print(f"--- SAVING add_wawa_group_col DATA ---")
+            try:
+                saved_file_path = save_dataframe_to_parquet(
+                    folder_path=FOLDER_ADD_WAWA_GROUP_COL,
+                    month_id=month_id if month_id else self.current_file_id,
+                    df=df,
+                    file_prefix="add_wawa_group_col"
+                )
+                print(f"✓ Successfully saved wawa group data to: {saved_file_path}")
+            except Exception as save_error:
+                print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+                print("Continuing with processing, but data was not saved to folder.")
+
+            return df
+
+        except Exception as e:
+            print(f"✗ Error in add_wawa_group_col: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     def _one_hot_encode_scenario_column(self, df, scenario_col):
         """

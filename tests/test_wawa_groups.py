@@ -101,3 +101,104 @@ def test_fallback_group_is_emitted():
 
 def test_source_column_name():
     assert WAWA_SOURCE_COLUMN == 'Present weather (auto)'
+
+
+# ---------------------------------------------------------------------------
+# add_wawa_group_col
+# ---------------------------------------------------------------------------
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_float_codes_map_as_integers(mock_save, tmp_path):
+    """The source column is an Arrow double: codes arrive as 71.0, not 71."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [71.0, 61.0, 0.0, 89.0]})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert list(result["wawa_group"]) == ["snow", "rain", "clear", "hail"]
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_missing_and_invalid_codes_fold_to_clear(mock_save, tmp_path):
+    """NaN, non-numeric, out-of-range and non-integral values all fall back."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [np.nan, 150.0, -1.0, 71.5]})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert list(result["wawa_group"]) == ["clear"] * 4
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_non_emitted_groups_fold_to_clear(mock_save, tmp_path):
+    """thunder (93), blowing_snow (28), squall (18) and tornado (99) are mapped
+    but never emitted, so they must land in the fallback group."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [93.0, 28.0, 18.0, 99.0, 71.0]})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert list(result["wawa_group"]) == ["clear", "clear", "clear", "clear", "snow"]
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_missing_source_column_does_not_abort(mock_save, tmp_path):
+    """A month file without the wawa column must not cost the whole run."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({"Air temperature": [1.0, 2.0]})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert list(result["wawa_group"]) == ["clear", "clear"]
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_source_column_is_not_dropped_by_this_stage(mock_save, tmp_path):
+    """filter_columns drops it later; this stage only reads it."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [71.0], "Air temperature": [1.0]})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert WAWA_SOURCE_COLUMN in result.columns
+    assert "Air temperature" in result.columns
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_input_dataframe_is_not_mutated(mock_save, tmp_path):
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [71.0]})
+
+    pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert "wawa_group" not in df.columns
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_non_emitted_counts_are_reported(mock_save, tmp_path, capsys):
+    """The zero-occurrence claim is inherited, not re-verified, so a station
+    that does report thunder must show up in the stage output."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: [93.0, 93.0, 71.0]})
+
+    pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    out = capsys.readouterr().out
+    thunder_lines = [ln for ln in out.splitlines() if "thunder" in ln]
+    assert thunder_lines, "the non-emitted thunder count must be reported"
+    assert any("2" in ln for ln in thunder_lines), f"expected a count of 2, got {thunder_lines}"
+
+
+@patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
+def test_empty_dataframe_is_handled(mock_save, tmp_path):
+    """A month can filter down to zero rows upstream; that must not raise."""
+    pipeline = _make_pipeline(tmp_path)
+    df = pd.DataFrame({WAWA_SOURCE_COLUMN: pd.Series([], dtype=float)})
+
+    result = pipeline.add_wawa_group_col(dataframe=df, month_id="2023_01")
+
+    assert result is not None
+    assert len(result) == 0
+    assert "wawa_group" in result.columns
