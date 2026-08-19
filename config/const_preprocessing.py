@@ -76,7 +76,7 @@ CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled']
 REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
 
 # Station short code to filter data for - only exact matches will be kept
-TARGET_STATION_CODE = 'HKI'  # Example: 'OL', 'HKI', 'ROI', etc.
+TARGET_STATION_CODE = 'OL'  # Example: 'OL', 'HKI', 'ROI', etc.
 
 # Time feature selection configuration
 # True = keep sin/cos features (drop original), False = keep original features (drop sin/cos)
