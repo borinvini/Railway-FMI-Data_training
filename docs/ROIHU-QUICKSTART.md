@@ -255,7 +255,7 @@ Two directories listed → the pre-flight already passed; skip to step 7.
 
 ```bash
 cd /projappl/project_2019266/railway-fmi-code
-sbatch --array=0-1 hpc/train_scenarios.sh
+sbatch --array=0-1 hpc/train_scenarios.sh   # pre-flight: 2 cells, not the grid
 squeue --me
 ```
 
@@ -310,13 +310,23 @@ that an increased quota bills Storage Billing Units on the **quota**, not on
 what you actually store, and scratch's automatic cleaning keeps removing idle
 files regardless.
 
-All 8 scenarios × 5 models, 40 independent tasks:
+Every scenario × every model. The wrapper counts the catalogue and sizes the
+array from it, so this command does not change when scenarios are added:
 
 ```bash
 cd /projappl/project_2019266/railway-fmi-code
-sbatch hpc/train_scenarios.sh
+hpc/submit-scenarios.sh
 squeue --me
 ```
+
+It prints the arithmetic before submitting — `13 scenarios x 5 models = 65
+tasks` — so the count is checkable before the allocation is spent. Add
+`--dry-run` to see the `sbatch` line without submitting.
+
+Do not submit this one with bare `sbatch`: the `#SBATCH --array=` header is
+read from the file before the job runs, so it cannot track the catalogue, and
+an array that is too small trains the scenarios it covers and silently skips
+the rest.
 
 Step 6 is the two-cell pre-flight; re-run it whenever anything upstream changes.
 
@@ -324,10 +334,13 @@ Any single cell can be re-run on its own — the roots are independent:
 
 ```bash
 sbatch --array=16 hpc/train_scenarios.sh     # scenario 4, lightgbm
+hpc/submit-scenarios.sh --scenarios 9-13     # or a range of whole scenarios
 ```
 
-Task id decomposes as `scenario = id / 5 + 1`, `model = id % 5` over
-`(xgboost lightgbm random_forest logistic_regression naive_bayes)`.
+Task id decomposes as `scenario = id / 5 + 1`, `model = id % 5` over the list in
+`hpc/models.sh` — `(xgboost lightgbm random_forest logistic_regression
+naive_bayes)`. That file is the single definition; the order is the index, so
+appending is safe and reordering relabels every result directory.
 
 The older single-feature-set flows still work unchanged:
 

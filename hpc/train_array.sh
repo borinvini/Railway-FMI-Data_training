@@ -69,7 +69,14 @@ fi
 # runs differ, the list printed by config/const_training.py says how.
 echo "Features: $(grep -cve '^[[:space:]]*\(#.*\)\?$' "${COLUMNS_FILE}") columns, sha256 $(sha256sum "${COLUMNS_FILE}" | cut -c1-16)"
 
-MODELS=(xgboost lightgbm random_forest logistic_regression naive_bayes)
+# Shared with train_scenarios.sh and submit-scenarios.sh; order is the index.
+if [ ! -f hpc/models.sh ]; then
+    echo "ERROR: hpc/models.sh not found in $(pwd)." >&2
+    exit 1
+fi
+# shellcheck source=hpc/models.sh
+source hpc/models.sh
+
 MODEL="${MODELS[$SLURM_ARRAY_TASK_ID]}"
 
 # Per-task data root: isolates the 500-*..505-* intermediate files from the

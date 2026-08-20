@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
 #SBATCH --mem=64G
-#SBATCH --array=0-39
+#SBATCH --array=0-64
 #SBATCH --output=slurm-scenarios-%A_%a.out
 #
 # time and mem are both sized off run 580873 (2026-08-11), which lost 8 of 40
@@ -29,12 +29,18 @@
 #         3-day cap. Walltime is billed on actual use, so a task that finishes
 #         in 30 minutes costs the same as it did under the old header.
 #
-# Every feature scenario against every model: 8 x 5 = 40 independent tasks.
+# Every feature scenario against every model: N_SCENARIOS x 5 independent tasks.
 #
-# Task id decomposes scenario-major, so one scenario's five models are
-# contiguous and cancelling a tail range loses whole scenarios rather than
-# fragments of many:
-#   scenario = id / 5 + 1     0-4 -> s01, 5-9 -> s02, ... 35-39 -> s08
+# SUBMIT WITH hpc/submit-scenarios.sh, NOT sbatch. The --array header above is
+# a fallback, not the source of truth: sbatch reads it from this file's text on
+# the login node, before any of this script runs, so the job cannot size its own
+# array. The wrapper counts the catalogue and passes --array explicitly, which
+# is the only way the grid tracks a catalogue that grows. The header is kept in
+# step with config/scenarios.txt so a bare sbatch still does something sane.
+#
+# Task id decomposes scenario-major, so one scenario's models are contiguous and
+# cancelling a tail range loses whole scenarios rather than fragments of many:
+#   scenario = id / 5 + 1     0-4 -> s01, 5-9 -> s02, ... 60-64 -> s13
 #   model    = MODELS[id % 5]
 #
 # Each task re-runs the shared preparation stages (merge, filter, select, split,
@@ -83,9 +89,18 @@ fi
 
 export PATH="/projappl/${PROJECT}/railway-env/bin:$PATH"
 
-MODELS=(xgboost lightgbm random_forest logistic_regression naive_bayes)
-SCENARIO=$((SLURM_ARRAY_TASK_ID / 5 + 1))
-MODEL="${MODELS[$((SLURM_ARRAY_TASK_ID % 5))]}"
+# One definition, shared with submit-scenarios.sh and train_array.sh: the
+# wrapper sizes the array by ${#MODELS[@]} while this script indexes by
+# position, so a second copy that drifts would mislabel every result directory.
+if [ ! -f hpc/models.sh ]; then
+    echo "ERROR: hpc/models.sh not found in $(pwd)." >&2
+    exit 1
+fi
+# shellcheck source=hpc/models.sh
+source hpc/models.sh
+
+SCENARIO=$((SLURM_ARRAY_TASK_ID / ${#MODELS[@]} + 1))
+MODEL="${MODELS[$((SLURM_ARRAY_TASK_ID % ${#MODELS[@]}))]}"
 
 # The array range is fixed at 0-39 in the #SBATCH header, but the catalogue is
 # uploaded separately and could hold a different number of sections. Checking
@@ -108,8 +123,26 @@ EXPECTED=$((N_SCENARIOS * ${#MODELS[@]} - 1))
 if [ "${SCENARIO}" -gt "${N_SCENARIOS}" ]; then
     echo "ERROR: task ${SLURM_ARRAY_TASK_ID} wants scenario ${SCENARIO}, but" >&2
     echo "       ${COLUMNS_FILE} holds only ${N_SCENARIOS} scenarios." >&2
-    echo "       Resubmit with: sbatch --array=0-${EXPECTED} hpc/$(basename "${0}")" >&2
+    echo "       Resubmit with: hpc/submit-scenarios.sh" >&2
     exit 1
+fi
+
+# The opposite mistake, and the expensive one: an array too SMALL for the
+# catalogue. Nothing fails — the submitted tasks all resolve to real scenarios
+# and train correctly — the tail of the catalogue is simply never queued, which
+# is how run 581402 lost scenarios 9-13. Only a stale --array header or a
+# hand-typed range produces it, and only the count reveals it.
+#
+# A warning rather than an error, and only from the array's first task: re-running
+# one cell with `sbatch --array=17` is a documented workflow above, and it
+# submits an array of one that would trip any hard check. Slurm sets
+# SLURM_ARRAY_TASK_COUNT to the number of tasks in THIS submission.
+if [ "${SLURM_ARRAY_TASK_ID}" -eq "${SLURM_ARRAY_TASK_MIN:-0}" ]    && [ "${SLURM_ARRAY_TASK_COUNT:-0}" -lt $((EXPECTED + 1)) ]    && [ "${SLURM_ARRAY_TASK_MIN:-0}" -eq 0 ]; then
+    echo "WARNING: this array holds ${SLURM_ARRAY_TASK_COUNT} tasks, but" >&2
+    echo "         ${COLUMNS_FILE} needs $((EXPECTED + 1))"          "(${N_SCENARIOS} scenarios x ${#MODELS[@]} models)." >&2
+    echo "         Scenarios $((SLURM_ARRAY_TASK_COUNT / ${#MODELS[@]} + 1))-${N_SCENARIOS}"          "will NOT be trained by this job." >&2
+    echo "         Submit with hpc/submit-scenarios.sh to size the array from" >&2
+    echo "         the catalogue instead of the --array header." >&2
 fi
 
 SLUG="$(printf "s%02d" "${SCENARIO}")"

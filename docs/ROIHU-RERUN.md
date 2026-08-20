@@ -49,7 +49,8 @@ cd /projappl/project_2019266/railway-fmi-code
 git pull
 rm -rf /scratch/project_2019266/railway-fmi/run_*
 rm -f slurm-train-*.out
-sbatch hpc/train_scenarios.sh    # all 8 scenarios x 5 models
+hpc/submit-scenarios.sh          # every scenario x every model, array sized
+                                 # from the catalogue (add --dry-run to check)
 sbatch hpc/train_array.sh        # or: single feature set, 5 models
 squeue --me
 ```
