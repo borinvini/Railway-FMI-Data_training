@@ -62,6 +62,7 @@ from config.const import (
 )
 
 from config.const_preprocessing import (
+    GROUP_KEY_COLUMN,
     PREPROCESSED_OUTPUT_FOLDER,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DEFAULT_TARGET_FEATURE,
@@ -1238,6 +1239,18 @@ class TrainingPipeline:
                 "processed_files": 0
             }
 
+    def apply_column_selection(self, df, columns):
+        """Return `df` restricted to `columns`, plus the grouping key.
+
+        The key is appended rather than required in `columns` because no scenario
+        lists it: it is not a feature, and adding it to all 13 catalogues would
+        invite someone to train on the date. split_dataset drops it after grouping.
+        """
+        keep = list(columns)
+        if GROUP_KEY_COLUMN in df.columns and GROUP_KEY_COLUMN not in keep:
+            keep.append(GROUP_KEY_COLUMN)
+        return df[keep]
+
     def select_training_cols(self, data=None, original_file_path=None):
         """
         Select training columns interactively by displaying all columns and allowing 
@@ -1441,7 +1454,7 @@ class TrainingPipeline:
             print(f"")
             
             # Create filtered dataframe
-            df_filtered = df[selected_columns].copy()
+            df_filtered = self.apply_column_selection(df, selected_columns).copy()
             final_shape = df_filtered.shape
             
             print(f"    📏 DATASET TRANSFORMATION:")
