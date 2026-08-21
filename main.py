@@ -18,6 +18,7 @@ MODEL_STAGES = {
     "random_forest": "train_random_forest_with_randomized_search_cv",
     "logistic_regression": "train_logistic_regression_with_randomized_search_cv",
     "naive_bayes": "train_naive_bayes_with_randomized_search_cv",
+    "fcll_net": "train_fcll_net",
 }
 
 # Data-preparation stages every trainer depends on, so that one array task is
@@ -31,6 +32,13 @@ PREREQUISITE_STAGES = (
     "balance_classes",
     "scale_weather_features",
 )
+
+# FCLL-Net reads raw event data, not the merged tabular parquet, and must not
+# be resampled: balance_classes would invent rows inside real train journeys.
+# It uses class weights instead (see src/fcll_trainer.compute_pos_weight).
+FCLL_PREREQUISITE_STAGES = ("select_training_cols", "build_fcll_sequences")
+
+MODEL_PREREQUISITES = {"fcll_net": FCLL_PREREQUISITE_STAGES}
 
 
 def parse_args(argv=None):
@@ -178,7 +186,8 @@ def build_state_machine(args, default):
         return {stage: stage in requested for stage in default}
 
     if args.model:
-        wanted = set(PREREQUISITE_STAGES) | {MODEL_STAGES[args.model]}
+        prerequisites = MODEL_PREREQUISITES.get(args.model, PREREQUISITE_STAGES)
+        wanted = set(prerequisites) | {MODEL_STAGES[args.model]}
         return {stage: stage in wanted for stage in default}
 
     return default

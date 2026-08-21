@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
 #SBATCH --mem=64G
-#SBATCH --array=0-64
+#SBATCH --array=0-77
 #SBATCH --output=slurm-scenarios-%A_%a.out
 #
 # time and mem are both sized off run 580873 (2026-08-11), which lost 8 of 40
@@ -29,7 +29,7 @@
 #         3-day cap. Walltime is billed on actual use, so a task that finishes
 #         in 30 minutes costs the same as it did under the old header.
 #
-# Every feature scenario against every model: N_SCENARIOS x 5 independent tasks.
+# Every feature scenario against every model: N_SCENARIOS x ${#MODELS[@]} independent tasks.
 #
 # SUBMIT WITH hpc/submit-scenarios.sh, NOT sbatch. The --array header above is
 # a fallback, not the source of truth: sbatch reads it from this file's text on

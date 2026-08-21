@@ -22,7 +22,17 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "hpc" / "submit-scenarios.sh"
 
-MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes"]
+MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes", "fcll_net"]
+
+# The real catalogue's size, and the task range it implies. Derived rather than
+# written out, so adding a trainer to hpc/models.sh needs no edit here — the
+# same reason submit-scenarios.sh computes the array instead of hardcoding it.
+N_SCENARIOS = 13
+
+
+def _array(n_scenarios=N_SCENARIOS, first_scenario=1):
+    start = (first_scenario - 1) * len(MODELS)
+    return f"--array={start}-{n_scenarios * len(MODELS) - 1}"
 
 
 def _resolve_bash():
@@ -100,44 +110,39 @@ def test_the_real_catalogue_sizes_the_array_to_every_scenario():
     past the hardcoded header must produce an array covering all of it."""
     result = _run("--dry-run")
     assert result.returncode == 0, result.stderr
-    assert "--array=0-64" in result.stdout, result.stdout
+    assert _array() in result.stdout, result.stdout
 
 
 def test_the_task_count_is_scenarios_times_models():
     result = _run("--dry-run")
-    assert "13 scenarios" in result.stdout
+    assert f"{N_SCENARIOS} scenarios" in result.stdout
     assert f"{len(MODELS)} models" in result.stdout
-    assert "65 tasks" in result.stdout
+    assert f"{N_SCENARIOS * len(MODELS)} tasks" in result.stdout
 
 
-@pytest.mark.parametrize("n_scenarios,expected", [
-    (1, "--array=0-4"),
-    (8, "--array=0-39"),
-    (13, "--array=0-64"),
-    (20, "--array=0-99"),
-])
-def test_the_array_tracks_the_catalogue_size(tmp_path, n_scenarios, expected):
+@pytest.mark.parametrize("n_scenarios", [1, 8, 13, 20])
+def test_the_array_tracks_the_catalogue_size(tmp_path, n_scenarios):
     """Any catalogue size, not just today's — the point is that no one has to
     edit a header again."""
     catalogue = _catalogue(tmp_path / "scen.txt", n_scenarios)
     result = _run("--dry-run", columns_file=catalogue)
     assert result.returncode == 0, result.stderr
-    assert expected in result.stdout, result.stdout
+    assert _array(n_scenarios) in result.stdout, result.stdout
 
 
-@pytest.mark.parametrize("selector,expected", [
-    ("9-13", "--array=40-64"),
-    ("9", "--array=40-44"),
-    ("1", "--array=0-4"),
-    ("1-8", "--array=0-39"),
-    ("13", "--array=60-64"),
+@pytest.mark.parametrize("selector,first,last", [
+    ("9-13", 9, 13),
+    ("9", 9, 9),
+    ("1", 1, 1),
+    ("1-8", 1, 8),
+    ("13", 13, 13),
 ])
-def test_a_scenario_range_maps_to_the_matching_task_range(selector, expected):
+def test_a_scenario_range_maps_to_the_matching_task_range(selector, first, last):
     """scenario is 1-based and scenario-major: first id = (n-1)*models,
     last id = m*models - 1. Off by one here re-runs the wrong feature set."""
     result = _run("--dry-run", "--scenarios", selector)
     assert result.returncode == 0, result.stderr
-    assert expected in result.stdout, result.stdout
+    assert _array(last, first_scenario=first) in result.stdout, result.stdout
 
 
 def test_a_scenario_beyond_the_catalogue_is_refused(tmp_path):
@@ -193,7 +198,7 @@ def test_a_real_submission_passes_the_computed_array_to_sbatch(sbatch_stub):
     result = _run("--scenarios", "9-13", stub_sbatch=bindir)
     assert result.returncode == 0, result.stderr
     argv = log.read_text(encoding="utf-8").split("\n")
-    assert "--array=40-64" in argv, argv
+    assert _array(13, first_scenario=9) in argv, argv
     assert any(a.endswith("hpc/train_scenarios.sh") for a in argv), argv
 
 
@@ -212,7 +217,7 @@ def test_it_works_from_any_directory(tmp_path, sbatch_stub):
     bindir, log = sbatch_stub
     result = _run("--dry-run", cwd=tmp_path, stub_sbatch=bindir)
     assert result.returncode == 0, result.stderr
-    assert "--array=0-64" in result.stdout
+    assert _array() in result.stdout
 
 
 def test_the_model_list_comes_from_the_shared_file():

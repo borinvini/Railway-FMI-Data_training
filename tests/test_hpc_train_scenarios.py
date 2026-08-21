@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "hpc" / "train_scenarios.sh"
 SCRIPT = SCRIPT_PATH.read_text(encoding="utf-8")
 
-MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes"]
+MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes", "fcll_net"]
 
 # Mirrors config/columns_file.py's banner rule, so the header test counts
 # sections the same way the job will.
@@ -88,17 +88,20 @@ def test_the_scenario_index_is_one_based_and_scenario_major():
     assert 'MODEL="${MODELS[$((SLURM_ARRAY_TASK_ID % ${#MODELS[@]}))]}"' in SCRIPT
 
 
-@pytest.mark.parametrize("task_id,expected_scenario,expected_model", [
-    (0, 1, "xgboost"),
-    (1, 1, "lightgbm"),
-    (4, 1, "naive_bayes"),
-    (5, 2, "xgboost"),
-    (16, 4, "lightgbm"),
-    (35, 8, "xgboost"),
-    (39, 8, "naive_bayes"),
+# (scenario, model index) rather than raw task ids: the id is scenario-major and
+# depends on len(MODELS), so literals here would have to be recomputed by hand
+# every time a trainer is appended to hpc/models.sh.
+@pytest.mark.parametrize("expected_scenario,model_index", [
+    (1, 0),
+    (1, 1),
+    (1, len(MODELS) - 1),
+    (2, 0),
+    (4, 1),
+    (8, 0),
+    (8, len(MODELS) - 1),
 ])
 def test_the_shells_own_arithmetic_produces_the_documented_cell(
-    task_id, expected_scenario, expected_model
+    expected_scenario, model_index
 ):
     """Runs the script's actual assignment lines under bash rather than
     asserting they appear as text.
@@ -107,6 +110,9 @@ def test_the_shells_own_arithmetic_produces_the_documented_cell(
     SCENARIO and MODEL — a mutation that trains all 40 cells wrong while every
     static test stays green. This executes them, so it cannot.
     """
+    task_id = (expected_scenario - 1) * len(MODELS) + model_index
+    expected_model = MODELS[model_index]
+
     lines = [line.strip() for line in SCRIPT.splitlines()]
     shared = (REPO_ROOT / "hpc" / "models.sh").read_text(encoding="utf-8")
     models_line = next(
@@ -128,7 +134,7 @@ def test_the_shells_own_arithmetic_produces_the_documented_cell(
 
 
 @pytest.mark.parametrize("task_id,task_min,task_count,should_warn,label", [
-    (0, 0, 65, False, "the full grid warns about nothing"),
+    (0, 0, 13 * len(MODELS), False, "the full grid warns about nothing"),
     (0, 0, 40, True, "a stale --array=0-39 against 13 scenarios is the bug"),
     (40, 40, 25, False, "a deliberate tail subset is not a mistake"),
     (17, 17, 1, False, "re-running one cell must stay usable"),
@@ -152,7 +158,7 @@ def test_the_undersized_array_warning_fires_only_when_it_should(
         f"SLURM_ARRAY_TASK_ID={task_id}",
         f"SLURM_ARRAY_TASK_MIN={task_min}",
         f"SLURM_ARRAY_TASK_COUNT={task_count}",
-        "EXPECTED=64",
+        f"EXPECTED={13 * len(MODELS) - 1}",
         "N_SCENARIOS=13",
         "COLUMNS_FILE=config/scenarios.txt",
         f"MODELS=({' '.join(MODELS)})",
@@ -165,8 +171,9 @@ def test_the_undersized_array_warning_fires_only_when_it_should(
     assert ("WARNING" in result.stderr) is should_warn, f"{label}: {result.stderr}"
     if should_warn:
         # Names the scenarios actually lost, not just that something is wrong:
-        # run 581402 silently dropped exactly these five.
-        assert "Scenarios 9-13" in result.stderr, result.stderr
+        # run 581402 silently dropped exactly the tail this computes.
+        first_lost = task_count // len(MODELS) + 1
+        assert f"Scenarios {first_lost}-13" in result.stderr, result.stderr
 
 
 def test_the_run_root_is_slugged_and_zero_padded():

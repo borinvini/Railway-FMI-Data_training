@@ -452,3 +452,34 @@ def test_list_scenarios_prints_the_catalogue_and_exits_zero(scenario_file, capsy
 def test_list_scenarios_without_columns_file_is_rejected():
     with pytest.raises(SystemExit):
         main_module.parse_args(["--list-scenarios"])
+
+
+def test_fcll_net_is_a_valid_model():
+    from main import MODEL_STAGES
+    assert MODEL_STAGES["fcll_net"] == "train_fcll_net"
+
+
+def test_fcll_net_requires_sequences_and_skips_balancing():
+    """balance_classes resamples rows; on sequence data it would synthesise
+    operating history that never happened."""
+    from main import parse_args, build_state_machine
+    from config.const_training import TRAINING_STATE_MACHINE
+
+    args = parse_args(["--model", "fcll_net"])
+    sm = build_state_machine(args, TRAINING_STATE_MACHINE)
+    assert sm["build_fcll_sequences"] is True
+    assert sm["train_fcll_net"] is True
+    assert sm["balance_classes"] is False
+
+
+def test_the_tabular_models_do_not_build_sequences():
+    """Sequence building is expensive; the other five have no use for it."""
+    from main import parse_args, build_state_machine
+    from config.const_training import TRAINING_STATE_MACHINE
+
+    for model in ("xgboost", "lightgbm", "random_forest",
+                  "logistic_regression", "naive_bayes"):
+        sm = build_state_machine(parse_args(["--model", model]), TRAINING_STATE_MACHINE)
+        assert sm["build_fcll_sequences"] is False, model
+        assert sm["balance_classes"] is True, model
+        assert sm["train_fcll_net"] is False, model
