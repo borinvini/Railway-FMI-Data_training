@@ -164,8 +164,19 @@ at the end:
 hpc/stage_data.sh
 ```
 
-The 2.6 GB `data/input/` is **not** needed: it feeds preprocessing only, which we
-run locally.
+That stages the preprocessed set only. **`fcll_net` additionally needs the raw
+`data/input/` (~2.6 GB)**, because its sequences — the target train's previous
+stations, and the trains ahead of it — exist only before
+`filter_by_target_station` collapses the data to one station. Stage it once:
+
+```bash
+hpc/stage_data.sh --raw
+```
+
+The flag is opt-in because it turns a 26 MB re-stage into a 2.6 GB one, and the
+raw parquet changes far less often than the preprocessed set. Omit it on
+subsequent runs. Without it every `fcll_net` cell fails after queueing with
+`no input parquet in /scratch/.../data/input`.
 
 ## 6. Smoke test
 

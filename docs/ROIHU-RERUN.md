@@ -12,6 +12,7 @@ and reproduces last week's numbers:
 | `features.txt`, `scenarios.txt` | `hpc/push-features.sh` | scp straight into the clone |
 | Anything under `src/`, `config/`, `hpc/` | commit, push, **then `git pull` on Roihu** | GitHub |
 | Re-preprocessed parquet in `101-preprocessed_training_ready` | `hpc/stage_data.sh` | scp into `/scratch` |
+| Raw `data/input` parquet, for `fcll_net` only | `hpc/stage_data.sh --raw` | scp into `/scratch` (2.6 GB, one-off) |
 
 Git carries none of the data — `*.parquet` is gitignored, so a `git pull` on
 Roihu will never bring new training data with it no matter how much you commit.

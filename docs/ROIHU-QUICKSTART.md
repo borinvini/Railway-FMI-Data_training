@@ -127,7 +127,7 @@ ls -1 /scratch/project_2019266/railway-fmi/data/output/101-preprocessed_training
 
 ```bash
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
-bash hpc/stage_data.sh
+bash hpc/stage_data.sh          # add --raw the first time, for fcll_net
 ```
 
 ---

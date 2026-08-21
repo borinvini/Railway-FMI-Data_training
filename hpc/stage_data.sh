@@ -1,18 +1,53 @@
 #!/bin/bash
-# Push the preprocessed training data to Roihu scratch over SSH.
+# Push training data to Roihu scratch over SSH.
 # Run on your LOCAL machine, from the repo root. Not a batch job, and not run
 # on Roihu itself: .gitignore excludes *.parquet, so a fresh clone on Roihu has
-# no data/output/101-preprocessed_training_ready/ to copy from.
+# no data/ to copy from.
 #
-# Only data/output/101-preprocessed_training_ready is copied (~25 MB, 96 files):
-# training reads exclusively from there (see training_pipeline.merge_data_files),
-# and data/input (2.6 GB of raw parquet) is used only by preprocessing, which we
-# do not run on the cluster.
+# Two payloads, because they differ by a factor of a hundred:
+#
+#   default        data/output/101-preprocessed_training_ready  (~26 MB, 96 files)
+#                  What the five tabular trainers read. Staged every time.
+#
+#   --raw          data/input                                   (~2.6 GB, 96 files)
+#                  What fcll_net reads. Its sequences — the target train's
+#                  previous stations, and the trains ahead of it — exist only
+#                  before filter_by_target_station collapses the data to one
+#                  station, so the preprocessed file cannot serve it.
+#
+# The raw set is opt-in rather than automatic: it changes a 26 MB re-stage into
+# a 2.6 GB one, and it only needs re-sending when the raw parquet itself
+# changes, which is far rarer than re-preprocessing. Stage it once, then omit
+# the flag on subsequent runs.
 set -euo pipefail
 
 PROJECT="project_2019266"
 REMOTE_USER="vpozzobo"
 REMOTE_HOST="roihu-cpu.csc.fi"
+
+STAGE_RAW=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --raw)
+            STAGE_RAW=1
+            ;;
+        -h|--help)
+            echo "Usage: hpc/stage_data.sh [--raw]"
+            echo "  --raw   also stage data/input (~2.6 GB), required by fcll_net"
+            exit 0
+            ;;
+        *)
+            # Refused, never ignored: a silently dropped --raw means the user
+            # believes 2.6 GB went up, and the fcll_net cells die on the cluster
+            # hours later with 'no input parquet'.
+            echo "ERROR: Unknown option: $1" >&2
+            echo "Usage: hpc/stage_data.sh [--raw]" >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
 if [ "${PROJECT}" = "<project>" ] || [ "${REMOTE_USER}" = "<username>" ]; then
     echo "ERROR: edit this script and set PROJECT (see MyCSC) and REMOTE_USER." >&2
     exit 1
@@ -20,27 +55,46 @@ fi
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 SCRATCH="/scratch/${PROJECT}/railway-fmi"
 
-ssh "${REMOTE}" "mkdir -p '${SCRATCH}/data/output/101-preprocessed_training_ready' '${SCRATCH}/data/output/log'"
+SRC_PREPROCESSED="data/output/101-preprocessed_training_ready"
+SRC_RAW="data/input"
 
-SRC="data/output/101-preprocessed_training_ready"
-DEST="${REMOTE}:${SCRATCH}/data/output/101-preprocessed_training_ready/"
+# transfer <local-dir> <remote-dir> <label>
+# rsync when available: at 2.6 GB resumability stops being a nicety, since scp
+# restarts from zero on a dropped connection. Git Bash on Windows ships no
+# rsync, hence the fallback.
+transfer() {
+    local src="$1" dest_dir="$2" label="$3"
+    if [ ! -d "${src}" ]; then
+        echo "ERROR: ${src} not found. Run this from the repository root on the machine" >&2
+        echo "       that holds the data (your local machine, not Roihu)." >&2
+        exit 1
+    fi
+    echo "Staging ${label}: ${src} ($(du -sh "${src}" 2>/dev/null | cut -f1))"
+    ssh "${REMOTE}" "mkdir -p '${dest_dir}'"
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -av --progress "${src}/" "${REMOTE}:${dest_dir}/"
+    else
+        echo "rsync not found; falling back to scp (no resume if the link drops)."
+        scp -r "${src}/." "${REMOTE}:${dest_dir}/"
+    fi
+}
 
-if [ ! -d "${SRC}" ]; then
-    echo "ERROR: ${SRC} not found. Run this from the repository root on the machine" >&2
-    echo "       that holds the preprocessed data (your local machine, not Roihu)." >&2
-    exit 1
-fi
+ssh "${REMOTE}" "mkdir -p '${SCRATCH}/data/output/log'"
 
-# rsync is absent from Git Bash on Windows, so fall back to scp. The payload is
-# ~25 MB across 96 files, so rsync's delta transfer buys us nothing here — the
-# only real loss is resumability, which barely matters at this size.
-if command -v rsync >/dev/null 2>&1; then
-    echo "Transferring with rsync..."
-    rsync -av --progress "${SRC}/" "${DEST}"
+transfer "${SRC_PREPROCESSED}" "${SCRATCH}/${SRC_PREPROCESSED}" "preprocessed training data"
+
+if [ "${STAGE_RAW}" -eq 1 ]; then
+    transfer "${SRC_RAW}" "${SCRATCH}/${SRC_RAW}" "raw event data (fcll_net)"
 else
-    echo "rsync not found; falling back to scp (fine for ~25 MB)."
-    scp -r "${SRC}/." "${DEST}"
+    echo
+    echo "NOTE: data/input was NOT staged (default). fcll_net cannot run without"
+    echo "      it — re-run with --raw if you are training fcll_net on the grid."
 fi
 
+echo
 echo "Staged to ${REMOTE}:${SCRATCH}"
-ssh "${REMOTE}" "echo \"Files: \$(ls -1 '${SCRATCH}/data/output/101-preprocessed_training_ready' | wc -l) (expected 96)\"; du -sh '${SCRATCH}'"
+ssh "${REMOTE}" "
+    echo \"Preprocessed: \$(ls -1 '${SCRATCH}/${SRC_PREPROCESSED}' 2>/dev/null | wc -l) files (expected 96)\"
+    echo \"Raw input:    \$(ls -1 '${SCRATCH}/${SRC_RAW}' 2>/dev/null | wc -l) files (expected 96 if staged with --raw)\"
+    du -sh '${SCRATCH}'
+"
