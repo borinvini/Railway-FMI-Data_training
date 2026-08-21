@@ -319,7 +319,7 @@ hpc/submit-scenarios.sh
 squeue --me
 ```
 
-It prints the arithmetic before submitting — `13 scenarios x 5 models = 65
+It prints the arithmetic before submitting — `13 scenarios x 6 models = 78
 tasks` — so the count is checkable before the allocation is spent. Add
 `--dry-run` to see the `sbatch` line without submitting.
 
@@ -337,16 +337,41 @@ sbatch --array=16 hpc/train_scenarios.sh     # scenario 4, lightgbm
 hpc/submit-scenarios.sh --scenarios 9-13     # or a range of whole scenarios
 ```
 
-Task id decomposes as `scenario = id / 5 + 1`, `model = id % 5` over the list in
+Task id decomposes as `scenario = id / 6 + 1`, `model = id % 6` over the list in
 `hpc/models.sh` — `(xgboost lightgbm random_forest logistic_regression
-naive_bayes)`. That file is the single definition; the order is the index, so
-appending is safe and reordering relabels every result directory.
+naive_bayes fcll_net)`. That file is the single definition; the order is the
+index, so appending is safe and reordering relabels every result directory.
+
+### `fcll_net` is not like the other five
+
+`fcll_net` is a sequence model, and it takes a different route through the
+pipeline:
+
+- **It reads `data/input/` directly**, not the training-ready parquet. The
+  sequences it needs — the target train's previous stations, and the trains
+  ahead of it — no longer exist once `filter_by_target_station` has collapsed
+  the data to one station. Its prerequisite stages are
+  `select_training_cols` and `build_fcll_sequences` (stage 506) only.
+- **It is never class-balanced.** `balance_classes` resamples rows; on
+  sequence data that would synthesise operating history that never happened.
+  It uses a positive class weight instead.
+- **The container needs a Tykky rebuild first.** `pytorch-cpu` was added to
+  `environment-linux.yml`; an image built before that has no `torch` and the
+  job will die on `ImportError` after queueing. See the "Adding a dependency
+  to an existing container" section of `docs/CSC-SETUP.md`. This takes 10-20
+  minutes and must be done before the first `fcll_net` cell runs.
+- **Stage 506 takes roughly 17 seconds per month**, so about 25-30 minutes
+  over 96 months, and it streams one month at a time by design — it never
+  concatenates the full input.
+
+Its results land in `data/output/1005-fcll_net/` (`metrics.json`,
+`fcll_net.pt`, `val_loss_history.json`) rather than a `100[0-4]-*` directory.
 
 The older single-feature-set flows still work unchanged:
 
 ```bash
-sbatch hpc/train_array.sh    # 5 models, config/features.txt
-sbatch hpc/train_all.sh      # 5 models sequentially, plus the SHAP analysis
+sbatch hpc/train_array.sh    # 6 models, config/features.txt
+sbatch hpc/train_all.sh      # 5 tabular models sequentially, plus the SHAP analysis
 ```
 
 ---
@@ -382,9 +407,10 @@ results/
       ...
 ```
 
-One prep set per scenario, not per model: all five models in a scenario re-run
-500-505 over identical input, so the fetch takes them from that scenario's
-`run_s??_xgboost` root alone. Across scenarios they do differ from
+One prep set per scenario, not per model: all five tabular models in a scenario
+re-run 500-505 over identical input, so the fetch takes them from that
+scenario's `run_s??_xgboost` root alone. `fcll_net` does not share this prep —
+it runs `select_training_cols` and stage 506 instead. Across scenarios they do differ from
 `502-select_training_cols` onward, which is why it is eight sets and not one.
 
 The prep stages still dominate the transfer — `500-merge_data_files` is the full

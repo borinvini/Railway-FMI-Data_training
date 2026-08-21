@@ -51,7 +51,7 @@ rm -rf /scratch/project_2019266/railway-fmi/run_*
 rm -f slurm-train-*.out
 hpc/submit-scenarios.sh          # every scenario x every model, array sized
                                  # from the catalogue (add --dry-run to check)
-sbatch hpc/train_array.sh        # or: single feature set, 5 models
+sbatch hpc/train_array.sh        # or: single feature set, 6 models
 squeue --me
 ```
 
@@ -337,6 +337,25 @@ preprocessed — re-staging overwrites by filename, so a stale set counts exactl
 the same. If you changed anything about preprocessing, staging happens back in
 step 2 and is not something this step can substitute for.
 
+### Archive `results/` before the first day-grouped run
+
+**One-off, but do not skip it.** `split_dataset` now partitions by operating
+day rather than by random row, so every metric already sitting in `results/`
+was measured on a different — and leakier — test set. Mixing the two in one
+folder produces a comparison that means nothing, and the fetch overwrites by
+name, so the old numbers vanish without a trace.
+
+```bash
+# [LOCAL], from the repo root
+mv results "results-pre-day-split-$(date +%Y%m%d)"
+```
+
+Expect the new numbers to be **lower** than the archived ones. A random row
+split puts trains from the same day, sharing the same weather and the same
+knock-on delays, on both sides of the split; removing that leak removes an
+advantage the old figures had. The drop is the leak being corrected, not a
+regression.
+
 ---
 
 ## 5. [ROIHU] Optional smoke test
@@ -421,10 +440,10 @@ means raise `--mem`, not re-run as-is. Likewise `TIMEOUT` against the 24h
 walltime means raise `--time` — on run 580873 that state only ever hit
 logistic_regression, whose cost grows with the width of the feature set.
 
-Map a task id back to what it was training: `scenario = id / 5 + 1`,
-`model = id % 5` over
-`(xgboost lightgbm random_forest logistic_regression naive_bayes)`. Task 9 is
-scenario 2, naive_bayes.
+Map a task id back to what it was training: `scenario = id / 6 + 1`,
+`model = id % 6` over
+`(xgboost lightgbm random_forest logistic_regression naive_bayes fcll_net)`.
+Task 9 is scenario 2, random_forest.
 
 **Then confirm the output really exists** — a task can exit 0 and still leave an
 empty directory:
@@ -507,14 +526,20 @@ and Ctrl-C if it is more than you meant to pull.
 ```bash
 ls -d results/*/ | wc -l                       # 8   — one folder per scenario
 ls -d results/*/100[0-4]-*/ | wc -l            # 40  — five model dirs per scenario
+ls -d results/*/1005-fcll_net/ | wc -l         # 8   — one per scenario
 ls -d results/*/50[0-5]-*/ | wc -l             # 48  — one prep set per scenario
 find results -type d -empty                    # nothing
 find results -name '*_best_model_selected.pkl' | wc -l   # 40
+find results -name 'fcll_net.pt' | wc -l                 # 8
 ```
 
+`fcll_net` writes `metrics.json`, `fcll_net.pt` and `val_loss_history.json`
+rather than a pickled search result, so it is counted separately above.
+
 Folders are named from the catalogue, e.g. `results/2 - ONLY OPERACIONAL FEATURES/`.
-Each holds one flat set of eleven directories — the six stages that scenario was
-prepared from, and the five models trained out of them:
+Each holds one flat set of twelve directories — the six stages that scenario was
+prepared from, the five tabular models trained out of them, and `fcll_net`,
+which builds its own input from the raw data instead:
 
 ```
 results/2 - ONLY OPERACIONAL FEATURES/
@@ -528,11 +553,13 @@ results/2 - ONLY OPERACIONAL FEATURES/
 ├── 1001-lightgbm_randomized_search/
 ├── 1002-random_forest_randomized_search/
 ├── 1003-regularized_regression/
-└── 1004-naive_bayes/
+├── 1004-naive_bayes/
+├── 506-build_fcll_sequences/             ← fcll_net only, from data/input/
+└── 1005-fcll_net/
 ```
 
-**One prep set per scenario, not per model.** All five models in a scenario
-re-run stages 500-505 from identical code over identical input, so the fetch
+**One prep set per scenario, not per model.** All five tabular models in a
+scenario re-run stages 500-505 from identical code over identical input, so the fetch
 takes them from that scenario's `run_s??_xgboost` root alone — the other four
 copies would be the same bytes and five times the transfer. That is also what
 makes the flat layout safe: only one root per scenario carries a
