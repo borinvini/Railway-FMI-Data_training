@@ -203,3 +203,114 @@ def test_holdout_missing_year_column_falls_back_gracefully(tmp_path):
     assert result["success"] is True
     assert result["total_holdout_rows"] == 0
     assert not (out / "merged_data_holdout.parquet").exists()
+
+
+# --- Day-grouped split ------------------------------------------------------
+
+from config.const_preprocessing import GROUP_KEY_COLUMN
+
+
+def test_no_operating_day_appears_in_two_splits():
+    """The whole point. One day's trains share weather, disruptions and
+    knock-on delays; splitting them across train and test leaks all three."""
+    import numpy as np
+
+    days = [f"2018-01-{d:02d}" for d in range(1, 29)]
+    df = pd.DataFrame({
+        "trainDelayed": np.resize([0, 1], 28 * 10),
+        "Air temperature": np.arange(280, dtype=float),
+        GROUP_KEY_COLUMN: np.repeat(days, 10),
+    })
+    pipeline = TrainingPipeline()
+    train, val, test = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
+
+    train_days = set(train[GROUP_KEY_COLUMN])
+    val_days = set(val[GROUP_KEY_COLUMN])
+    test_days = set(test[GROUP_KEY_COLUMN])
+    assert train_days & val_days == set()
+    assert train_days & test_days == set()
+    assert val_days & test_days == set()
+    assert train_days | val_days | test_days == set(days)
+
+
+def test_the_split_is_deterministic():
+    """Two runs, same seed, same days — or no result is reproducible."""
+    import numpy as np
+
+    days = [f"2018-01-{d:02d}" for d in range(1, 29)]
+    df = pd.DataFrame({
+        "trainDelayed": np.resize([0, 1], 280),
+        GROUP_KEY_COLUMN: np.repeat(days, 10),
+    })
+    pipeline = TrainingPipeline()
+    first = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
+    second = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
+    for a, b in zip(first, second):
+        assert set(a[GROUP_KEY_COLUMN]) == set(b[GROUP_KEY_COLUMN])
+
+
+def test_the_split_fractions_are_55_20_25():
+    import numpy as np
+    from config.const_training import TRAIN_FRACTION, VAL_FRACTION, TEST_FRACTION
+
+    assert TRAIN_FRACTION + VAL_FRACTION + TEST_FRACTION == 1.0
+    days = [f"2018-{m:02d}-{d:02d}" for m in range(1, 5) for d in range(1, 26)]
+    df = pd.DataFrame({
+        "trainDelayed": np.resize([0, 1], len(days) * 4),
+        GROUP_KEY_COLUMN: np.repeat(days, 4),
+    })
+    pipeline = TrainingPipeline()
+    train, val, test = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
+    n = len(days)
+    assert abs(len(set(train[GROUP_KEY_COLUMN])) / n - TRAIN_FRACTION) < 0.05
+    assert abs(len(set(test[GROUP_KEY_COLUMN])) / n - TEST_FRACTION) < 0.05
+
+
+def test_the_group_key_is_dropped_from_written_output(tmp_path):
+    """Leaving the date in the feature matrix would let a tree memorise
+    specific bad-weather days."""
+    import numpy as np
+
+    days = [f"2018-01-{d:02d}" for d in range(1, 29)]
+    df = pd.DataFrame({
+        "trainDelayed": np.resize([0, 1], 280),
+        "Air temperature": np.arange(280, dtype=float),
+        GROUP_KEY_COLUMN: np.repeat(days, 10),
+    })
+    pipeline = TrainingPipeline()
+    result = pipeline.write_splits(df, output_dir=str(tmp_path), identifier="test")
+    assert result["success"]
+    written = pd.read_parquet(tmp_path / "merged_data_test_train.parquet")
+    assert GROUP_KEY_COLUMN not in written.columns
+
+
+def test_split_dataset_writes_three_grouped_files_end_to_end(tmp_path):
+    """Exercises the whole stage on data that carries the grouping key — the
+    other split_dataset tests predate it and still cover the fallback path."""
+    import numpy as np
+    from config.const_preprocessing import CLASSIFICATION_PROBLEM
+
+    pipeline = _make_pipeline(tmp_path)
+    src, out = _make_split_dirs(tmp_path)
+
+    target = CLASSIFICATION_PROBLEM[0]
+    days = [f"2018-01-{d:02d}" for d in range(1, 29)]
+    pd.DataFrame({
+        target: np.resize([True, False], 280),
+        "feature_a": np.arange(280, dtype=float),
+        GROUP_KEY_COLUMN: np.repeat(days, 10),
+    }).to_parquet(src / "merged_data.parquet", index=False)
+
+    with patch("src.training_pipeline.HOLDOUT_LAST_YEAR", False):
+        result = pipeline.split_dataset(data_dir=str(src), output_dir=str(out),
+                                        stratify_column=target)
+
+    assert result["success"] is True
+    detail = result["split_details"][0]
+    assert detail["grouped_by"] == GROUP_KEY_COLUMN
+    assert detail["train_rows"] + detail["val_rows"] + detail["test_rows"] == 280
+
+    frames = {n: pd.read_parquet(out / f"merged_data_{n}.parquet")
+              for n in ("train", "val", "test")}
+    for frame in frames.values():
+        assert GROUP_KEY_COLUMN not in frame.columns

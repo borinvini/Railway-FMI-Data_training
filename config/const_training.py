@@ -226,6 +226,13 @@ TOP_FEATURES_COUNT = 5
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
+# Day-grouped split fractions, matching Huang et al. (2020) section 4.1.
+# TEST_SIZE above is retained only for callers that pass an explicit
+# test_size; the grouped path uses these three.
+TRAIN_FRACTION = 0.55
+VAL_FRACTION = 0.20
+TEST_FRACTION = 0.25
+
 # Out-of-time hold-out: reserve the most recent calendar year as a final evaluation set
 # that is never trained or tuned on, so reported metrics reflect predicting a genuinely
 # future year rather than a random-row split of the same years (which leaks temporally

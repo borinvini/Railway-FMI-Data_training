@@ -95,6 +95,9 @@ from config.const_training import (
     SHAP_CORRELATION_TOP_N_FEATURES,
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
     TEST_SIZE,
+    TRAIN_FRACTION,
+    VAL_FRACTION,
+    TEST_FRACTION,
     RANDOM_STATE,
     HOLDOUT_LAST_YEAR,
     HOLDOUT_YEAR_COLUMN,
@@ -1298,7 +1301,8 @@ class TrainingPipeline:
                         continue
                     found = [
                         f for f in glob.glob(os.path.join(search_dir, "merged_data_*.parquet"))
-                        if not (f.endswith("_train.parquet") or f.endswith("_test.parquet"))
+                        if not f.endswith(("_train.parquet", "_val.parquet",
+                                           "_test.parquet", "_holdout.parquet"))
                     ]
                     if found:
                         file_path = max(found, key=os.path.getmtime)
@@ -1520,6 +1524,51 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
+    def split_by_group(self, df, group_column, random_state=RANDOM_STATE):
+        """Split `df` into train/val/test so no group value spans two splits.
+
+        Groups are shuffled and partitioned, NOT stratified: stratifying by label
+        would require balancing the positive rate across whole days, which is not
+        generally satisfiable and would silently drop days to get there. The base
+        rate is stable enough across days (23.5% overall) that random day
+        assignment holds it; test_the_base_rate_survives_the_split checks that.
+        """
+        groups = np.array(sorted(df[group_column].unique()))
+        rng = np.random.default_rng(random_state)
+        rng.shuffle(groups)
+
+        n = len(groups)
+        n_train = int(round(n * TRAIN_FRACTION))
+        n_val = int(round(n * VAL_FRACTION))
+
+        train_groups = set(groups[:n_train])
+        val_groups = set(groups[n_train:n_train + n_val])
+        test_groups = set(groups[n_train + n_val:])
+
+        select = lambda wanted: df[df[group_column].isin(wanted)]
+        return select(train_groups), select(val_groups), select(test_groups)
+
+    def write_splits(self, df, output_dir, identifier, group_column=GROUP_KEY_COLUMN,
+                     random_state=RANDOM_STATE, basename=None):
+        """Split and write train/val/test parquet, dropping the grouping key.
+
+        `basename` exists because split_dataset names its outputs after the source
+        file it found, not after an identifier it chose.
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        basename = basename or f"merged_data_{identifier}"
+        train, val, test = self.split_by_group(df, group_column=group_column,
+                                               random_state=random_state)
+        written = {}
+        frames = {}
+        for name, part in (("train", train), ("val", val), ("test", test)):
+            part = part.drop(columns=[group_column])
+            path = os.path.join(output_dir, f"{basename}_{name}.parquet")
+            part.to_parquet(path, index=False)
+            written[name] = {"path": path, "rows": len(part)}
+            frames[name] = part
+        return {"success": True, "files": written, "frames": frames}
+
     def split_dataset(self, data_dir=None, output_dir=None, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify_column=None):
         """
         Split merged training dataset into train and test sets.
@@ -1554,7 +1603,10 @@ class TrainingPipeline:
                                  if f.endswith('.parquet') and os.path.isfile(os.path.join(merged_training_ready_dir, f))]
 
             # Filter out existing train/test files to get only source files
-            source_parquet_files = [f for f in all_parquet_files if not (f.endswith('_train.parquet') or f.endswith('_test.parquet'))]
+            # _val and _holdout are outputs of a previous run, not sources. Without
+            # this the second run of the stage sees three source files and aborts.
+            split_suffixes = ('_train.parquet', '_val.parquet', '_test.parquet', '_holdout.parquet')
+            source_parquet_files = [f for f in all_parquet_files if not f.endswith(split_suffixes)]
 
             # Check if exactly one parquet file exists
             if len(source_parquet_files) == 0:
@@ -1656,43 +1708,70 @@ class TrainingPipeline:
                     print(f"      HOLDOUT_LAST_YEAR is enabled but '{HOLDOUT_YEAR_COLUMN}' column was not found "
                           f"— skipping hold-out (falling back to a 2-way train/test split)")
 
-            train_df, test_df = train_test_split(
-                dev_df,
-                test_size=test_size,
-                random_state=random_state,
-                stratify=stratify
-            )
-
-            print(f"      Split results:")
-            print(f"        Train set: {len(train_df):,} samples ({(len(train_df) / len(dev_df)) * 100:.1f}%)")
-            print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(dev_df)) * 100:.1f}%)")
-
             # Generate output filenames
             base_name = csv_filename.replace('.parquet', '')
             train_filename = f"{base_name}_train.parquet"
+            val_filename = f"{base_name}_val.parquet"
             test_filename = f"{base_name}_test.parquet"
             holdout_filename = f"{base_name}_holdout.parquet" if holdout_df is not None else None
 
             split_output_dir = output_dir if output_dir is not None else merged_training_ready_dir
             os.makedirs(split_output_dir, exist_ok=True)
 
-            train_path = os.path.join(split_output_dir, train_filename)
-            test_path = os.path.join(split_output_dir, test_filename)
+            # Day-grouped three-way split. A random row split leaks for any sequence
+            # model — a test row's preceding trains land in the training set — and it
+            # leaks weather and knock-on delay for the tabular models too, since one
+            # operating day's rows are far from independent.
+            grouped = GROUP_KEY_COLUMN in dev_df.columns
+            if grouped:
+                split = self.write_splits(
+                    dev_df, output_dir=split_output_dir, identifier=base_name,
+                    group_column=GROUP_KEY_COLUMN, random_state=random_state,
+                    basename=base_name,
+                )
+                train_df = split["frames"]["train"]
+                val_df = split["frames"]["val"]
+                test_df = split["frames"]["test"]
+                n_days = dev_df[GROUP_KEY_COLUMN].nunique()
+                dev_df = dev_df.drop(columns=[GROUP_KEY_COLUMN])
+                print(f"      Day-grouped split on '{GROUP_KEY_COLUMN}' ({n_days:,} operating days)")
+            else:
+                # No grouping key: the source predates the key, or is a fixture.
+                # Fall back to the original stratified 2-way split rather than
+                # inventing groups, but say so loudly — this path leaks.
+                print(f"      ⚠️  '{GROUP_KEY_COLUMN}' not found — falling back to a random row split")
+                train_df, test_df = train_test_split(
+                    dev_df,
+                    test_size=test_size,
+                    random_state=random_state,
+                    stratify=stratify
+                )
+                val_df = dev_df.iloc[0:0]
+                val_filename = None
+                train_df.to_parquet(os.path.join(split_output_dir, train_filename), index=False)
+                test_df.to_parquet(os.path.join(split_output_dir, test_filename), index=False)
 
-            # Save train and test sets
-            train_df.to_parquet(train_path, index=False)
-            test_df.to_parquet(test_path, index=False)
+            print(f"      Split results:")
+            print(f"        Train set: {len(train_df):,} samples ({(len(train_df) / len(dev_df)) * 100:.1f}%)")
+            if val_filename:
+                print(f"        Val set:   {len(val_df):,} samples ({(len(val_df) / len(dev_df)) * 100:.1f}%)")
+            print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(dev_df)) * 100:.1f}%)")
 
             print(f"      Saved train set to: {train_filename}")
+            if val_filename:
+                print(f"      Saved val set to: {val_filename}")
             print(f"      Saved test set to: {test_filename}")
 
             if holdout_df is not None:
                 holdout_path = os.path.join(split_output_dir, holdout_filename)
+                if GROUP_KEY_COLUMN in holdout_df.columns:
+                    holdout_df = holdout_df.drop(columns=[GROUP_KEY_COLUMN])
                 holdout_df.to_parquet(holdout_path, index=False)
                 print(f"      Saved hold-out set to: {holdout_filename}")
             
             # Calculate class distribution after split for classification problems
             class_distribution_train = {}
+            class_distribution_val = {}
             class_distribution_test = {}
             class_distribution_holdout = {}
 
@@ -1704,6 +1783,15 @@ class TrainingPipeline:
                         'count': int(count),
                         'percentage': (count / len(train_df)) * 100
                     }
+
+                # Validation set distribution
+                if len(val_df):
+                    val_value_counts = val_df[target_column].value_counts()
+                    for class_value, count in val_value_counts.items():
+                        class_distribution_val[class_value] = {
+                            'count': int(count),
+                            'percentage': (count / len(val_df)) * 100
+                        }
 
                 # Test set distribution
                 test_value_counts = test_df[target_column].value_counts()
@@ -1730,9 +1818,12 @@ class TrainingPipeline:
                 'holdout_rows': len(holdout_df) if holdout_df is not None else 0,
                 'holdout_year': holdout_year,
                 'train_rows': len(train_df),
+                'val_rows': len(val_df),
                 'test_rows': len(test_df),
                 'train_file': train_filename,
+                'val_file': val_filename,
                 'test_file': test_filename,
+                'grouped_by': GROUP_KEY_COLUMN if grouped else None,
                 'holdout_file': holdout_filename,
                 'test_size_requested': test_size,
                 'test_size_actual': len(test_df) / len(dev_df),
@@ -1744,6 +1835,7 @@ class TrainingPipeline:
             if is_classification:
                 result_data['class_distribution_before'] = class_distribution_before
                 result_data['class_distribution_train'] = class_distribution_train
+                result_data['class_distribution_val'] = class_distribution_val
                 result_data['class_distribution_test'] = class_distribution_test
                 if holdout_df is not None:
                     result_data['class_distribution_holdout'] = class_distribution_holdout
@@ -1774,7 +1866,10 @@ class TrainingPipeline:
                 f.write(f"  Problem type: {'Classification' if is_classification else 'Regression'}\n\n")
 
                 f.write(f"Split Results:\n")
+                f.write(f"  Grouped by: {result_data['grouped_by'] or 'NONE (random row split)'}\n")
                 f.write(f"  Train set: {result_data['train_rows']:,} samples ({(result_data['train_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
+                if result_data['val_rows']:
+                    f.write(f"  Val set: {result_data['val_rows']:,} samples ({(result_data['val_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
                 f.write(f"  Test set: {result_data['test_rows']:,} samples ({(result_data['test_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
                 f.write(f"  Actual test size: {result_data['test_size_actual']:.3f}\n")
                 if holdout_df is not None:
@@ -1784,6 +1879,8 @@ class TrainingPipeline:
 
                 f.write(f"Output Files:\n")
                 f.write(f"  Train: {result_data['train_file']}\n")
+                if result_data['val_file']:
+                    f.write(f"  Val: {result_data['val_file']}\n")
                 f.write(f"  Test: {result_data['test_file']}\n")
                 if holdout_filename:
                     f.write(f"  Hold-out: {holdout_filename}\n")
