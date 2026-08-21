@@ -397,8 +397,16 @@ def _run(args):
         print("TRAINING PIPELINE EXECUTION COMPLETED")
         print("="*60)
 
-        # Display training summary
-        if training_results and training_results.get('success', False):
+        # Display training summary.
+        #
+        # A recorded error outranks the success flag. Every stage sets
+        # result["success"] = True on its own way through, and nothing ever sets
+        # it back to False, so a trainer that fails after an earlier stage
+        # succeeded would otherwise exit 0 — and Slurm would record a dead cell
+        # in the 78-task grid as COMPLETED. All 28 appends to result["errors"]
+        # in training_pipeline.py are genuine failures, never warnings.
+        training_errors = (training_results or {}).get('errors', [])
+        if training_results and training_results.get('success', False) and not training_errors:
             print("✓ Training pipeline completed successfully!")
             print(f"Steps executed: {', '.join(training_results.get('steps_executed', []))}")
             file_info = training_results.get('file_info', {})
@@ -406,7 +414,7 @@ def _run(args):
             return 0
         elif training_results:
             print("✗ Training pipeline failed!")
-            errors = training_results.get('errors', [])
+            errors = training_errors
             if errors:
                 print("Errors encountered:")
                 for error in errors:

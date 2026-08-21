@@ -215,7 +215,21 @@ def test_dump_columns_reports_merge_failure():
     assert main_module.dump_columns(FailingPipeline(), []) == 1
 
 
-def test_run_returns_nonzero_on_training_failure(monkeypatch):
+@pytest.fixture
+def pipeline_flags(monkeypatch):
+    """Pin EXECUTE_* to the shape these tests assume.
+
+    _run() imports both flags from config.const at call time, so whatever the
+    working copy happens to have set decides what _run does. With preprocessing
+    switched on, a test that only means to drive the training block instead runs
+    the real 96-month preprocessing pipeline and appears to hang.
+    """
+    import config.const
+    monkeypatch.setattr(config.const, "EXECUTE_PREPROCESSING_DATA_PIPELINE", False)
+    monkeypatch.setattr(config.const, "EXECUTE_TRAINING_PIPELINE", True)
+
+
+def test_run_returns_nonzero_on_training_failure(monkeypatch, pipeline_flags):
     """A failed training pipeline must make _run() (and therefore main()) return a
     non-zero code, so Slurm/sacct records the job as failed instead of COMPLETED."""
     calls = {"merge": 0, "train": 0}
@@ -238,7 +252,7 @@ def test_run_returns_nonzero_on_training_failure(monkeypatch):
     assert rc != 0
 
 
-def test_run_returns_nonzero_when_training_results_is_falsy(monkeypatch):
+def test_run_returns_nonzero_when_training_results_is_falsy(monkeypatch, pipeline_flags):
     calls = {"merge": 0, "train": 0}
     FakePipeline = _fake_pipeline_class(calls)
 
@@ -495,3 +509,50 @@ def test_fcll_net_does_not_depend_on_the_merged_tabular_parquet():
     for stage in ("merge_data_files", "filter_delay_outliers", "select_training_cols",
                   "split_dataset", "balance_classes", "scale_weather_features"):
         assert sm[stage] is False, stage
+
+
+def test_a_stage_failure_after_an_earlier_success_still_exits_nonzero(
+    monkeypatch, pipeline_flags
+):
+    """The real shape of a failed run: an early stage sets success=True, a later
+    trainer fails and appends to errors. Nothing ever sets success back to False
+    - there is no `result["success"] = False` anywhere in training_pipeline.py -
+    so keying the exit code on that flag alone reports a dead cell as COMPLETED.
+    Across a 78-cell grid that is a silently missing model, not a loud one.
+    """
+    calls = {"merge": 0, "train": 0}
+    FakePipeline = _fake_pipeline_class(calls)
+
+    class PartialFailurePipeline(FakePipeline):
+        def execute_training_pipeline_steps(self, csv_files, state_machine):
+            calls["train"] += 1
+            return {
+                "success": True,                       # set by build_fcll_sequences
+                "steps_executed": ["build_fcll_sequences"],
+                "errors": ["train_fcll_net failed: open file failed"],
+            }
+
+    import src.training_pipeline
+    monkeypatch.setattr(src.training_pipeline, "TrainingPipeline", PartialFailurePipeline)
+
+    rc = main_module._run(main_module.parse_args([]))
+
+    assert calls["train"] == 1
+    assert rc != 0, "a stage that recorded an error must not exit 0"
+
+
+def test_a_clean_run_still_exits_zero(monkeypatch, pipeline_flags):
+    """The other side of the guard: an empty errors list must stay a success,
+    or every green run starts failing."""
+    calls = {"merge": 0, "train": 0}
+    FakePipeline = _fake_pipeline_class(calls)
+
+    class CleanPipeline(FakePipeline):
+        def execute_training_pipeline_steps(self, csv_files, state_machine):
+            calls["train"] += 1
+            return {"success": True, "steps_executed": ["train_fcll_net"], "errors": []}
+
+    import src.training_pipeline
+    monkeypatch.setattr(src.training_pipeline, "TrainingPipeline", CleanPipeline)
+
+    assert main_module._run(main_module.parse_args([])) == 0
