@@ -200,3 +200,113 @@ def test_the_calendar_features_are_reproduced_from_the_raw_timestamp():
     assert row["hour_sin"] == pytest.approx(np.sin(2 * np.pi * 9.5 / 24.0))
     assert row["day_week_sin"] == pytest.approx(np.sin(2 * np.pi * 3 / 7.0))
     assert row["day_of_month"] == 14
+
+
+# --- Prediction-boundary leakage -------------------------------------------
+#
+# The label is the target train's arrival delay at the target station. Any
+# *_actual field whose measurement window extends past that arrival is not
+# observable at prediction time, and hands the model the answer.
+
+def _late_arrival_timetable():
+    """A -> B -> OL, running five minutes late into OL."""
+    rows = [
+        _event(1, "A", "DEPARTURE", "10:00", "10:00", 0),
+        _event(1, "B", "ARRIVAL",   "10:10", "10:10", 1),
+        _event(1, "B", "DEPARTURE", "10:12", "10:12", 1),
+        _event(1, "OL", "ARRIVAL",  "10:30", "10:38", 2),
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_run_actual_is_masked_at_the_last_station_before_the_target():
+    """run_actual is 'this departure -> the NEXT station's arrival'. For the
+    station immediately before the target, that next arrival IS the arrival
+    being predicted, so the field measures the future.
+
+    Concretely: arrival_delay_at_target == departure_delay_at_S
+    + (run_actual_S - run_scheduled_S). Leaving run_actual in place makes the
+    label an exact arithmetic function of z_seq's last timestep, which is
+    worth about 0.999 ROC-AUC and means nothing.
+    """
+    visits = derive_station_visits(_late_arrival_timetable())
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    run_actual = OF_COLUMNS.index("run_actual")
+
+    assert out["z_mask"][0, -1] == 1.0, "the last slot must still be a real station"
+    assert out["z_seq"][0, -1, run_actual] == 0.0, "run_actual crosses the boundary"
+
+
+def test_run_scheduled_is_kept_at_the_last_station():
+    """The timetable is known in advance, so the scheduled run is observable.
+    Masking it too would throw away the baseline the delay is measured against."""
+    visits = derive_station_visits(_late_arrival_timetable())
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    run_scheduled = OF_COLUMNS.index("run_scheduled")
+    assert out["z_seq"][0, -1, run_scheduled] == pytest.approx(18.0)
+
+
+def test_earlier_stations_keep_their_actual_running_time():
+    """Only the final hop crosses the boundary. B->OL is the future; A->B is
+    not, and masking it would discard real upstream signal."""
+    visits = derive_station_visits(_late_arrival_timetable())
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    run_actual = OF_COLUMNS.index("run_actual")
+    # slots -2 and -1 hold A and B; A->B ran 10:00 -> 10:10 = 10 minutes
+    assert out["z_seq"][0, -2, run_actual] == pytest.approx(10.0)
+
+
+def test_the_preceding_trains_post_departure_fields_are_masked():
+    """h_seq rows are the preceding trains' visits AT the target station, so
+    their dwell and onward run are measured after they arrived there — not
+    guaranteed to have happened before the target train arrives."""
+    rows = [
+        _event(1, "OL", "ARRIVAL",   "10:00", "10:00", 0),
+        _event(1, "OL", "DEPARTURE", "10:02", "10:09", 0),
+        _event(2, "OL", "ARRIVAL",   "10:10", "10:10", 0),
+    ]
+    visits = derive_station_visits(pd.DataFrame(rows))
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    for name in ("run_actual", "dwell_actual"):
+        column = OF_COLUMNS.index(name)
+        assert np.all(out["h_seq"][:, :, column] == 0.0), f"{name} is not observable"
+
+
+def test_the_label_is_not_arithmetically_recoverable_from_the_sequences():
+    """Regression guard on real data for the 0.9993-ROC-AUC leak.
+
+    Runs the identity that reconstructed the label before masking. Agreement
+    must fall well short of the near-perfect reconstruction it used to give.
+    It stays meaningfully above the 68.6% all-negative baseline on purpose:
+    departure_delay at the previous station really does predict arrival delay,
+    is observable before the train reaches the target, and is the signal the
+    model is supposed to learn. This asserts the arithmetic identity is gone,
+    not that upstream delay stopped mattering.
+    """
+    import glob
+
+    files = sorted(glob.glob("data/input/matched_data_flat_*.parquet"))
+    if not files:
+        pytest.skip("requires the local raw input parquet")
+
+    from config.const_preprocessing import TARGET_STATION_CODE, TRAIN_DELAY_MINUTES
+
+    out = assemble_sequences(
+        derive_station_visits(pd.read_parquet(files[0])),
+        target_station=TARGET_STATION_CODE, nf_columns=[],
+    )
+    z, mask, label = out["z_seq"], out["z_mask"], out["label"]
+    idx = {c: k for k, c in enumerate(OF_COLUMNS)}
+
+    assert np.abs(z[:, -1, idx["run_actual"]]).max() == 0.0
+    assert np.abs(out["h_seq"][:, :, idx["run_actual"]]).max() == 0.0
+    assert np.abs(out["h_seq"][:, :, idx["dwell_actual"]]).max() == 0.0
+
+    has_history = mask[:, -1] == 1
+    last = z[has_history, -1, :]
+    implied = (last[:, idx["departure_delay"]]
+               + last[:, idx["run_actual"]] - last[:, idx["run_scheduled"]])
+    agreement = float(((implied > TRAIN_DELAY_MINUTES) == label[has_history]).mean())
+    assert agreement < 0.90, (
+        f"the label is {agreement:.1%} recoverable by arithmetic on one timestep"
+    )

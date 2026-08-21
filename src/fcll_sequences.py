@@ -182,6 +182,8 @@ def assemble_sequences(visits, target_station, nf_columns, h=5, z=5,
             h_seq[row, h - len(block):] = block
             h_mask[row, h - len(block):] = 1.0
 
+    _mask_boundary_crossing_fields(z_seq, z_mask, h_seq)
+
     if nf_columns:
         nf = visits.loc[targets, nf_columns].to_numpy(dtype=np.float32)
     else:
@@ -272,3 +274,42 @@ def _add_wawa_groups(wide, df, keys):
     for group, name in zip(WAWA_EMITTED_GROUPS, names):
         wide[name] = (wide["_wawa_group"] == group).astype(float)
     return wide.drop(columns=["_wawa_group"])
+
+
+# Fields whose measurement window ends at the target arrival, so they are not
+# observable when the prediction is made.
+_RUN_ACTUAL = OF_COLUMNS.index("run_actual")
+_DWELL_ACTUAL = OF_COLUMNS.index("dwell_actual")
+
+
+def _mask_boundary_crossing_fields(z_seq, z_mask, h_seq):
+    """Zero the fields that measure past the moment being predicted.
+
+    Two cases, both discovered by a model scoring 0.9993 ROC-AUC on a task
+    where that is not achievable:
+
+    1. Z, final step. run_actual is 'this departure -> the NEXT station's
+       arrival'. For the station immediately before the target, that next
+       arrival is the arrival being predicted, which makes the label exact
+       arithmetic on this timestep:
+           arrival_delay = departure_delay + (run_actual - run_scheduled)
+       Measured at 98.2% agreement on 2018-01 before this masking.
+       Earlier steps are untouched: their next station is still upstream.
+
+    2. H, every step. Those rows are the preceding trains' visits AT the
+       target station, so their dwell there and their onward run are both
+       measured after they arrived — and nothing guarantees either finished
+       before the target train arrives.
+
+    The scheduled counterparts are deliberately kept: the timetable is known
+    in advance, and they are the baseline the delays are measured against.
+    """
+    lengths = z_mask.sum(axis=1).astype(int)
+    has_history = lengths > 0
+    if has_history.any():
+        rows = np.flatnonzero(has_history)
+        # Pre-padded, so the last real step is always the final slot.
+        z_seq[rows, -1, _RUN_ACTUAL] = 0.0
+
+    h_seq[:, :, _RUN_ACTUAL] = 0.0
+    h_seq[:, :, _DWELL_ACTUAL] = 0.0
