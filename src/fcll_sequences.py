@@ -5,9 +5,13 @@ Reads the raw matched parquet rather than 101-preprocessed_training_ready,
 because that file has already been filtered to one station: the sequences this
 module builds no longer exist in it.
 
-Huang et al. (2020) define nine operational variables per station visit. Eight
-are derived here; the ninth (number of stops in the section) needs the route,
-and is added by assemble_sequences.
+Huang et al. (2020) define nine operational variables per station visit. All
+nine are derived here. The ninth, "number of stops in the section", cannot be
+taken literally on this data: every station the train passes is already its own
+row, so the count of stations between two consecutive rows is always zero. It is
+therefore read as "does the train actually stop in the section ending here",
+from trainStopping/commercialStop — the only stop information the raw events
+carry at per-visit granularity.
 """
 import numpy as np
 import pandas as pd
@@ -55,8 +59,12 @@ def derive_station_visits(df):
 
     # Order each train's visits by scheduled time. The visit sort key is the
     # arrival where there is one and the departure at the originating station.
-    wide["_order_key"] = col("_sched_arrival").fillna(col("_sched_departure"))
-    wide = wide.sort_values(["trainNumber", "departureDate", "_order_key"])
+    # visit_time is the scheduled moment this visit happens: the arrival where
+    # there is one, the departure at the originating station. It survives into
+    # the output because assemble_sequences needs it to order the trains through
+    # the target station — train number is not a time order.
+    wide["visit_time"] = col("_sched_arrival").fillna(col("_sched_departure"))
+    wide = wide.sort_values(["trainNumber", "departureDate", "visit_time"])
     wide["station_order"] = wide.groupby(["trainNumber", "departureDate"]).cumcount()
 
     # Running time: this departure to the NEXT station's arrival, within one
@@ -71,7 +79,7 @@ def derive_station_visits(df):
         wide[name] = (nxt - wide[departure]).dt.total_seconds() / 60.0
 
     # Headway: gap to the previous train at the SAME station, by scheduled order.
-    wide = wide.sort_values(["stationShortCode", "_order_key"])
+    wide = wide.sort_values(["stationShortCode", "visit_time"])
     station = wide.groupby("stationShortCode")
     for kind, name in (("_sched_arrival", "headway_scheduled"),
                        ("_actual_arrival", "headway_actual")):
@@ -80,5 +88,87 @@ def derive_station_visits(df):
             continue
         wide[name] = station[kind].diff().dt.total_seconds() / 60.0
 
-    wide["stops_in_section"] = np.nan  # filled by assemble_sequences
+    # See the module docstring: read as "the train stops in the section ending
+    # at this station", which is the only stop signal the raw events carry.
+    stopping = [c for c in ("trainStopping", "commercialStop") if c in df.columns]
+    if stopping:
+        flags = df.groupby(keys, sort=False)[stopping].max().reset_index()
+        flags["stops_in_section"] = (
+            flags[stopping].astype(float).min(axis=1)
+        )
+        wide = wide.merge(flags[keys + ["stops_in_section"]], on=keys, how="left")
+    else:
+        wide["stops_in_section"] = np.nan
+
     return wide.drop(columns=[c for c in wide.columns if c.startswith("_")])
+
+
+def assemble_sequences(visits, target_station, nf_columns, h=5, z=5,
+                       label_column="trainDelayed"):
+    """Build one sample per arrival at `target_station`.
+
+    Padding is pre-padding with zeros plus an explicit mask, rather than
+    dropping short routes: a train originating two stations before the target
+    is a normal operating pattern, and excluding it would bias the sample
+    toward long-distance services.
+    """
+    visits = visits.sort_values(
+        ["trainNumber", "departureDate", "station_order"]
+    ).reset_index(drop=True)
+
+    of = visits[OF_COLUMNS].to_numpy(dtype=np.float32)
+    of = np.nan_to_num(of, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Position within the train's own journey. Because `visits` is sorted by
+    # journey, the Z history of row p is simply the rows immediately before it,
+    # and this tells us how many of those belong to the same journey.
+    journey_pos = visits.groupby(
+        ["trainNumber", "departureDate"], sort=False
+    ).cumcount().to_numpy()
+
+    targets = np.flatnonzero((visits["stationShortCode"] == target_station).to_numpy())
+
+    z_seq = np.zeros((len(targets), z, len(OF_COLUMNS)), dtype=np.float32)
+    h_seq = np.zeros((len(targets), h, len(OF_COLUMNS)), dtype=np.float32)
+    z_mask = np.zeros((len(targets), z), dtype=np.float32)
+    h_mask = np.zeros((len(targets), h), dtype=np.float32)
+
+    # The trains ahead of this one are the target-station visits scheduled
+    # earlier, so the H order is visit_time — not train number, and not the
+    # journey order the frame happens to be sorted in.
+    order = np.argsort(visits["visit_time"].to_numpy()[targets], kind="stable")
+    ranked = targets[order]
+    rank_of = {position: rank for rank, position in enumerate(ranked)}
+    station_of = of[ranked]
+
+    for row, position in enumerate(targets):
+        # Z: this train's own preceding stations, oldest -> newest.
+        take = int(min(journey_pos[position], z))
+        if take:
+            z_seq[row, z - take:] = of[position - take:position]
+            z_mask[row, z - take:] = 1.0
+
+        # H: the trains ahead of this one into the target station.
+        k = rank_of[position]
+        block = station_of[max(0, k - h):k]
+        if len(block):
+            h_seq[row, h - len(block):] = block
+            h_mask[row, h - len(block):] = 1.0
+
+    if nf_columns:
+        nf = visits.loc[targets, nf_columns].to_numpy(dtype=np.float32)
+    else:
+        nf = np.zeros((len(targets), 0), dtype=np.float32)
+
+    if label_column in visits.columns:
+        label = visits.loc[targets, label_column].to_numpy(dtype=np.float32)
+    else:
+        label = np.zeros(len(targets), dtype=np.float32)
+
+    return {
+        "z_seq": z_seq, "h_seq": h_seq,
+        "z_mask": z_mask, "h_mask": h_mask,
+        "nf": np.nan_to_num(nf, nan=0.0, posinf=0.0, neginf=0.0),
+        "label": label,
+        "group": visits.loc[targets, "departureDate"].to_numpy(),
+    }
