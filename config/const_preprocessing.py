@@ -78,6 +78,13 @@ REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'diff
 # Station short code to filter data for - only exact matches will be kept
 TARGET_STATION_CODE = 'OL'  # Example: 'OL', 'HKI', 'ROI', etc.
 
+# Column carried through preprocessing purely so split_dataset can group by
+# operating day. It is NOT a feature: select_training_cols keeps it, the split
+# groups on it, and the trainers drop it before fitting. Without it the split
+# falls back to random rows, which leaks for any sequence model - a test row's
+# preceding trains sit in the training set.
+GROUP_KEY_COLUMN = "departureDate"
+
 # Time feature selection configuration
 # True = keep sin/cos features (drop original), False = keep original features (drop sin/cos)
 USE_SIN_COS_APPROACH = True

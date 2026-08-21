@@ -18,6 +18,7 @@ from config.const import (
 )
 
 from config.const_preprocessing import (
+    GROUP_KEY_COLUMN,
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
     FOLDER_ADD_WEATHER_SCENARIOS_COL,
     FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL,
@@ -2399,6 +2400,12 @@ class PreprocessingPipeline:
                 #print(f"Utility columns found: {utility_cols_found}")
                 #logger.info(f"Utility columns found: {utility_cols_found}")
                 
+                # Carry the split grouping key through. It is not a feature;
+                # split_dataset groups on it and drops it before writing.
+                if GROUP_KEY_COLUMN in df.columns:
+                    columns_to_keep.append(GROUP_KEY_COLUMN)
+                    logger.info(f"Group key column kept: {GROUP_KEY_COLUMN}")
+
                 # Remove duplicates while preserving order
                 columns_to_keep = list(dict.fromkeys(columns_to_keep))
                 
