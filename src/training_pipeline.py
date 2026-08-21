@@ -381,8 +381,11 @@ class TrainingPipeline:
         if state_machine.get("build_fcll_sequences", False):
             try:
                 print(f"    → build_fcll_sequences")
+                # SELECTED_COLUMNS, not the frame from select_training_cols:
+                # that stage reads the merged tabular parquet, which fcll_net
+                # never builds. The scenario's column list is all this needs.
                 seq = self.build_fcll_sequences(
-                    nf_columns=getattr(self, "selected_columns", None)
+                    nf_columns=getattr(self, "selected_columns", None) or list(SELECTED_COLUMNS)
                 )
                 if seq and seq.get("success", False):
                     result["steps_executed"].append("build_fcll_sequences")

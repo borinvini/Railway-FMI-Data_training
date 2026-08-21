@@ -36,7 +36,11 @@ PREREQUISITE_STAGES = (
 # FCLL-Net reads raw event data, not the merged tabular parquet, and must not
 # be resampled: balance_classes would invent rows inside real train journeys.
 # It uses class weights instead (see src/fcll_trainer.compute_pos_weight).
-FCLL_PREREQUISITE_STAGES = ("select_training_cols", "build_fcll_sequences")
+# select_training_cols is deliberately absent: it reads the merged tabular
+# parquet from stage 500/501, which this route never builds, and the only thing
+# it would supply is the scenario's column list — which build_fcll_sequences
+# reads from SELECTED_COLUMNS directly.
+FCLL_PREREQUISITE_STAGES = ("build_fcll_sequences",)
 
 MODEL_PREREQUISITES = {"fcll_net": FCLL_PREREQUISITE_STAGES}
 

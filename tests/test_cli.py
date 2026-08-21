@@ -483,3 +483,15 @@ def test_the_tabular_models_do_not_build_sequences():
         assert sm["build_fcll_sequences"] is False, model
         assert sm["balance_classes"] is True, model
         assert sm["train_fcll_net"] is False, model
+
+
+def test_fcll_net_does_not_depend_on_the_merged_tabular_parquet():
+    """select_training_cols reads stage 500/501, which this route never builds.
+    Including it makes the cell fail at 'No merged data files found'."""
+    from main import parse_args, build_state_machine
+    from config.const_training import TRAINING_STATE_MACHINE
+
+    sm = build_state_machine(parse_args(["--model", "fcll_net"]), TRAINING_STATE_MACHINE)
+    for stage in ("merge_data_files", "filter_delay_outliers", "select_training_cols",
+                  "split_dataset", "balance_classes", "scale_weather_features"):
+        assert sm[stage] is False, stage
