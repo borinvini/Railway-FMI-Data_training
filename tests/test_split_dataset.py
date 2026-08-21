@@ -2,6 +2,7 @@ import inspect
 import os
 from unittest.mock import patch
 
+import pytest
 import pandas as pd
 
 from src.training_pipeline import TrainingPipeline
@@ -314,3 +315,34 @@ def test_split_dataset_writes_three_grouped_files_end_to_end(tmp_path):
               for n in ("train", "val", "test")}
     for frame in frames.values():
         assert GROUP_KEY_COLUMN not in frame.columns
+
+
+def _training_ready_files():
+    import glob
+    return sorted(glob.glob("data/output/101-preprocessed_training_ready/*.parquet"))
+
+
+def test_the_base_rate_survives_the_split():
+    """Measured 2026-08-20: 27,387 delayed of 116,733 OL rows = 23.461%.
+
+    Day-grouped assignment is not stratified, so this is the check that it did
+    not accidentally concentrate bad-weather days in one split."""
+    import pyarrow.parquet as pq
+
+    files = _training_ready_files()
+    if not files:
+        pytest.skip("requires the local training-ready parquet")
+    if GROUP_KEY_COLUMN not in pq.read_schema(files[0]).names:
+        pytest.skip(
+            f"the local 101-* parquet predates {GROUP_KEY_COLUMN}; "
+            "re-run preprocessing to regenerate it"
+        )
+
+    df = pd.concat(
+        [pd.read_parquet(f, columns=["trainDelayed", GROUP_KEY_COLUMN]) for f in files],
+        ignore_index=True,
+    )
+    pipeline = TrainingPipeline()
+    for part in pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN):
+        rate = part["trainDelayed"].mean()
+        assert 0.21 < rate < 0.26, f"base rate {rate:.3%} drifted from 23.5%"
