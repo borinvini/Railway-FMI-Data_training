@@ -16,6 +16,11 @@ carry at per-visit granularity.
 import numpy as np
 import pandas as pd
 
+from config.const_preprocessing import (
+    TRAIN_DELAYED_TARGET_COLUMN,
+    TRAIN_DELAY_MINUTES,
+)
+
 OF_COLUMNS = [
     "arrival_delay", "departure_delay",
     "dwell_actual", "dwell_scheduled",
@@ -29,13 +34,21 @@ def _to_datetime(series):
     return pd.to_datetime(series, format="ISO8601", utc=True)
 
 
-def derive_station_visits(df):
-    """Collapse ARRIVAL/DEPARTURE event pairs into one row per station visit."""
+def derive_station_visits(df, carry_columns=None):
+    """Collapse ARRIVAL/DEPARTURE event pairs into one row per station visit.
+
+    `carry_columns` names non-operational columns — weather, calendar — to keep
+    alongside the derived features. They are joined onto the raw events, so the
+    pivot would otherwise drop them, and without them the FCNN branch has no
+    input at all. The ARRIVAL row's value is taken, because the label is about
+    the arrival.
+    """
     df = df.copy()
     df["_sched"] = _to_datetime(df["scheduledTime"])
     df["_actual"] = _to_datetime(df["actualTime"])
 
     keys = ["trainNumber", "departureDate", "stationShortCode"]
+    carry_columns = [c for c in (carry_columns or []) if c in df.columns and c not in keys]
     wide = df.pivot_table(
         index=keys, columns="type",
         values=["_sched", "_actual", "differenceInMinutes"],
@@ -100,6 +113,13 @@ def derive_station_visits(df):
     else:
         wide["stops_in_section"] = np.nan
 
+    if carry_columns:
+        # Prefer the ARRIVAL row's values; fall back to the DEPARTURE row for
+        # visits that only have one of the two events.
+        ordered = df.sort_values("type", ascending=True)  # ARRIVAL before DEPARTURE
+        carried = ordered.groupby(keys, sort=False)[carry_columns].first().reset_index()
+        wide = wide.merge(carried, on=keys, how="left")
+
     return wide.drop(columns=[c for c in wide.columns if c.startswith("_")])
 
 
@@ -163,7 +183,10 @@ def assemble_sequences(visits, target_station, nf_columns, h=5, z=5,
     if label_column in visits.columns:
         label = visits.loc[targets, label_column].to_numpy(dtype=np.float32)
     else:
-        label = np.zeros(len(targets), dtype=np.float32)
+        # The raw events carry no label; preprocessing derives it downstream and
+        # that path is not available here. Reproduce the same definition rather
+        # than silently emitting a column of zeros.
+        label = derive_label(visits.loc[targets])
 
     return {
         "z_seq": z_seq, "h_seq": h_seq,
@@ -172,3 +195,15 @@ def assemble_sequences(visits, target_station, nf_columns, h=5, z=5,
         "label": label,
         "group": visits.loc[targets, "departureDate"].to_numpy(),
     }
+
+
+def derive_label(visits):
+    """Binary delay label, matching preprocessing_pipeline.add_train_delayed_feature.
+
+    That method computes `differenceInMinutes > TRAIN_DELAY_MINUTES` on the raw
+    events. Here the equivalent quantity is the arrival delay of the visit.
+    """
+    delay = visits["arrival_delay"]
+    if delay.isna().all() and TRAIN_DELAYED_TARGET_COLUMN in visits.columns:
+        delay = visits[TRAIN_DELAYED_TARGET_COLUMN]
+    return (delay.fillna(0.0) > TRAIN_DELAY_MINUTES).to_numpy(dtype=np.float32)

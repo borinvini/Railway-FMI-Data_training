@@ -145,3 +145,40 @@ def test_only_target_station_arrivals_become_samples():
     assert out["label"].shape[0] == 2
     # Train 2 follows train 1 into OL, so its H sequence has exactly one entry.
     assert out["h_mask"].sum() == 1
+
+
+def test_non_operational_columns_are_carried_through_the_pivot():
+    """Weather is joined onto the raw events. Without carry_columns the pivot
+    drops every one of them and the FCNN branch gets a zero-width input."""
+    rows = [_event(1, st, "ARRIVAL", f"10:{i*5:02d}", f"10:{i*5:02d}", i)
+            for i, st in enumerate(["A", "OL"])]
+    for i, row in enumerate(rows):
+        row["Air temperature"] = -3.5 + i
+
+    visits = derive_station_visits(pd.DataFrame(rows), carry_columns=["Air temperature"])
+    assert "Air temperature" in visits.columns
+
+    out = assemble_sequences(visits, target_station="OL",
+                             nf_columns=["Air temperature"], z=5, h=5)
+    assert out["nf"].shape == (1, 1)
+    assert out["nf"][0, 0] == pytest.approx(-2.5)
+
+
+def test_the_label_is_derived_when_the_raw_events_carry_none():
+    """The raw parquet has no trainDelayed; preprocessing adds it downstream.
+    Falling back to zeros would train the model on a constant."""
+    from config.const_preprocessing import TRAIN_DELAY_MINUTES
+
+    rows = [_event(1, st, "ARRIVAL", f"10:{i*5:02d}", f"10:{i*5:02d}", i)
+            for i, st in enumerate(["A", "OL"])]
+    rows[1]["differenceInMinutes"] = TRAIN_DELAY_MINUTES + 1.0
+
+    visits = derive_station_visits(pd.DataFrame(rows))
+    assert "trainDelayed" not in visits.columns
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    assert out["label"].tolist() == [1.0]
+
+    rows[1]["differenceInMinutes"] = float(TRAIN_DELAY_MINUTES)
+    visits = derive_station_visits(pd.DataFrame(rows))
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    assert out["label"].tolist() == [0.0], "the threshold is strictly greater-than"

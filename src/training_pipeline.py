@@ -57,12 +57,14 @@ from src.file_utils import (
 )
 
 from config.const import (
+    INPUT_FOLDER,
     OUTPUT_FOLDER,
     DATA_ROOT,
 )
 
 from config.const_preprocessing import (
     GROUP_KEY_COLUMN,
+    TARGET_STATION_CODE,
     PREPROCESSED_OUTPUT_FOLDER,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DEFAULT_TARGET_FEATURE,
@@ -94,6 +96,10 @@ from config.const_training import (
     SHAP_CORRELATION_TOP_N_PAIRS,
     SHAP_CORRELATION_TOP_N_FEATURES,
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
+    FCLL_SEQUENCES_OUTPUT_FOLDER,
+    FCLL_NET_OUTPUT_FOLDER,
+    FCLL_H_TRAINS,
+    FCLL_Z_STATIONS,
     TEST_SIZE,
     TRAIN_FRACTION,
     VAL_FRACTION,
@@ -242,6 +248,9 @@ class TrainingPipeline:
                 
                 if cols_selection_result and cols_selection_result.get("success", False):
                     result["data"] = cols_selection_result.get("data")
+                    # build_fcll_sequences reads raw events, not this frame, so it
+                    # needs the scenario's column list rather than the frame itself.
+                    self.selected_columns = cols_selection_result.get("selected_columns", [])
                     result["steps_executed"].append("select_training_cols")
                     result["column_analysis"] = {
                         "total_columns": cols_selection_result.get("total_columns", 0),
@@ -368,6 +377,29 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ scale_weather_features (disabled)")
+
+        if state_machine.get("build_fcll_sequences", False):
+            try:
+                print(f"    → build_fcll_sequences")
+                seq = self.build_fcll_sequences(
+                    nf_columns=getattr(self, "selected_columns", None)
+                )
+                if seq and seq.get("success", False):
+                    result["steps_executed"].append("build_fcll_sequences")
+                    result["file_info"]["fcll_samples"] = seq.get("n_samples", 0)
+                    print(f"      ✓ {seq['n_samples']:,} samples in {seq['shards']} shards")
+                    result["success"] = True
+                else:
+                    error_msg = seq.get("error", "build_fcll_sequences returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+            except Exception as e:
+                result["errors"].append(f"build_fcll_sequences failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ build_fcll_sequences (disabled)")
 
         if state_machine.get("shap_correlation_analysis", False):
             try:
@@ -1523,6 +1555,52 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg
             }
+
+    def build_fcll_sequences(self, input_dir=None, output_dir=None, nf_columns=None,
+                             target_station=None, h=FCLL_H_TRAINS, z=FCLL_Z_STATIONS):
+        """Build FCLL-Net sequence tensors, one shard per input month.
+
+        Streams: each month is read, converted and written before the next is
+        opened. The raw table is ~518k rows per month over 96 months; holding all
+        of it would need far more than the 64G the batch script requests.
+        """
+        from src.fcll_sequences import assemble_sequences, derive_station_visits
+
+        input_dir = input_dir or os.path.join(self.project_root, INPUT_FOLDER)
+        output_dir = output_dir or os.path.join(self.project_root, FCLL_SEQUENCES_OUTPUT_FOLDER)
+        target_station = target_station or TARGET_STATION_CODE
+        nf_columns = nf_columns or []
+        os.makedirs(output_dir, exist_ok=True)
+
+        files = sorted(glob.glob(os.path.join(input_dir, "matched_data_flat_*.parquet")))
+        if not files:
+            return {"success": False, "error": f"no input parquet in {input_dir}"}
+
+        total = 0
+        kept_columns = None
+        for path in files:
+            month = os.path.basename(path).replace("matched_data_flat_", "").replace(".parquet", "")
+            df = pd.read_parquet(path)
+            visits = derive_station_visits(df, carry_columns=nf_columns)
+            available = [c for c in nf_columns if c in visits.columns]
+            if kept_columns is None:
+                kept_columns = available
+            elif available != kept_columns:
+                # Shards are concatenated later; a month with a different NF width
+                # would produce a ragged array at load time instead of here.
+                return {"success": False, "error":
+                        f"{month} has NF columns {available}, expected {kept_columns}"}
+            out = assemble_sequences(visits, target_station=target_station,
+                                     nf_columns=available, h=h, z=z)
+            np.savez_compressed(os.path.join(output_dir, f"fcll_{month}.npz"), **out)
+            total += len(out["label"])
+            print(f"      fcll_{month}: {len(out['label']):,} samples")
+            del df, visits, out
+
+        with open(os.path.join(output_dir, "manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump({"h": h, "z": z, "n_samples": total, "columns": kept_columns,
+                       "target_station": target_station}, fh, indent=2)
+        return {"success": True, "n_samples": total, "shards": len(files)}
 
     def split_by_group(self, df, group_column, random_state=RANDOM_STATE):
         """Split `df` into train/val/test so no group value spans two splits.

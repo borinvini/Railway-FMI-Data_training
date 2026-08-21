@@ -26,18 +26,26 @@ TRAINING_STATE_MACHINE = {
     "split_dataset": True,
     "balance_classes": True,
     "scale_weather_features": True,
+    "build_fcll_sequences": False,   # gated: only --model fcll_net needs it
     "shap_correlation_analysis": True,
     "train_xgboost_with_randomized_search_cv": True,
     "train_lightgbm_with_randomized_search_cv": True,
     "train_random_forest_with_randomized_search_cv": True,
     "train_logistic_regression_with_randomized_search_cv": True,
     "train_naive_bayes_with_randomized_search_cv": True,
+    "train_fcll_net": True,
 }
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merge_data_files"
 MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER = "data/output/501-filter_delay_outliers"
 MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER = "data/output/502-select_training_cols"
 SPLIT_DATASET_OUTPUT_FOLDER = "data/output/503-split_dataset"
+FCLL_SEQUENCES_OUTPUT_FOLDER = "data/output/506-build_fcll_sequences"
+FCLL_NET_OUTPUT_FOLDER = "data/output/1005-fcll_net"
+
+# Sequence lengths, per Huang et al. (2020) section 4.1.
+FCLL_H_TRAINS = 5
+FCLL_Z_STATIONS = 5
 MERGED_BALANCED_OUTPUT_FOLDER = "data/output/504-balance_classes"
 MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/505-scale_weather_features"
 SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER = "data/output/700-shap_correlation_analysis"
