@@ -182,3 +182,21 @@ def test_the_label_is_derived_when_the_raw_events_carry_none():
     visits = derive_station_visits(pd.DataFrame(rows))
     out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
     assert out["label"].tolist() == [0.0], "the threshold is strictly greater-than"
+
+
+def test_the_calendar_features_are_reproduced_from_the_raw_timestamp():
+    """Every scenario lists month_sin/hour_sin/day_week_sin; none of the raw
+    event files carry them, because preprocessing derives them in a stage
+    fcll_net skips. Without this the FCNN branch is empty on scenario 2."""
+    rows = [_event(1, "OL", "ARRIVAL", "10:00", "10:00", 0)]
+    rows[0]["scheduledTime"] = "2018-03-14T09:30:00.000Z"
+    rows[0]["actualTime"] = "2018-03-14T09:30:00.000Z"
+
+    visits = derive_station_visits(pd.DataFrame(rows))
+    row = visits.iloc[0]
+
+    # 2018-03-14 is a Wednesday; add_temporal_features numbers 1=Sunday, so 4.
+    assert row["month_sin"] == pytest.approx(np.sin(2 * np.pi * 2 / 12.0))
+    assert row["hour_sin"] == pytest.approx(np.sin(2 * np.pi * 9.5 / 24.0))
+    assert row["day_week_sin"] == pytest.approx(np.sin(2 * np.pi * 3 / 7.0))
+    assert row["day_of_month"] == 14

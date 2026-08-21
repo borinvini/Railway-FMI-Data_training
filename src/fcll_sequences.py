@@ -19,6 +19,10 @@ import pandas as pd
 from config.const_preprocessing import (
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAIN_DELAY_MINUTES,
+    WAWA_CODE_TO_GROUP,
+    WAWA_EMITTED_GROUPS,
+    WAWA_FALLBACK_GROUP,
+    WAWA_SOURCE_COLUMN,
 )
 
 OF_COLUMNS = [
@@ -112,6 +116,9 @@ def derive_station_visits(df, carry_columns=None):
         wide = wide.merge(flags[keys + ["stops_in_section"]], on=keys, how="left")
     else:
         wide["stops_in_section"] = np.nan
+
+    wide = _add_temporal_features(wide, col("_actual_arrival").fillna(col("_actual_departure")))
+    wide = _add_wawa_groups(wide, df, keys)
 
     if carry_columns:
         # Prefer the ARRIVAL row's values; fall back to the DEPARTURE row for
@@ -207,3 +214,61 @@ def derive_label(visits):
     if delay.isna().all() and TRAIN_DELAYED_TARGET_COLUMN in visits.columns:
         delay = visits[TRAIN_DELAYED_TARGET_COLUMN]
     return (delay.fillna(0.0) > TRAIN_DELAY_MINUTES).to_numpy(dtype=np.float32)
+
+
+def _add_temporal_features(wide, actual):
+    """Reproduce the calendar features preprocessing derives from actualTime.
+
+    They are in every scenario catalogue but in none of the raw event files,
+    because preprocessing computes them downstream — the stage FCLL-Net skips.
+    Without this the FCNN branch sees nothing at all on the operational-only
+    scenarios. Formulas and the -1 offsets match convert_*_to_sincos exactly;
+    day_of_week is 1=Sunday..7=Saturday as add_temporal_features defines it.
+    """
+    month = actual.dt.month
+    hour_decimal = actual.dt.hour + actual.dt.minute / 60.0
+    pandas_dayofweek = actual.dt.dayofweek
+    day_of_week = np.where(pandas_dayofweek == 6, 1, pandas_dayofweek + 2)
+
+    wide["month_sin"] = np.sin(2 * np.pi * (month - 1) / 12.0)
+    wide["month_cos"] = np.cos(2 * np.pi * (month - 1) / 12.0)
+    wide["hour_sin"] = np.sin(2 * np.pi * hour_decimal / 24.0)
+    wide["hour_cos"] = np.cos(2 * np.pi * hour_decimal / 24.0)
+    wide["day_week_sin"] = np.sin(2 * np.pi * (day_of_week - 1) / 7.0)
+    wide["day_week_cos"] = np.cos(2 * np.pi * (day_of_week - 1) / 7.0)
+    wide["day_of_month"] = actual.dt.day
+
+    # A neutral position on the unit circle for unparseable timestamps, as the
+    # preprocessing stages do.
+    for name in ("month_sin", "month_cos", "hour_sin", "hour_cos",
+                 "day_week_sin", "day_week_cos", "day_of_month"):
+        wide[name] = wide[name].fillna(0.0)
+    return wide
+
+
+def _add_wawa_groups(wide, df, keys):
+    """Reproduce the WMO 4680 present-weather one-hot columns.
+
+    Same reason as _add_temporal_features: scenarios 9-13 list them, and
+    preprocessing builds them in a stage fcll_net skips. The code-to-group map
+    and the emitted-group list are imported rather than restated, so the two
+    paths cannot drift apart.
+    """
+    names = [f"wawa_group_{group}" for group in WAWA_EMITTED_GROUPS]
+    if WAWA_SOURCE_COLUMN not in df.columns:
+        for name in names:
+            wide[name] = 0.0
+        return wide
+
+    codes = pd.to_numeric(df[WAWA_SOURCE_COLUMN], errors="coerce").astype("Int64")
+    groups = codes.map(WAWA_CODE_TO_GROUP).fillna(WAWA_FALLBACK_GROUP).astype(str)
+    per_visit = (
+        df.assign(_wawa_group=groups)
+        .groupby(keys, sort=False)["_wawa_group"]
+        .first()
+        .reset_index()
+    )
+    wide = wide.merge(per_visit, on=keys, how="left")
+    for group, name in zip(WAWA_EMITTED_GROUPS, names):
+        wide[name] = (wide["_wawa_group"] == group).astype(float)
+    return wide.drop(columns=["_wawa_group"])
