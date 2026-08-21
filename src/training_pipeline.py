@@ -446,6 +446,36 @@ class TrainingPipeline:
         else:
             print(f"    ⊝ shap_correlation_analysis (disabled)")
 
+        if state_machine.get("train_fcll_net", False):
+            try:
+                print(f"    → train_fcll_net")
+                fcll_result = self.train_fcll_net()
+
+                if fcll_result and fcll_result.get("success", False):
+                    result["steps_executed"].append("train_fcll_net")
+                    metrics = fcll_result.get("metrics", {})
+                    result["file_info"]["fcll_net_metrics"] = metrics
+                    print(f"      ✓ Successfully trained FCLL-Net")
+                    print(f"      ✓ Test samples: {metrics.get('n_test', 0):,}")
+                    print(f"      ✓ Accuracy: {metrics.get('accuracy', 0):.4f}")
+                    print(f"      ✓ F1: {metrics.get('f1', 0):.4f}")
+                    print(f"      ✓ ROC-AUC: {metrics.get('roc_auc', float('nan')):.4f}")
+                    print(f"      ✓ Epochs run: {metrics.get('epochs_run', 0)}")
+                    print(f"      ✓ Results saved to: {fcll_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = fcll_result.get("error", "train_fcll_net returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+
+            except Exception as e:
+                result["errors"].append(f"train_fcll_net failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ train_fcll_net (disabled)")
+
         if state_machine.get("train_xgboost_with_randomized_search_cv", False):
             try:
                 print(f"    → train_xgboost_with_randomized_search_cv")
@@ -1601,6 +1631,33 @@ class TrainingPipeline:
             json.dump({"h": h, "z": z, "n_samples": total, "columns": kept_columns,
                        "target_station": target_station}, fh, indent=2)
         return {"success": True, "n_samples": total, "shards": len(files)}
+
+    def train_fcll_net(self, data_dir=None):
+        """Train FCLL-Net on the sequences built by stage 506."""
+        import torch
+
+        from src.fcll_trainer import load_shards, train_fcll
+
+        data_dir = data_dir or os.path.join(self.project_root, FCLL_SEQUENCES_OUTPUT_FOLDER)
+        output_dir = os.path.join(self.project_root, FCLL_NET_OUTPUT_FOLDER)
+        os.makedirs(output_dir, exist_ok=True)
+        try:
+            data = load_shards(data_dir)
+        except FileNotFoundError as exc:
+            return {"success": False, "error": str(exc)}
+
+        try:
+            result = train_fcll(data)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        torch.save(result["model"].state_dict(), os.path.join(output_dir, "fcll_net.pt"))
+        with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as fh:
+            json.dump(result["metrics"], fh, indent=2)
+        with open(os.path.join(output_dir, "val_loss_history.json"), "w", encoding="utf-8") as fh:
+            json.dump(result["history"], fh, indent=2)
+        return {"success": True, "metrics": result["metrics"],
+                "output_directory": output_dir}
 
     def split_by_group(self, df, group_column, random_state=RANDOM_STATE):
         """Split `df` into train/val/test so no group value spans two splits.

@@ -76,3 +76,12 @@ def test_a_missing_input_directory_is_an_error_not_an_empty_manifest(tmp_path):
     )
     assert result["success"] is False
     assert "no input parquet" in result["error"]
+
+
+def test_train_fcll_net_reports_an_error_when_no_shards_exist(tmp_path):
+    """The trainer runs as its own array task; a missing stage 506 must fail
+    loudly rather than train on nothing."""
+    pipeline = TrainingPipeline()
+    result = pipeline.train_fcll_net(data_dir=str(tmp_path / "missing"))
+    assert result["success"] is False
+    assert "no .npz shards" in result["error"]
