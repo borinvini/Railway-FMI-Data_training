@@ -131,11 +131,27 @@ This takes 10-20 minutes. Then:
 
 ```bash
 export PATH="/projappl/project_2019266/railway-env/bin:$PATH"
-python -c "import sklearn, xgboost, lightgbm, shap, pyarrow, seaborn, haversine; print('env OK')"
+python -c "import sklearn, xgboost, lightgbm, shap, pyarrow, seaborn, haversine, torch; print('env OK')"
 ```
 
 If a pinned version fails to solve on `linux-64`, relax that single pin in
 `environment-linux.yml`, rebuild, and record the deviation at the bottom of this file.
+
+### Adding a dependency to an existing container
+
+The container is built once and does not pick up later edits to
+`environment-linux.yml` on its own. After adding a dependency — `pytorch-cpu`
+for the `fcll_net` trainer, for instance — the image must be updated or rebuilt
+before the next run, or the job dies on `ImportError` after queueing:
+
+```bash
+module load tykky
+conda-containerize update /projappl/project_2019266/railway-env --post-install /dev/null
+# or a full rebuild, if the update cannot solve the new environment:
+conda-containerize new --prefix /projappl/project_2019266/railway-env environment-linux.yml
+```
+
+Either takes 10-20 minutes. `fcll_net` will not run until this is done.
 
 ## 5. Stage the data
 
