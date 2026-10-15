@@ -32,6 +32,10 @@ from config.const_preprocessing import (
     FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL,
     INSTANT_BLACK_ICE_MAX_INTENSITY,
     INSTANT_DENSE_FOG_MAX_INTENSITY,
+    ROLLING_BLIZZARD_MIN_RATE,
+    ROLLING_HEAVY_SNOW_MIN_RATE,
+    ROLLING_HEAVY_RAIN_MIN_RATE,
+    rolling_window_hours,
     TIME_FEATURE_SOURCE_COLUMN,
     LOCAL_TIMEZONE,
     LOCAL_TIME_COLUMN_SUFFIX,
@@ -1594,17 +1598,19 @@ class PreprocessingPipeline:
         instantaneous readings, it classifies each row from the pre-computed rolling-window
         aggregates (12h/24h/72h) already present in the input data (columns named e.g.
         "Air temperature (24h min)", "Precipitation amount (24h cumulative)"). This captures
-        whether a weather scenario condition occurred at any point during each window, rather
-        than only at the instant of the row's own reading.
+        the state of the whole window rather than only at the instant of the row's own reading.
 
         For each window W in ROLLING_WINDOWS, a column `weather_scenario_{W}` is added, using
-        the same 10-category vocabulary and priority order as add_weather_scenarios_col, with
-        each condition evaluated on the "worst case" aggregate for that window:
-          - cold thresholds use the window minimum air temperature
-          - heat/wind/intensity/snow-depth thresholds use the window maximum
-          - visibility thresholds use the window minimum
-          - humidity thresholds use the window maximum
-          - precipitation amount thresholds use the window cumulative total
+        the same 10-category vocabulary and priority order as add_weather_scenarios_col.
+        The window state comes from means and rates, so the same rule means the same
+        weather in a 12h and a 72h window; extremes keep their peaks:
+          - precipitation: the cumulative total against a mm/h rate times the window
+            length (ROLLING_*_MIN_RATE; Black Ice / Dense Fog reuse the instant
+            INSTANT_*_MAX_INTENSITY as mean rates). Peak intensity is not used.
+          - air temperature phase (below 0 / above 2) and the +-2 C band use the window mean
+          - humidity thresholds use the window mean
+          - Extreme Cold uses the window minimum, Extreme Heat the maximum
+          - wind and snow depth use the window maximum, visibility the minimum
 
         Two conditions are adapted because their instant inputs have no rolling equivalent:
           - Blizzard and High Winds use Wind speed only (no rolling Gust speed column exists)
@@ -1641,9 +1647,9 @@ class PreprocessingPipeline:
             required_cols = [
                 col('Air temperature', 'min'),
                 col('Air temperature', 'max'),
+                col('Air temperature', 'mean'),
                 col('Wind speed', 'max'),
-                col('Relative humidity', 'max'),
-                col('Precipitation intensity', 'max'),
+                col('Relative humidity', 'mean'),
                 col('Precipitation amount', 'cumulative'),
                 col('Snow depth', 'max'),
                 col('Horizontal visibility', 'min'),
@@ -1660,10 +1666,16 @@ class PreprocessingPipeline:
             scenario_col = f'weather_scenario_{window}'
             df[scenario_col] = 'Normal/Clear'
 
+            hours = rolling_window_hours(window)
+            amount = df[col('Precipitation amount', 'cumulative')]
+            t_mean = df[col('Air temperature', 'mean')]
+            rh_mean = df[col('Relative humidity', 'mean')]
+            in_band = (t_mean >= -2) & (t_mean <= 2)
+
             # 1. BLIZZARD/WINTER STORM - Most severe winter condition (Wind speed only; no rolling gust)
             blizzard_mask = (
-                ((df[col('Precipitation intensity', 'max')] > 1) | (df[col('Precipitation amount', 'cumulative')] > 3)) &
-                (df[col('Air temperature', 'min')] < 0) &
+                (amount > ROLLING_BLIZZARD_MIN_RATE * hours) &
+                (t_mean < 0) &
                 (df[col('Wind speed', 'max')] > 10) &
                 (df[col('Horizontal visibility', 'min')] < 1000)
             )
@@ -1671,8 +1683,8 @@ class PreprocessingPipeline:
 
             # 2. HEAVY SNOW - Severe snowfall without blizzard conditions
             heavy_snow_mask = (
-                ((df[col('Precipitation intensity', 'max')] > 2) | (df[col('Precipitation amount', 'cumulative')] > 5)) &
-                (df[col('Air temperature', 'min')] < 0) &
+                (amount > ROLLING_HEAVY_SNOW_MIN_RATE * hours) &
+                (t_mean < 0) &
                 (df[col('Snow depth', 'max')] > 0) &
                 (df[scenario_col] == 'Normal/Clear')
             )
@@ -1687,27 +1699,25 @@ class PreprocessingPipeline:
 
             # 4. HEAVY RAIN - Intense rainfall events
             heavy_rain_mask = (
-                ((df[col('Precipitation intensity', 'max')] > 4) | (df[col('Precipitation amount', 'cumulative')] > 10)) &
-                (df[col('Air temperature', 'max')] > 2) &
+                (amount > ROLLING_HEAVY_RAIN_MIN_RATE * hours) &
+                (t_mean > 2) &
                 (df[scenario_col] == 'Normal/Clear')
             )
             df.loc[heavy_rain_mask, scenario_col] = 'Heavy Rain'
 
             # 5. BLACK ICE CONDITIONS - dew-point term dropped (no rolling Dew-point column)
             black_ice_mask = (
-                (df[col('Air temperature', 'min')] >= -2) &
-                (df[col('Air temperature', 'max')] <= 2) &
-                (df[col('Relative humidity', 'max')] > 80) &
-                (df[col('Precipitation amount', 'cumulative')] <= 0.5) &
+                in_band &
+                (rh_mean > 80) &
+                (amount <= INSTANT_BLACK_ICE_MAX_INTENSITY * hours) &
                 (df[scenario_col] == 'Normal/Clear')
             )
             df.loc[black_ice_mask, scenario_col] = 'Black Ice'
 
             # 6. SLEET/FREEZING RAIN - Active precipitation that freezes on contact
             sleet_mask = (
-                ((df[col('Precipitation amount', 'cumulative')] > 0) | (df[col('Precipitation intensity', 'max')] > 0)) &
-                (df[col('Air temperature', 'min')] >= -2) &
-                (df[col('Air temperature', 'max')] <= 2) &
+                (amount > 0) &
+                in_band &
                 (df[scenario_col] == 'Normal/Clear')
             )
             df.loc[sleet_mask, scenario_col] = 'Freezing Rain'
@@ -1715,8 +1725,8 @@ class PreprocessingPipeline:
             # 7. DENSE FOG - Low visibility conditions
             dense_fog_mask = (
                 (df[col('Horizontal visibility', 'min')] < 1000) &
-                (df[col('Precipitation amount', 'cumulative')] <= 0.1) &
-                (df[col('Relative humidity', 'max')] > 95) &
+                (amount <= INSTANT_DENSE_FOG_MAX_INTENSITY * hours) &
+                (rh_mean > 95) &
                 (df[scenario_col] == 'Normal/Clear')
             )
             df.loc[dense_fog_mask, scenario_col] = 'Dense Fog'

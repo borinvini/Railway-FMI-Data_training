@@ -133,6 +133,25 @@ BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']
 INSTANT_BLACK_ICE_MAX_INTENSITY = 0.5   # mm/h, "light or no active precipitation"
 INSTANT_DENSE_FOG_MAX_INTENSITY = 0.1   # mm/h, "no or very light precipitation"
 
+# Rolling scenarios scale with the window. The first version reused the instant
+# cuts on worst-case aggregates in every window, so 10 mm was Heavy Rain whether
+# it fell in 12 hours or 72, peak intensity counted too, and the +-2 C band had
+# to hold for the whole window. At OL the 72h columns read Heavy Rain 17.3%,
+# Blizzard 11.5%, Heavy Snow 9.2%, Black Ice 0.04% (instant: 0.18, 0.05, 0.02,
+# 13.5%). Now the window state comes from the cumulative amount against a rate
+# times the window length, and from the window means of temperature (phase and
+# band) and humidity (RH max is above 80 in 99% of 72h windows). The old amount
+# cuts (3 / 5 / 10 mm) are read as per-24h, giving 72h shares of Blizzard 1.8%,
+# Heavy Snow 0.3%, Heavy Rain 1.3%, Black Ice 14.2% (12h: 0.7 / 1.7 / 3.3 / 13.5).
+ROLLING_BLIZZARD_MIN_RATE = 3 / 24      # mm/h, window total > rate * hours
+ROLLING_HEAVY_SNOW_MIN_RATE = 5 / 24    # mm/h
+ROLLING_HEAVY_RAIN_MIN_RATE = 10 / 24   # mm/h
+
+
+def rolling_window_hours(window):
+    """Length in hours of a ROLLING_WINDOWS entry ('72h' -> 72)."""
+    return int(window.rstrip("h"))
+
 # Weather scenario categories, shared by the instant and rolling-window scenario stages
 # and by weather_scenario_one_hot_encoder (order matters for consistent one-hot columns)
 WEATHER_SCENARIO_CATEGORIES = [
