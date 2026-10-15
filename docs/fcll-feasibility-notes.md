@@ -33,19 +33,27 @@ That is a decision for the author, not one this implementation made silently.
 
 ## 2. Sequence coverage
 
-Over the first 12 months (10,521 target samples at `TARGET_STATION_CODE`):
+Measured over all 96 months (58,683 samples at `TARGET_STATION_CODE`):
 
 | sequence | full-length share |
 |---|---|
-| Z (5 preceding stations) | **65.8%** |
+| Z (5 preceding stations) | **99.8%** |
 | H (5 preceding trains) | **99.4%** |
+
+> **Superseded measurement.** This section first reported full-Z at 65.8% over
+> a 10,521-sample set. That set included trains *originating* at the target
+> station, which have no arrival to predict and therefore no station history at
+> all — they were the entire short-Z population. Excluding them (see
+> `assemble_sequences`, and `test_no_emitted_sample_has_an_empty_station_history`)
+> drops 32.8% of samples and takes full-Z coverage to 99.8%. The old figure
+> measured the bug, not the data.
 
 **Decision rules and outcomes:**
 
-- Full-Z below 50% → reduce `Z`. At 65.8%, **`Z = 5` stands.** The remaining
-  34% are short-route and originating trains, which are pre-padded and masked
-  rather than dropped, so they still train the station branch on whatever real
-  history they have.
+- Full-Z below 50% → reduce `Z`. At 99.8%, **`Z = 5` stands**, and with far
+  more room than the original measurement suggested: essentially every train
+  that arrives at the target has five real preceding stations, so the station
+  branch trains on genuine history rather than on padding.
 - Full-H below 50% → the target station's traffic is too sparse for the
   train-interaction branch. At 99.4%, **the H branch is well supported.** OL
   sees enough traffic that almost every arrival has five trains ahead of it.

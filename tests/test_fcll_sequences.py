@@ -310,3 +310,63 @@ def test_the_label_is_not_arithmetically_recoverable_from_the_sequences():
     assert agreement < 0.90, (
         f"the label is {agreement:.1%} recoverable by arithmetic on one timestep"
     )
+
+
+def test_a_train_originating_at_the_target_station_is_not_a_sample():
+    """Train 2 starts at OL, so it has no OL arrival and nothing to predict.
+
+    Its only OL event is a DEPARTURE, which leaves arrival_delay NaN. Emitting
+    it would label a non-event as 'not delayed' — 32% of the real dataset,
+    every one of them a guaranteed negative the model can spot from an empty
+    z_mask.
+    """
+    rows = [
+        _event(1, "A", "ARRIVAL", "10:00", "10:00", 0),
+        _event(1, "OL", "ARRIVAL", "10:05", "10:05", 1),
+        _event(2, "OL", "DEPARTURE", "10:20", "10:20", 0),
+        _event(2, "B", "ARRIVAL", "10:30", "10:30", 1),
+    ]
+    visits = derive_station_visits(pd.DataFrame(rows))
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    assert out["label"].shape[0] == 1, "only train 1 actually arrives at OL"
+    assert out["z_mask"][0].sum() == 1, "and its sequence is train 1's own history"
+
+
+def test_an_originating_train_is_still_available_as_preceding_traffic():
+    """Dropping train 2 as a sample must not delete its visit from the H pool.
+
+    It occupies the platform ahead of train 3 whether or not we predict it, so
+    train 3's H sequence still sees it."""
+    rows = [
+        _event(2, "OL", "DEPARTURE", "10:00", "10:00", 0),
+        _event(3, "A", "ARRIVAL", "10:05", "10:05", 0),
+        _event(3, "OL", "ARRIVAL", "10:10", "10:10", 1),
+    ]
+    visits = derive_station_visits(pd.DataFrame(rows))
+    out = assemble_sequences(visits, target_station="OL", nf_columns=[], z=5, h=5)
+    assert out["label"].shape[0] == 1, "train 3 is the only sample"
+    assert out["h_mask"][0].sum() == 1, "train 2 still precedes it into OL"
+
+
+def test_no_emitted_sample_has_an_empty_station_history():
+    """Invariant guard on real data.
+
+    An empty z_mask is the signature of the originating-train bug: a sample
+    whose label was manufactured by fillna rather than measured. On the real
+    input every OL arrival has at least one preceding station, so this must
+    hold exactly, not approximately.
+    """
+    import glob
+
+    files = sorted(glob.glob("data/input/matched_data_flat_*.parquet"))
+    if not files:
+        pytest.skip("requires the local raw input parquet")
+
+    from config.const_preprocessing import TARGET_STATION_CODE
+
+    out = assemble_sequences(
+        derive_station_visits(pd.read_parquet(files[0])),
+        target_station=TARGET_STATION_CODE, nf_columns=[],
+    )
+    empty = int((out["z_mask"].sum(axis=1) == 0).sum())
+    assert empty == 0, f"{empty} samples carry no upstream history"

@@ -132,7 +132,11 @@ def derive_station_visits(df, carry_columns=None):
 
 def assemble_sequences(visits, target_station, nf_columns, h=5, z=5,
                        label_column="trainDelayed"):
-    """Build one sample per arrival at `target_station`.
+    """Build one sample per *arrival* at `target_station`.
+
+    Arrival is meant strictly: a train that originates at the target station
+    never arrives there and is not a sample, though it stays in the pool of
+    preceding traffic. See the `targets` comment below.
 
     Padding is pre-padding with zeros plus an explicit mask, rather than
     dropping short routes: a train originating two stations before the target
@@ -153,7 +157,21 @@ def assemble_sequences(visits, target_station, nf_columns, h=5, z=5,
         ["trainNumber", "departureDate"], sort=False
     ).cumcount().to_numpy()
 
-    targets = np.flatnonzero((visits["stationShortCode"] == target_station).to_numpy())
+    # Every visit at the target station, in the order they call there. This is
+    # the pool the H sequence draws from, and it includes trains that only
+    # depart: they occupy the platform ahead of the next arrival whether or not
+    # we predict them.
+    at_station = np.flatnonzero((visits["stationShortCode"] == target_station).to_numpy())
+
+    # Samples are the subset that actually arrives. A train ORIGINATING at the
+    # target station has no ARRIVAL event, so arrival_delay is NaN and there is
+    # nothing to predict — it never arrives anywhere to be late. Emitting it
+    # would run that NaN through derive_label's fillna(0.0) and label a
+    # non-event 'not delayed': 32% of the real dataset, every one a guaranteed
+    # negative, and identifiable from an empty z_mask because an originating
+    # train has no preceding stations either.
+    arrived = visits["arrival_delay"].notna().to_numpy()
+    targets = at_station[arrived[at_station]]
 
     z_seq = np.zeros((len(targets), z, len(OF_COLUMNS)), dtype=np.float32)
     h_seq = np.zeros((len(targets), h, len(OF_COLUMNS)), dtype=np.float32)
@@ -163,8 +181,8 @@ def assemble_sequences(visits, target_station, nf_columns, h=5, z=5,
     # The trains ahead of this one are the target-station visits scheduled
     # earlier, so the H order is visit_time — not train number, and not the
     # journey order the frame happens to be sorted in.
-    order = np.argsort(visits["visit_time"].to_numpy()[targets], kind="stable")
-    ranked = targets[order]
+    order = np.argsort(visits["visit_time"].to_numpy()[at_station], kind="stable")
+    ranked = at_station[order]
     rank_of = {position: rank for rank, position in enumerate(ranked)}
     station_of = of[ranked]
 
