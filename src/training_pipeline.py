@@ -64,6 +64,7 @@ from config.const import (
 
 from config.const_preprocessing import (
     GROUP_KEY_COLUMN,
+    VALID_TARGET_FEATURES,
     TARGET_STATION_CODE,
     PREPROCESSED_OUTPUT_FOLDER,
     DATA_FILE_PREFIX_FOR_TRAINING,
@@ -1686,9 +1687,42 @@ class TrainingPipeline:
         select = lambda wanted: df[df[group_column].isin(wanted)]
         return select(train_groups), select(val_groups), select(test_groups)
 
+    @staticmethod
+    def fit_train_medians(train_df):
+        """Medians of the numeric feature columns of the TRAIN split.
+
+        Targets (VALID_TARGET_FEATURES), the grouping key and the hold-out year
+        are never imputed. A column that is entirely NaN in train has no median to
+        borrow, so it raises instead of inventing a value.
+        """
+        skip = set(VALID_TARGET_FEATURES) | {GROUP_KEY_COLUMN, HOLDOUT_YEAR_COLUMN}
+        numeric = train_df.select_dtypes(include="number").columns
+        medians = {}
+        empty = []
+        for col in numeric:
+            if col in skip:
+                continue
+            value = train_df[col].median()
+            if pd.isna(value):
+                empty.append(col)
+            else:
+                medians[col] = float(value)
+        if empty:
+            raise ValueError(f"Columns with no non-missing value in the train split: {empty}")
+        return medians
+
+    @staticmethod
+    def apply_medians(frame, medians):
+        """Fill NaN in `frame` with the train medians; other columns are untouched."""
+        known = {col: v for col, v in medians.items() if col in frame.columns}
+        return frame.fillna(value=known)
+
     def write_splits(self, df, output_dir, identifier, group_column=GROUP_KEY_COLUMN,
                      random_state=RANDOM_STATE, basename=None):
         """Split and write train/val/test parquet, dropping the grouping key.
+
+        Missing numeric features are filled with the median of the TRAIN split
+        only (stage 12 no longer imputes), so no statistic sees val/test days.
 
         `basename` exists because split_dataset names its outputs after the source
         file it found, not after an identifier it chose.
@@ -1697,15 +1731,16 @@ class TrainingPipeline:
         basename = basename or f"merged_data_{identifier}"
         train, val, test = self.split_by_group(df, group_column=group_column,
                                                random_state=random_state)
+        medians = self.fit_train_medians(train.drop(columns=[group_column]))
         written = {}
         frames = {}
         for name, part in (("train", train), ("val", val), ("test", test)):
-            part = part.drop(columns=[group_column])
+            part = self.apply_medians(part.drop(columns=[group_column]), medians)
             path = os.path.join(output_dir, f"{basename}_{name}.parquet")
             part.to_parquet(path, index=False)
             written[name] = {"path": path, "rows": len(part)}
             frames[name] = part
-        return {"success": True, "files": written, "frames": frames}
+        return {"success": True, "files": written, "frames": frames, "medians": medians}
 
     def split_dataset(self, data_dir=None, output_dir=None, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify_column=None):
         """
@@ -1870,6 +1905,7 @@ class TrainingPipeline:
                 train_df = split["frames"]["train"]
                 val_df = split["frames"]["val"]
                 test_df = split["frames"]["test"]
+                medians = split["medians"]
                 n_days = dev_df[GROUP_KEY_COLUMN].nunique()
                 dev_df = dev_df.drop(columns=[GROUP_KEY_COLUMN])
                 print(f"      Day-grouped split on '{GROUP_KEY_COLUMN}' ({n_days:,} operating days)")
@@ -1886,6 +1922,9 @@ class TrainingPipeline:
                 )
                 val_df = dev_df.iloc[0:0]
                 val_filename = None
+                medians = self.fit_train_medians(train_df)
+                train_df = self.apply_medians(train_df, medians)
+                test_df = self.apply_medians(test_df, medians)
                 train_df.to_parquet(os.path.join(split_output_dir, train_filename), index=False)
                 test_df.to_parquet(os.path.join(split_output_dir, test_filename), index=False)
 
@@ -1894,6 +1933,10 @@ class TrainingPipeline:
             if val_filename:
                 print(f"        Val set:   {len(val_df):,} samples ({(len(val_df) / len(dev_df)) * 100:.1f}%)")
             print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(dev_df)) * 100:.1f}%)")
+
+            with open(os.path.join(split_output_dir, "imputation_medians.json"), "w", encoding="utf-8") as f:
+                json.dump(medians, f, indent=2)
+            print(f"      Imputed {len(medians)} numeric columns with train medians")
 
             print(f"      Saved train set to: {train_filename}")
             if val_filename:
@@ -1904,6 +1947,7 @@ class TrainingPipeline:
                 holdout_path = os.path.join(split_output_dir, holdout_filename)
                 if GROUP_KEY_COLUMN in holdout_df.columns:
                     holdout_df = holdout_df.drop(columns=[GROUP_KEY_COLUMN])
+                holdout_df = self.apply_medians(holdout_df, medians)
                 holdout_df.to_parquet(holdout_path, index=False)
                 print(f"      Saved hold-out set to: {holdout_filename}")
             

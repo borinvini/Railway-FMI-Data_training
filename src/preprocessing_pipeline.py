@@ -5,10 +5,12 @@ import logging
 import os
 import re
 import glob
+import json
                 
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from sklearn.preprocessing import OneHotEncoder
 
 from src.file_utils import generate_output_path, save_dataframe_to_parquet
@@ -147,6 +149,106 @@ class PreprocessingPipeline:
                 handler.close()
                 logger.removeHandler(handler)
 
+    def decide_weather_columns_to_drop(self, files):
+        """Decide once, over all months, which weather columns stage 12 drops.
+
+        The 30% rule used to run on each month alone, so one bad month removed a
+        column from its own file only and merge_data_files (column intersection)
+        then lost it everywhere without a word. This pass reads only the target
+        station rows and the weather columns of every month (no full load),
+        pools the counts, and raises when any month would decide differently, so
+        the disagreement is fixed in the data rather than hidden by the merge.
+
+        The rows counted are the target-station rows with a numeric delay, which
+        is what stage 12 sees apart from small changes made by stages 3-11.
+
+        Returns the sorted list of columns to drop and writes it, with the
+        per-month missing percentages, to weather_columns_to_drop.json.
+        """
+        def weather_like(name):
+            return any(w in name for w in IMPORTANT_WEATHER_FEATURES)
+
+        per_month = {}
+        for path in files:
+            match = re.search(r'(\d{4}_\d{2})\.parquet$', os.path.basename(path))
+            month = match.group(1) if match else os.path.basename(path)
+            names = pq.read_schema(path).names
+            wanted = [c for c in names if weather_like(c)]
+            if 'stationShortCode' not in names:
+                raise ValueError(f"{month}: no 'stationShortCode' column")
+            columns = wanted + ['stationShortCode']
+            has_delay = 'differenceInMinutes' in names
+            if has_delay:
+                columns.append('differenceInMinutes')
+            table = pq.read_table(
+                path, columns=columns,
+                filters=[('stationShortCode', '==', TARGET_STATION_CODE)])
+            frame = table.to_pandas()
+            if has_delay:
+                delay = pd.to_numeric(frame['differenceInMinutes'], errors='coerce')
+                frame = frame[delay.notna()]
+            n = len(frame)
+            if n == 0:
+                continue
+            per_month[month] = {'rows': n, 'missing_pct': {}, 'present': set(wanted)}
+            for col in wanted:
+                count = int(pd.to_numeric(frame[col], errors='coerce').isna().sum())
+                per_month[month]['missing_pct'][col] = count / n * 100
+
+        if not per_month:
+            raise ValueError(f"No '{TARGET_STATION_CODE}' rows in any of the {len(files)} files")
+
+        all_columns = sorted(set().union(*(m['present'] for m in per_month.values())))
+        total_rows = sum(m['rows'] for m in per_month.values())
+
+        # Schema drift is its own failure: name the months that lack the column
+        # instead of letting the pooled share blame the months that have it.
+        gaps = [f"{col} absent from {month}"
+                for col in all_columns
+                for month, m in per_month.items() if col not in m['present']]
+        if gaps:
+            raise ValueError(
+                "Weather columns are not present in every month; the merge would "
+                "silently drop them everywhere:\n  " + "\n  ".join(gaps))
+
+        pooled = {}
+        for col in all_columns:
+            # a month that lacks the column counts all its rows as missing
+            missing = sum(
+                m['rows'] if col not in m['present'] else m['missing_pct'][col] / 100 * m['rows']
+                for m in per_month.values())
+            pooled[col] = missing / total_rows * 100
+        to_drop = sorted(c for c in all_columns if pooled[c] > WEATHER_MISSING_THRESHOLD)
+
+        disagreements = []
+        for month, m in per_month.items():
+            for col in all_columns:
+                pct = 100.0 if col not in m['present'] else m['missing_pct'][col]
+                if (pct > WEATHER_MISSING_THRESHOLD) != (col in to_drop):
+                    disagreements.append(
+                        f"{col} in {month}: {pct:.1f}% missing "
+                        f"(pooled {pooled[col]:.1f}%, threshold {WEATHER_MISSING_THRESHOLD}%)")
+        if disagreements:
+            raise ValueError(
+                "Weather column drop decision differs between months; the merge would "
+                "silently drop these columns everywhere:\n  " + "\n  ".join(disagreements))
+
+        report_dir = self._output_dir(FOLDER_HANDLE_MISSING_VALUES)
+        os.makedirs(report_dir, exist_ok=True)
+        report = {
+            'threshold_pct': WEATHER_MISSING_THRESHOLD,
+            'columns_to_drop': to_drop,
+            'pooled_missing_pct': {c: round(pooled[c], 3) for c in all_columns},
+            'months': {mo: {'rows': m['rows'],
+                            'missing_pct': {c: round(v, 3) for c, v in m['missing_pct'].items()}}
+                       for mo, m in per_month.items()},
+        }
+        with open(os.path.join(report_dir, 'weather_columns_to_drop.json'), 'w', encoding='utf-8') as f:
+            json.dump(report, f, indent=2)
+        print(f"✓ Weather column drop list decided over {len(per_month)} months "
+              f"({total_rows:,} {TARGET_STATION_CODE} rows): {to_drop}")
+        return to_drop
+
     def run_pipeline(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
         """
         Run pipeline - processes each CSV file individually based on state machine configuration.
@@ -191,6 +293,22 @@ class PreprocessingPipeline:
         print(f"State machine configuration: {PREPROCESSING_STATE_MACHINE}")
         print(f"Enabled pipeline steps: {enabled_steps}")
         
+        # Decide the weather-column drop list once, over all months, before any
+        # month is processed; a disagreement between months aborts the run.
+        self.weather_columns_to_drop = None
+        if PREPROCESSING_STATE_MACHINE.get("handle_missing_values"):
+            try:
+                self.weather_columns_to_drop = self.decide_weather_columns_to_drop(csv_files)
+            except Exception as decision_error:
+                print(f"✗ Cannot decide the weather column drop list: {decision_error}")
+                return {
+                    "total_files": len(csv_files),
+                    "successful_preprocessing": 0,
+                    "failed_files": len(csv_files),
+                    "state_machine_used": PREPROCESSING_STATE_MACHINE,
+                    "error": str(decision_error)
+                }
+
         # Initialize counters
         successful_preprocessing = 0
         failed_files = 0
@@ -2715,12 +2833,14 @@ class PreprocessingPipeline:
         Now includes initial data completeness analysis and weather column filtering.
         
         Processes the provided dataframe and handles missing values:
-        - Drop weather columns that exceed the missing value threshold
+        - Drop the weather columns on self.weather_columns_to_drop, decided once
+          over all months by decide_weather_columns_to_drop (falls back to this
+          month alone, with a warning, when the list was not set)
         - Drop rows where all remaining weather condition columns have missing values
         - Drop rows where differenceInMinutes or cancelled are None
         - Fill missing values in trainStopping and commercialStop with False
-        - Use month-specific median imputation for all weather columns
-        - Use global median for all other columns that still have missing values
+        - Leave remaining NaN for the post-split train-median imputer
+          (TrainingPipeline.write_splits); no statistic is computed here
         
         Parameters:
         -----------
@@ -2865,11 +2985,24 @@ class PreprocessingPipeline:
                 
                 columns_to_drop = []
                 columns_kept = []
+                decided = getattr(self, "weather_columns_to_drop", None)
+                if decided is None:
+                    print("⚠️  No pre-decided drop list: applying the threshold to this month alone")
+                    logger.warning("No pre-decided drop list: threshold applied per month")
                 
                 for col in all_weather_cols:
                     missing_count = df[col].isna().sum()
                     missing_pct = (missing_count / len(df)) * 100
                     
+                    if decided is not None:
+                        if col in decided:
+                            columns_to_drop.append(col)
+                            print(f"  - DROPPING '{col}': on the all-months drop list ({missing_pct:.2f}% missing here)")
+                            logger.info(f"DROPPING '{col}': on the all-months drop list")
+                        else:
+                            columns_kept.append(col)
+                        continue
+
                     if missing_pct > WEATHER_MISSING_THRESHOLD:
                         columns_to_drop.append(col)
                         print(f"  - DROPPING '{col}': {missing_count} missing ({missing_pct:.2f}% > {WEATHER_MISSING_THRESHOLD}%)")
@@ -2926,89 +3059,18 @@ class PreprocessingPipeline:
             else:
                 logger.info(f"Dropped {dropped_weather} rows with missing all weather conditions ({weather_dropped_percentage:.2f}%)")
             
-            # ===== ENHANCED MISSING VALUE HANDLING - WEATHER FEATURES WITH MONTH-SPECIFIC MEDIAN =====
-            
-            # Identify all weather-related columns (after filtering)
-            important_weather_features = [col for col in df.columns if any(weather_condition in col for weather_condition in ALL_WEATHER_FEATURES)]
-        
-            
-            if important_weather_features:
-                # Coerce all weather/window columns to numeric — source parquets store some as
-                # object dtype (string numbers). Window cols bypass add_weather_scenarios_col coercion.
-                for col in important_weather_features:
-                    if df[col].dtype == object:
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Weather/window columns can arrive as object dtype (string numbers);
+            # coerce them so the post-split imputer sees numeric columns.
+            weather_like_cols = [col for col in df.columns
+                                 if any(w in col for w in ALL_WEATHER_FEATURES)]
+            for col in weather_like_cols:
+                if df[col].dtype == object:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
 
-                print(f"\n--- WEATHER FEATURES IMPUTATION WITH MONTH-SPECIFIC MEDIANS ---")
-                logger.info("=== Weather Features Imputation with Month-Specific Medians ===")
-                
-                # Check if month column exists
-                if 'month' not in df.columns:
-                    print("Warning: 'month' column not found. Cannot perform month-specific imputation.")
-                    logger.warning("'month' column not found. Cannot perform month-specific imputation.")
-                    
-                    # Fallback to global median for weather features
-                    for col in important_weather_features:
-                        nulls = df[col].isna().sum()
-                        if nulls > 0:
-                            percentage = (nulls / len(df)) * 100
-                            median_value = df[col].median()
-                            df[col] = df[col].fillna(median_value)
-                            print(f"- Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
-                            logger.info(f"Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
-                else:
-                    print(f"Found {len(important_weather_features)} weather-related columns for month-specific median imputation:")
-                    for col in important_weather_features:
-                        print(f"  - {col}")
-                    logger.info(f"Found {len(important_weather_features)} weather-related columns: {important_weather_features}")
-                    
-                    # Perform month-specific median imputation for each weather column
-                    for col in important_weather_features:
-                        nulls_before = df[col].isna().sum()
-                        if nulls_before > 0:
-                            percentage = (nulls_before / len(df)) * 100
-                            
-                            # Calculate single median for all data in the file
-                            file_median = df[col].median()
+            # No median imputation here. A median taken over the month includes
+            # days that the split later sends to test or hold-out; remaining NaN
+            # are filled from the TRAIN split in TrainingPipeline.write_splits.
 
-                            # Show median for this column
-                            print(f"\n  Processing '{col}' ({nulls_before} missing values, {percentage:.2f}%):")
-                            print(f"    File median: {file_median:.2f}")
-
-                            # Fill missing values with the single file median
-                            df[col] = df[col].fillna(file_median)
-                            
-                            # Verify the imputation worked
-                            nulls_after = df[col].isna().sum()
-                            filled_count = nulls_before - nulls_after
-                            
-                            print(f"    Result: Filled {filled_count} missing values using file median")
-                            logger.info(f"Filled {filled_count} missing values in '{col}' using file median ({percentage:.2f}%)")
-                            
-                            if nulls_after > 0:
-                                print(f"    Warning: {nulls_after} values still missing (possibly months with no data)")
-                                logger.warning(f"{nulls_after} values still missing in '{col}' after month-specific imputation")
-                        else:
-                            print(f"  '{col}': No missing values")
-
-            # Handle any remaining non-weather columns with missing values using global median
-            remaining_cols_with_na = [col for col in df.columns 
-                                    if df[col].isna().sum() > 0 
-                                    and not any(weather_condition in col for weather_condition in IMPORTANT_WEATHER_FEATURES)]
-
-            if remaining_cols_with_na:
-                print(f"\n--- NON-WEATHER FEATURES IMPUTATION WITH GLOBAL MEDIAN ---")
-                logger.info("=== Non-Weather Features Imputation with Global Median ===")
-                
-                for col in remaining_cols_with_na:
-                    nulls = df[col].isna().sum()
-                    if nulls > 0:
-                        percentage = (nulls / len(df)) * 100
-                        median_value = df[col].median()
-                        df[col] = df[col].fillna(median_value)
-                        print(f"- Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
-                        logger.info(f"Filled {nulls} missing values in '{col}' with global median: {median_value:.2f} ({percentage:.2f}%)")
-            
             # Count total rows and columns dropped
             total_rows_dropped = original_row_count - len(df)
             total_cols_dropped = original_col_count - len(df.columns)
@@ -3041,8 +3103,8 @@ class PreprocessingPipeline:
             # Additional validation: check for any remaining missing values
             final_missing = df.isna().sum().sum()
             if final_missing > 0:
-                print(f"\nWarning: {final_missing} missing values still remain after imputation")
-                logger.warning(f"{final_missing} missing values still remain after imputation")
+                print(f"\n⊝ {final_missing} missing values left for the post-split imputer")
+                logger.info(f"{final_missing} missing values left for the post-split imputer")
                 # Show which columns still have missing values
                 remaining_missing_cols = df.columns[df.isna().any()].tolist()
                 print(f"Columns with remaining missing values: {remaining_missing_cols}")

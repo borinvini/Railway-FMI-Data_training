@@ -74,7 +74,13 @@ DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
 PREPROCESSED_OUTPUT_FOLDER = "data/output/100-preprocessed"
 TRAINING_READY_OUTPUT_FOLDER = "data/output/101-preprocessed_training_ready"
 
-# Weather column missing value threshold (drop columns with more missing values than this %)
+# Weather column missing value threshold (drop columns with more missing values than this %).
+# Applied ONCE over all months by PreprocessingPipeline.decide_weather_columns_to_drop
+# (target-station rows, pooled counts); the run aborts if a month would decide
+# differently, because merge_data_files keeps the column intersection and would
+# drop the column from every month. At OL it drops only "Precipitation amount"
+# (about 88% missing, in all 96 months); the worst month of any kept column is
+# 0.6% missing. The pass reads only the weather columns: about 15 s, a few MB.
 WEATHER_MISSING_THRESHOLD = 30.0
 
 # Target feature to use for prediction
