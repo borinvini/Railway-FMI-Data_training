@@ -149,6 +149,24 @@ class PreprocessingPipeline:
                 handler.close()
                 logger.removeHandler(handler)
 
+    def _remove_stale_outputs(self, file_id):
+        """Delete this month's training-ready and preprocessed files from an earlier run.
+
+        A failed month writes neither, but merge_data_files globs the folder, so a
+        file left by a previous run would be merged as if it were current.
+        """
+        removed = []
+        candidates = [
+            os.path.join(self.training_ready_dir, f"training_ready_{file_id}.parquet"),
+            os.path.join(self.preprocessed_dir, f"{DATA_FILE_PREFIX_FOR_TRAINING}{file_id}.parquet"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                os.remove(path)
+                removed.append(path)
+                print(f"  ⚠️  Removed stale output of the failed month: {path}")
+        return removed
+
     def decide_weather_columns_to_drop(self, files):
         """Decide once, over all months, which weather columns stage 12 drops.
 
@@ -380,12 +398,14 @@ class PreprocessingPipeline:
                     print(f"✗ Failed to process {filename}")
                     print(f"  Errors: {'; '.join(pipeline_result['errors'])}")
                     failed_files += 1
+                    execution_detail["removed_stale"] = self._remove_stale_outputs(self.current_file_id)
                 
                 pipeline_execution_details.append(execution_detail)
                     
             except Exception as e:
                 print(f"✗ Error processing {filename}: {e}")
                 failed_files += 1
+                self._remove_stale_outputs(self.current_file_id)
                 pipeline_execution_details.append({
                     "filename": filename,
                     "success": False,
@@ -1261,8 +1281,9 @@ class PreprocessingPipeline:
         
         # Check if 'causes' column exists
         if 'causes' not in df.columns:
-            print("Warning: 'causes' column not found in dataframe. Skipping causes processing.")
-            return df
+            raise ValueError(
+                f"process_causes_column: required column 'causes' not found; "
+                f"available: {list(df.columns)}")
         
         try:
             # Initialize tracking variables
@@ -2378,9 +2399,9 @@ class PreprocessingPipeline:
 
         # Check if the required column exists
         if time_col not in df.columns:
-            print(f"Warning: Required column not found in dataframe: ['{time_col}']")
-            print(f"Available columns: {list(df.columns)}")
-            return df
+            raise ValueError(
+                f"process_actual_time_column: required column '{time_col}' not found; "
+                f"available: {list(df.columns)}")
 
         # Rows whose time is NULL/NaN cannot yield temporal features. A null
         # actualTime no longer matters here: the features come from the schedule.
@@ -2534,7 +2555,7 @@ class PreprocessingPipeline:
                 print(error_msg)
                 logger.error(error_msg)
                 logger.error(f"Exception details: {str(e)}")
-                return dataframe  # Return original dataframe on error
+                raise
 
     def filter_columns(self, dataframe=None, month_id=None):
         """
@@ -2716,7 +2737,7 @@ class PreprocessingPipeline:
                 import traceback
                 traceback_str = traceback.format_exc()
                 logger.error(f"Traceback: {traceback_str}")
-                return dataframe  # Return original dataframe on error
+                raise
 
     def convert_boolean_to_numeric(self, dataframe=None, month_id=None):
             """
@@ -2825,7 +2846,7 @@ class PreprocessingPipeline:
                     import traceback
                     traceback_str = traceback.format_exc()
                     logger.error(f"Traceback: {traceback_str}")
-                    return dataframe  # Return original dataframe on error
+                    raise
 
     def handle_missing_values(self, dataframe=None, month_id=None):
         """
@@ -3191,9 +3212,9 @@ class PreprocessingPipeline:
         
         # Check if 'hour' column exists
         if 'hour' not in df.columns:
-            print("Warning: 'hour' column not found in dataframe. Skipping hour to sin/cos conversion.")
-            print(f"Available columns: {list(df.columns)}")
-            return df
+            raise ValueError(
+                f"convert_hour_to_sincos: required column 'hour' not found; "
+                f"available: {list(df.columns)}")
         
         # Use the logging method for detailed logging
         with self.get_logger("convert_hour_to_sincos.log", "convert_hour_to_sincos", month_id) as logger:
@@ -3214,7 +3235,7 @@ class PreprocessingPipeline:
                 if valid_count == 0:
                     print("Warning: All hour values are missing. Cannot convert to sin/cos.")
                     logger.warning("All hour values are missing")
-                    return df
+                    raise ValueError("convert_hour_to_sincos: all 'hour' values are missing")
                 
                 print("--- END DEBUGGING ---\n")
                 
@@ -3337,7 +3358,7 @@ class PreprocessingPipeline:
                 print(error_msg)
                 logger.error(error_msg)
                 logger.error(f"Exception details: {str(e)}")
-                return dataframe  # Return original dataframe on error
+                raise
 
     def convert_month_to_sincos(self, dataframe=None, month_id=None):
         """
@@ -3378,9 +3399,9 @@ class PreprocessingPipeline:
         
         # Check if 'month' column exists
         if 'month' not in df.columns:
-            print("Warning: 'month' column not found in dataframe. Skipping month to sin/cos conversion.")
-            print(f"Available columns: {list(df.columns)}")
-            return df
+            raise ValueError(
+                f"convert_month_to_sincos: required column 'month' not found; "
+                f"available: {list(df.columns)}")
         
         # Use the logging method for detailed logging
         with self.get_logger("convert_month_to_sincos.log", "convert_month_to_sincos", month_id) as logger:
@@ -3410,7 +3431,7 @@ class PreprocessingPipeline:
                 if valid_count == 0:
                     print("Warning: All month values are missing. Cannot convert to sin/cos.")
                     logger.warning("All month values are missing")
-                    return df
+                    raise ValueError("convert_month_to_sincos: all 'month' values are missing")
                 
                 print("--- END DEBUGGING ---\n")
                 
@@ -3520,7 +3541,7 @@ class PreprocessingPipeline:
                 print(error_msg)
                 logger.error(error_msg)
                 logger.error(f"Exception details: {str(e)}")
-                return dataframe  # Return original dataframe on error
+                raise
 
     def convert_dayofweek_to_sincos(self, dataframe=None, month_id=None):
             """
@@ -3561,9 +3582,9 @@ class PreprocessingPipeline:
             
             # Check if 'day_of_week' column exists
             if 'day_of_week' not in df.columns:
-                print("Warning: 'day_of_week' column not found in dataframe. Skipping day_of_week to sin/cos conversion.")
-                print(f"Available columns: {list(df.columns)}")
-                return df
+                raise ValueError(
+                    f"convert_dayofweek_to_sincos: required column 'day_of_week' not found; "
+                    f"available: {list(df.columns)}")
             
             # Use the logging method for detailed logging
             with self.get_logger("convert_dayofweek_to_sincos.log", "convert_dayofweek_to_sincos", month_id) as logger:
@@ -3593,7 +3614,7 @@ class PreprocessingPipeline:
                     if valid_count == 0:
                         print("Warning: All day_of_week values are missing. Cannot convert to sin/cos.")
                         logger.warning("All day_of_week values are missing")
-                        return df
+                        raise ValueError("convert_dayofweek_to_sincos: all 'day_of_week' values are missing")
                     
                     print("--- END DEBUGGING ---\n")
                     
@@ -3701,7 +3722,7 @@ class PreprocessingPipeline:
                     print(error_msg)
                     logger.error(error_msg)
                     logger.error(f"Exception details: {str(e)}")
-                    return dataframe  # Return original dataframe on error
+                    raise
 
     def drop_original_temporal_columns(self, dataframe=None, month_id=None):
         """
@@ -3783,7 +3804,7 @@ class PreprocessingPipeline:
                     error_msg = f"Failed to drop columns: {still_existing}"
                     print(f"Error: {error_msg}")
                     logger.error(error_msg)
-                    return dataframe  # Return original on error
+                    raise RuntimeError(error_msg)
                 
                 print(f"Original temporal columns drop completed:")
                 print(f"- Dropped columns: {existing_columns}")
@@ -3818,7 +3839,7 @@ class PreprocessingPipeline:
                 print(error_msg)
                 logger.error(error_msg)
                 logger.error(f"Exception details: {str(e)}")
-                return dataframe  # Return original dataframe on error
+                raise
 
     def select_target_feature(self, dataframe=None, target_feature=None):
         """
@@ -3851,16 +3872,17 @@ class PreprocessingPipeline:
             
         # Validate target feature
         if target_feature is None:
-            print("Error: target_feature must be specified")
-            return df
+            raise ValueError("select_target_feature: target_feature must be specified")
             
         if target_feature not in VALID_TARGET_FEATURES:
-            print(f"Error: Invalid target feature '{target_feature}'. Must be one of: {VALID_TARGET_FEATURES}")
-            return df
+            raise ValueError(
+                f"select_target_feature: invalid target feature '{target_feature}'; "
+                f"must be one of {VALID_TARGET_FEATURES}")
             
         if target_feature not in df.columns:
-            print(f"Error: Target feature '{target_feature}' not found in dataframe columns")
-            return df
+            raise ValueError(
+                f"select_target_feature: target feature '{target_feature}' not found; "
+                f"available: {list(df.columns)}")
             
         # Drop other target features, keeping only the selected one
         other_targets = [col for col in VALID_TARGET_FEATURES if col != target_feature and col in df.columns]

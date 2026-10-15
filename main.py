@@ -365,6 +365,11 @@ def _run(args):
         else:
             print("✗ Preprocessing pipeline returned no results!")
 
+        preprocessing_code = preprocessing_exit_code(preprocessing_results)
+        if preprocessing_code:
+            print("✗ Preprocessing did not complete for every month; stopping with exit code 1.")
+            return preprocessing_code
+
     # STEP 8: Check if training pipeline execution is enabled
     if not EXECUTE_TRAINING_PIPELINE:
         print("\n" + "="*60)
@@ -423,6 +428,17 @@ def _run(args):
         else:
             print("✗ Training pipeline returned no results!")
             return 1
+
+
+def preprocessing_exit_code(results):
+    """1 when preprocessing did not complete for every month, else 0.
+
+    A failed month used to print a warning and exit 0, so a wrapper script saw
+    success and training went on with a partial set of months.
+    """
+    if not results or results.get("error") or results.get("failed_files", 0) > 0:
+        return 1
+    return 0
 
 
 def main(argv=None):

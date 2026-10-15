@@ -61,6 +61,7 @@ Puhti and Mahti are retired. Project `project_2019266`, ssh alias `roihu`. Code 
 ## Conventions
 - Constants, paths and thresholds live in `config/const*.py`; stage folders are numbered.
 - Console output: `"="*60` banners, `→` stage start, `✓`/`✗` result, `⊝ (disabled)` skipped, `⚠️` warning. Stages return dicts with `success`/`error` and append to `result["errors"]`.
+- Preprocessing stages raise (or return `None`) on failure and never return the input frame; a missing required input column is a failure. The orchestrator (`execute_preprocessing_pipeline_steps`) alone decides to continue. A failed month removes its stale `training_ready_*`/`preprocessed_data_*` files and `main.py` exits 1.
 - Commits: lowercase `area: imperative summary` (`fcll:`, `hpc:`, `fix:`, `docs:`, `test:`, `training:`, `preprocessing:`, `config:`, `env:`, `chore:`). The body explains why, with measured numbers and run/array IDs.
 - Bug fixes come with a regression test in `tests/test_<topic>.py` whose module docstring explains the bug.
 - Shell-script tests resolve Git Bash through `shutil.which("bash")` because `System32\bash.exe` is WSL; `test_hpc_*` stub `sbatch` on PATH.
