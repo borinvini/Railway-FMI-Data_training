@@ -20,7 +20,6 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_dayofweek_to_sincos": True,
     "drop_original_temporal_columns": False,
     "select_target": False,
-    "filter_strong_weather_causes": False,
     "remove_duplicates": True,
     "save_training_ready_parquet": True
 }
@@ -67,7 +66,6 @@ FOLDER_CONVERT_MONTH_TO_SINCOS = "data/output/14-convert_month_to_sincos"
 FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS = "data/output/15-convert_dayofweek_to_sincos"
 FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS = "data/output/16-drop_original_temporal_columns"
 FOLDER_SELECT_TARGET = "data/output/17-select_target"
-FOLDER_FILTER_STRONG_WEATHER_CAUSES = "data/output/18-filter_strong_weather_causes"
 FOLDER_REMOVE_DUPLICATES = "data/output/19-remove_duplicates"
 
 DATA_FILE_PREFIX_FOR_TRAINING = "preprocessed_data_"
