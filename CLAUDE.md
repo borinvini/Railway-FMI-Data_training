@@ -48,6 +48,7 @@ Puhti and Mahti are retired. Project `project_2019266`, ssh alias `roihu`. Code 
 ## Invariants (each was a real bug; tests in `tests/` pin them)
 - Split by operating day (`departureDate`), never by random rows; the key is dropped by the trainers after the split.
 - Calendar features (`month`, `hour`, `day_of_week`, `day_of_month`) come from `scheduledTime` (`TIME_FEATURE_SOURCE_COLUMN`), never `actualTime`: the actual time is the schedule plus the delay, and one `hour_sin`/`hour_cos` pair scored ROC-AUC 0.775 from it against 0.706 from the schedule. `fcll_sequences._add_temporal_features` mirrors this; `tests/test_time_features.py` pins both.
+- Instant weather scenarios classify precipitation from `Precipitation intensity`, never `Precipitation amount` (87.8% null at OL; NaN compares False, so Black Ice fired on 1.4% of rows instead of about 10%). `tests/test_weather_scenarios.py` pins it.
 - `differenceInMinutes*` and `year` are never features (they leak the target). `trainDelayed` must stay in the feature lists, because the trainers split the target out by name.
 - Column names are verbatim (`Air temperature (12h max)`, `wawa_group_<g>`, `weather_scenario[_12h|_24h|_72h]_<Category>`); `fcll_sequences` imports the constants instead of restating them.
 - Nothing may block on `input()`: under Slurm stdin is `/dev/null`. `SELECTED_COLUMNS` must be non-empty and `SCHEMA_MISMATCH_STRATEGY='intersect'`.

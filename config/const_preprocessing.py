@@ -123,6 +123,16 @@ CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
 # Boolean features that need to be converted to numeric
 BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']
 
+# Instant weather scenarios classify precipitation from "Precipitation intensity"
+# only. "Precipitation amount" is null in 87.8% of OL rows (81-90% in every year);
+# NaN compares False, so conditions on it silently stopped firing (Black Ice 1.4%
+# of rows instead of about 10%, Dense Fog 0.04% instead of 0.36%). Intensity is
+# complete (0.0% null). Calibrated on the 14,397 rows that have both: the old
+# `amount <= 0.5` agrees with `intensity <= 0.5` on 97.7% of rows, and the old
+# `amount <= 0.1` with `intensity <= 0.1` on 96.4%.
+INSTANT_BLACK_ICE_MAX_INTENSITY = 0.5   # mm/h, "light or no active precipitation"
+INSTANT_DENSE_FOG_MAX_INTENSITY = 0.1   # mm/h, "no or very light precipitation"
+
 # Weather scenario categories, shared by the instant and rolling-window scenario stages
 # and by weather_scenario_one_hot_encoder (order matters for consistent one-hot columns)
 WEATHER_SCENARIO_CATEGORIES = [

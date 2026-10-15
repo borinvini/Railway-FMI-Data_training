@@ -30,6 +30,8 @@ from config.const_preprocessing import (
     WAWA_EMITTED_GROUPS,
     FOLDER_WAWA_GROUP_ONE_HOT_ENCODER,
     FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL,
+    INSTANT_BLACK_ICE_MAX_INTENSITY,
+    INSTANT_DENSE_FOG_MAX_INTENSITY,
     TIME_FEATURE_SOURCE_COLUMN,
     LOCAL_TIMEZONE,
     LOCAL_TIME_COLUMN_SUFFIX,
@@ -1421,13 +1423,17 @@ class PreprocessingPipeline:
         
         This method categorizes weather into scenarios ranging from severe conditions 
         (blizzards, heavy snow) to moderate conditions (fog, rain) to extreme temperature events.
+
+        Precipitation is read from 'Precipitation intensity' only. 'Precipitation
+        amount' is null in about 88% of rows and a comparison with NaN is False,
+        so any condition on it fired only where the sensor happened to report.
         
         Parameters:
         -----------
         dataframe : pandas.DataFrame
             Input dataframe containing weather data with required columns:
             - Air temperature, Wind speed, Gust speed, Relative humidity,
-            - Dew-point temperature, Precipitation amount, Precipitation intensity,
+            - Dew-point temperature, Precipitation intensity,
             - Snow depth, Horizontal visibility
         output_file : str, optional
             Path to save the output CSV file with weather scenarios
@@ -1446,7 +1452,7 @@ class PreprocessingPipeline:
         # Convert weather columns to numeric, handling any non-numeric values
         weather_cols = [
             'Air temperature', 'Wind speed', 'Gust speed', 'Relative humidity',
-            'Dew-point temperature', 'Precipitation amount', 'Precipitation intensity',
+            'Dew-point temperature', 'Precipitation intensity',
             'Snow depth', 'Horizontal visibility'
         ]
         
@@ -1462,7 +1468,7 @@ class PreprocessingPipeline:
         
         # 1. BLIZZARD/WINTER STORM - Most severe winter condition
         blizzard_mask = (
-            ((df['Precipitation intensity'] > 1) | (df['Precipitation amount'] > 3)) &
+            (df['Precipitation intensity'] > 1) &
             (df['Air temperature'] < 0) &
             ((df['Wind speed'] > 10) | (df['Gust speed'] > 15)) &
             (df['Horizontal visibility'] < 1000)
@@ -1471,7 +1477,7 @@ class PreprocessingPipeline:
         
         # 2. HEAVY SNOW - Severe snowfall without blizzard conditions
         heavy_snow_mask = (
-            ((df['Precipitation intensity'] > 2) | (df['Precipitation amount'] > 5)) &
+            (df['Precipitation intensity'] > 2) &
             (df['Air temperature'] < 0) &
             (df['Snow depth'] > 0) &
             (df['weather_scenario'] == 'Normal/Clear')
@@ -1487,7 +1493,7 @@ class PreprocessingPipeline:
         
         # 4. HEAVY RAIN - Intense rainfall events
         heavy_rain_mask = (
-            ((df['Precipitation intensity'] > 4) | (df['Precipitation amount'] > 10)) &
+            (df['Precipitation intensity'] > 4) &
             (df['Air temperature'] > 2) &
             (df['weather_scenario'] == 'Normal/Clear')
         )
@@ -1501,14 +1507,14 @@ class PreprocessingPipeline:
             (df['Air temperature'] <= 2) &
             (df['Relative humidity'] > 80) &
             (abs(df['Dew-point temperature'] - df['Air temperature']) < 2) &
-            (df['Precipitation amount'] <= 0.5) &  # light/no active precip distinguishes from Freezing Rain
+            (df['Precipitation intensity'] <= INSTANT_BLACK_ICE_MAX_INTENSITY) &  # light/no active precip distinguishes from Freezing Rain
             (df['weather_scenario'] == 'Normal/Clear')
         )
         df.loc[black_ice_mask, 'weather_scenario'] = 'Black Ice'
 
         # 6. SLEET/FREEZING RAIN - Active precipitation that freezes on contact
         sleet_mask = (
-            ((df['Precipitation amount'] > 0) | (df['Precipitation intensity'] > 0)) &
+            (df['Precipitation intensity'] > 0) &
             (df['Air temperature'] >= -2) &
             (df['Air temperature'] <= 2) &
             (df['weather_scenario'] == 'Normal/Clear')
@@ -1518,7 +1524,7 @@ class PreprocessingPipeline:
         # 7. DENSE FOG - Low visibility conditions
         dense_fog_mask = (
             (df['Horizontal visibility'] < 1000) &
-            (df['Precipitation amount'] <= 0.1) &  # No or very light precipitation
+            (df['Precipitation intensity'] <= INSTANT_DENSE_FOG_MAX_INTENSITY) &  # No or very light precipitation
             (df['Relative humidity'] > 95) &
             (df['weather_scenario'] == 'Normal/Clear')
         )
