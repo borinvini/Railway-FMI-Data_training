@@ -26,19 +26,23 @@ def _make_pipeline(tmp_path):
 
 @patch("src.preprocessing_pipeline.save_dataframe_to_parquet", return_value="/tmp/fake.parquet")
 def test_drop_month_zero_rows(mock_save, tmp_path):
-    """Rows where actualTime cannot be parsed must be dropped (month=0 → removed)."""
+    """Rows whose time cannot be parsed must be dropped (month=0 → removed).
+
+    The calendar features come from scheduledTime (actualTime carries the delay),
+    so the unparseable value belongs there.
+    """
     pipeline = _make_pipeline(tmp_path)
 
     df = pd.DataFrame({
         "scheduledTime": [
-            "2023-01-15T10:00:00.000Z",
-            "2023-01-16T08:00:00.000Z",
-            "2023-01-17T09:00:00.000Z",
+            "2023-01-15T10:00:00.000Z",  # valid → month=1
+            "2023-01-16T08:00:00.000Z",  # valid → month=1
+            "NOT_A_DATE",                 # invalid → month=0 → must be dropped
         ],
         "actualTime": [
-            "2023-01-15T10:05:00.000Z",  # valid → month=1
-            "2023-01-16T08:03:00.000Z",  # valid → month=1
-            "NOT_A_DATE",                 # invalid → month=0 → must be dropped
+            "2023-01-15T10:05:00.000Z",
+            "2023-01-16T08:03:00.000Z",
+            "2023-01-17T09:04:00.000Z",
         ],
     })
 

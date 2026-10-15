@@ -17,6 +17,9 @@ import numpy as np
 import pandas as pd
 
 from config.const_preprocessing import (
+    LOCAL_TIMEZONE,
+    PREPROCESSING_STATE_MACHINE,
+    TIME_FEATURE_SOURCE_COLUMN,
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAIN_DELAY_MINUTES,
     WAWA_CODE_TO_GROUP,
@@ -117,7 +120,12 @@ def derive_station_visits(df, carry_columns=None):
     else:
         wide["stops_in_section"] = np.nan
 
-    wide = _add_temporal_features(wide, col("_actual_arrival").fillna(col("_actual_departure")))
+    # Calendar features come from the SCHEDULED time, as in preprocessing: the
+    # actual time carries the delay and would hand the model the label.
+    calendar_kind = "_sched" if TIME_FEATURE_SOURCE_COLUMN == "scheduledTime" else "_actual"
+    wide = _add_temporal_features(
+        wide, col(f"{calendar_kind}_arrival").fillna(col(f"{calendar_kind}_departure"))
+    )
     wide = _add_wawa_groups(wide, df, keys)
 
     if carry_columns:
@@ -236,8 +244,12 @@ def derive_label(visits):
     return (delay.fillna(0.0) > TRAIN_DELAY_MINUTES).to_numpy(dtype=np.float32)
 
 
-def _add_temporal_features(wide, actual):
-    """Reproduce the calendar features preprocessing derives from actualTime.
+def _add_temporal_features(wide, moment):
+    """Reproduce the calendar features preprocessing derives from the schedule.
+
+    `moment` is the scheduled arrival (departure where there is none) in UTC.
+    When the convert_scheduled_time_to_local stage is enabled it is converted to
+    LOCAL_TIMEZONE first, exactly as that stage does, so both paths agree.
 
     They are in every scenario catalogue but in none of the raw event files,
     because preprocessing computes them downstream — the stage FCLL-Net skips.
@@ -245,9 +257,11 @@ def _add_temporal_features(wide, actual):
     scenarios. Formulas and the -1 offsets match convert_*_to_sincos exactly;
     day_of_week is 1=Sunday..7=Saturday as add_temporal_features defines it.
     """
-    month = actual.dt.month
-    hour_decimal = actual.dt.hour + actual.dt.minute / 60.0
-    pandas_dayofweek = actual.dt.dayofweek
+    if PREPROCESSING_STATE_MACHINE.get("convert_scheduled_time_to_local", False):
+        moment = moment.dt.tz_convert(LOCAL_TIMEZONE)
+    month = moment.dt.month
+    hour_decimal = moment.dt.hour + moment.dt.minute / 60.0
+    pandas_dayofweek = moment.dt.dayofweek
     day_of_week = np.where(pandas_dayofweek == 6, 1, pandas_dayofweek + 2)
 
     wide["month_sin"] = np.sin(2 * np.pi * (month - 1) / 12.0)
@@ -256,7 +270,7 @@ def _add_temporal_features(wide, actual):
     wide["hour_cos"] = np.cos(2 * np.pi * hour_decimal / 24.0)
     wide["day_week_sin"] = np.sin(2 * np.pi * (day_of_week - 1) / 7.0)
     wide["day_week_cos"] = np.cos(2 * np.pi * (day_of_week - 1) / 7.0)
-    wide["day_of_month"] = actual.dt.day
+    wide["day_of_month"] = moment.dt.day
 
     # A neutral position on the unit circle for unparseable timestamps, as the
     # preprocessing stages do.

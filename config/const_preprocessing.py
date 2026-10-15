@@ -9,6 +9,7 @@ PREPROCESSING_STATE_MACHINE = {
     "weather_scenario_one_hot_encoder": True,
     "add_wawa_group_col": True,
     "wawa_group_one_hot_encoder": True,
+    "convert_scheduled_time_to_local": False,
     "process_actual_time_column": True,
     "filter_columns": True,
     "convert_boolean_to_numeric": True,
@@ -34,6 +35,28 @@ FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER = "data/output/8-weather_scenario_one_ho
 # Rolling window suffixes present in the input data (used by add_rolling_weather_scenarios_col
 # and by weather_scenario_one_hot_encoder to encode the per-window scenario columns)
 ROLLING_WINDOWS = ['12h', '24h', '72h']
+
+FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL = "data/output/8c-convert_scheduled_time_to_local"
+
+# Column that month / hour / day_of_week / day_of_month are derived from. It must
+# be the SCHEDULED time: actualTime is the scheduled time plus the delay, so the
+# clock time of an actual arrival hands the model the label (a single hour_sin /
+# hour_cos pair scored ROC-AUC 0.775 from actualTime against 0.706 from
+# scheduledTime). Setting this to "actualTime" reproduces the old behaviour for an
+# A/B comparison with earlier results.
+TIME_FEATURE_SOURCE_COLUMN = "scheduledTime"
+
+# Zone used by convert_scheduled_time_to_local (stage disabled by default). Every
+# timestamp in the matched files is already UTC; the stage only changes what the
+# clock feature means: a fixed timetable slot keeps one hour all year instead of
+# shifting by one at each DST change. Measured effect on ROC-AUC of the clock
+# feature alone is within +-0.008 and its sign depends on the encoding (+0.007 on
+# raw minutes of day, -0.008 on hour_sin/hour_cos), so it is not a reliable gain;
+# enable it for interpretability, not for score.
+LOCAL_TIMEZONE = "Europe/Helsinki"
+
+# The stage adds this suffix to TIME_FEATURE_SOURCE_COLUMN.
+LOCAL_TIME_COLUMN_SUFFIX = "_local"
 
 FOLDER_PROCESS_ACTUAL_TIME_COLUMN = "data/output/9-process_actual_time_column"
 FOLDER_FILTER_COLUMNS = "data/output/10-filter_columns"

@@ -29,6 +29,10 @@ from config.const_preprocessing import (
     WAWA_FALLBACK_GROUP,
     WAWA_EMITTED_GROUPS,
     FOLDER_WAWA_GROUP_ONE_HOT_ENCODER,
+    FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL,
+    TIME_FEATURE_SOURCE_COLUMN,
+    LOCAL_TIMEZONE,
+    LOCAL_TIME_COLUMN_SUFFIX,
     VALID_WAWA_FEATURES,
     ROLLING_WINDOWS,
     WEATHER_SCENARIO_CATEGORIES,
@@ -582,6 +586,33 @@ class PreprocessingPipeline:
                 result["errors"].append("wawa_group_one_hot_encoder skipped - no data available")
         else:
             print(f"    ⊝ wawa_group_one_hot_encoder (disabled)")
+
+        if state_machine.get("convert_scheduled_time_to_local", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_scheduled_time_to_local")
+                    local_time_df = self.convert_scheduled_time_to_local(dataframe=result["data"], month_id=file_id)
+
+                    if local_time_df is not None:
+                        result["data"] = local_time_df
+                        result["steps_executed"].append("convert_scheduled_time_to_local")
+                        result["file_info"]["rows"] = len(local_time_df)
+                        result["file_info"]["columns"] = len(local_time_df.columns)
+                        print(f"      ✓ Converted {TIME_FEATURE_SOURCE_COLUMN} to {LOCAL_TIMEZONE} for {len(local_time_df)} rows")
+                    else:
+                        result["errors"].append("convert_scheduled_time_to_local failed")
+                        print(f"      ✗ Failed to convert {TIME_FEATURE_SOURCE_COLUMN} to local time")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"convert_scheduled_time_to_local failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_scheduled_time_to_local (no data available)")
+                result["errors"].append("convert_scheduled_time_to_local skipped - no data available")
+        else:
+            print(f"    ⊝ convert_scheduled_time_to_local (disabled)")
 
         if state_machine.get("process_actual_time_column", False):
             if result["data"] is not None:
@@ -2097,15 +2128,85 @@ class PreprocessingPipeline:
             traceback.print_exc()
             return None
 
+    def convert_scheduled_time_to_local(self, dataframe=None, month_id=None):
+        """
+        Add TIME_FEATURE_SOURCE_COLUMN converted to LOCAL_TIMEZONE as a new column.
+
+        Every timestamp in the matched files is UTC, so nothing here repairs the
+        data. It changes what the clock feature means: timetables follow the local
+        clock, so a train scheduled for 08:00 is 06:00 UTC in winter and 05:00 UTC
+        in summer. After this stage process_actual_time_column derives month, hour,
+        weekday and day of month from the local wall-clock time, and a fixed
+        timetable slot keeps one hour all year.
+
+        The new column is named f"{TIME_FEATURE_SOURCE_COLUMN}{LOCAL_TIME_COLUMN_SUFFIX}"
+        and holds a naive local datetime. The original column is left untouched.
+        filter_columns drops the new column by omission.
+
+        Returns None when the source column is missing, so the orchestrator
+        records the error instead of silently producing UTC features.
+        """
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+
+        df = dataframe.copy()
+        local_col = f"{TIME_FEATURE_SOURCE_COLUMN}{LOCAL_TIME_COLUMN_SUFFIX}"
+        print(f"Converting '{TIME_FEATURE_SOURCE_COLUMN}' from UTC to {LOCAL_TIMEZONE} "
+              f"in dataframe with {len(df)} rows")
+
+        if TIME_FEATURE_SOURCE_COLUMN not in df.columns:
+            print(f"Error: '{TIME_FEATURE_SOURCE_COLUMN}' column not found in dataframe")
+            print(f"Available columns: {list(df.columns)}")
+            return None
+
+        if df.empty:
+            print("Warning: Empty dataframe")
+            df[local_col] = pd.Series(dtype="datetime64[ns]")
+            return df
+
+        parsed = pd.to_datetime(df[TIME_FEATURE_SOURCE_COLUMN], utc=True, errors="coerce")
+        unparseable = int(parsed.isna().sum() - df[TIME_FEATURE_SOURCE_COLUMN].isna().sum())
+        if unparseable > 0:
+            print(f"⚠️  {unparseable} '{TIME_FEATURE_SOURCE_COLUMN}' values could not be parsed")
+
+        df[local_col] = parsed.dt.tz_convert(LOCAL_TIMEZONE).dt.tz_localize(None)
+
+        shifted = (df[local_col].dt.date != parsed.dt.tz_convert("UTC").dt.tz_localize(None).dt.date)
+        print(f"✓ Added '{local_col}' ({LOCAL_TIMEZONE}); "
+              f"{int(shifted.sum()):,} rows ({shifted.mean() * 100:.2f}%) fall on a different calendar date than in UTC")
+
+        print(f"\n--- SAVING convert_scheduled_time_to_local DATA ---")
+        try:
+            saved_file_path = save_dataframe_to_parquet(
+                folder_path=FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL,
+                month_id=month_id if month_id else self.current_file_id,
+                df=df,
+                file_prefix="convert_scheduled_time_to_local"
+            )
+            print(f"✓ Successfully saved local-time data to: {saved_file_path}")
+        except Exception as save_error:
+            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+            print("Continuing with processing, but data was not saved to folder.")
+
+        return df
+
     def process_actual_time_column(self, dataframe=None, month_id=None):
         """
-        Process the 'actualTime' column to extract temporal features.
-        
-        From the 'actualTime' column (format: "2023-11-01T03:15:46.000Z"), extract:
+        Extract temporal features from the scheduled time of each event.
+
+        The source is TIME_FEATURE_SOURCE_COLUMN ("scheduledTime"), or its
+        "_local" counterpart when convert_scheduled_time_to_local has run. It is
+        deliberately not actualTime: actualTime is the scheduled time plus the
+        delay, so the clock time of an actual arrival leaks the label. The method
+        keeps its historical name because the state-machine key refers to it.
+
+        From a timestamp such as "2023-11-01T03:15:46.000Z", extract:
         - month: Month number (1-12)
         - hour: Hour and minute in HH:MM format (e.g., "03:15", "14:30")
         - day_of_week: Day of week (1-7, where 1=Sunday, 7=Saturday)
-        
+        - day_of_month: Day of month (1-31)
+
         Parameters:
         -----------
         dataframe : pandas.DataFrame
@@ -2124,93 +2225,85 @@ class PreprocessingPipeline:
             return None
             
         df = dataframe.copy()
-        print(f"Processing 'actualTime' column in dataframe with {len(df)} rows")
-        
+
+        # The scheduled time, never the actual time (see the docstring). When
+        # convert_scheduled_time_to_local ran, its naive local column wins.
+        source_col = TIME_FEATURE_SOURCE_COLUMN
+        local_col = f"{source_col}{LOCAL_TIME_COLUMN_SUFFIX}"
+        time_col = local_col if local_col in df.columns else source_col
+        zone_label = f"{LOCAL_TIMEZONE} local time" if time_col == local_col else "UTC"
+        print(f"Processing '{time_col}' ({zone_label}) in dataframe with {len(df)} rows")
+
         if df.empty:
             print("Warning: Empty dataframe")
             return df
-        
-        # Check if required columns exist
-        missing_columns = []
-        if 'actualTime' not in df.columns:
-            missing_columns.append('actualTime')
-        if 'scheduledTime' not in df.columns:
-            missing_columns.append('scheduledTime')
-        
-        if missing_columns:
-            print(f"Warning: Required columns not found in dataframe: {missing_columns}")
+
+        # Check if the required column exists
+        if time_col not in df.columns:
+            print(f"Warning: Required column not found in dataframe: ['{time_col}']")
             print(f"Available columns: {list(df.columns)}")
             return df
-        
-        # NEW: Check for NULL/NaN values in scheduledTime OR actualTime and drop those rows
+
+        # Rows whose time is NULL/NaN cannot yield temporal features. A null
+        # actualTime no longer matters here: the features come from the schedule.
         initial_row_count = len(df)
-        
-        # Create mask for rows where either scheduledTime OR actualTime is NULL/NaN
-        scheduled_time_null = df['scheduledTime'].isna()
-        actual_time_null = df['actualTime'].isna()
-        rows_to_drop = scheduled_time_null | actual_time_null
-        
-        # Count rows to be dropped
-        scheduled_nulls = scheduled_time_null.sum()
-        actual_nulls = actual_time_null.sum()
+        rows_to_drop = df[time_col].isna()
         total_rows_to_drop = rows_to_drop.sum()
-        
+
         print(f"Data quality check:")
-        print(f"- Rows with NULL/NaN scheduledTime: {scheduled_nulls}")
-        print(f"- Rows with NULL/NaN actualTime: {actual_nulls}")
-        print(f"- Total rows to drop (either column NULL/NaN): {total_rows_to_drop}")
-        
-        # Drop rows where either column is NULL/NaN
+        print(f"- Rows with NULL/NaN {time_col}: {total_rows_to_drop}")
+
+        # Drop rows where the source time is NULL/NaN
         if total_rows_to_drop > 0:
             df = df[~rows_to_drop].copy()
             print(f"- Dropped {total_rows_to_drop} rows")
             print(f"- Remaining rows: {len(df)} (was {initial_row_count})")
         else:
             print("- No rows to drop (all time values are valid)")
-        
+
         # If no rows remain after dropping, return empty dataframe
         if df.empty:
             print("Warning: All rows were dropped due to NULL/NaN time values")
             return df
-        
+
         # Use the logging method for detailed logging
         with self.get_logger("process_actual_time.log", "process_actual_time", month_id) as logger:
             try:
-                logger.info(f"Starting actualTime processing for {len(df)} rows (after dropping {total_rows_to_drop} rows with NULL/NaN time values)")
-                
-                print(f"Found 'actualTime' column with {len(df)} rows to process")
-                
+                logger.info(f"Starting {time_col} processing for {len(df)} rows (after dropping {total_rows_to_drop} rows with NULL/NaN time values)")
+
+                print(f"Found '{time_col}' column with {len(df)} rows to process")
+
                 # Debug: Check sample values
-                print("\n--- DEBUGGING ACTUALTIME COLUMN ---")
-                sample_values = df['actualTime'].dropna().head(5).tolist()
+                print(f"\n--- DEBUGGING {time_col.upper()} COLUMN ---")
+                sample_values = df[time_col].dropna().head(5).tolist()
                 print(f"Sample values (first 5 non-null): {sample_values}")
-                
+
                 # Check for missing values (should be 0 after our filtering)
-                missing_count = df['actualTime'].isna().sum()
+                missing_count = df[time_col].isna().sum()
                 valid_count = len(df) - missing_count
-                print(f"Valid actualTime values: {valid_count}")
-                print(f"Missing actualTime values: {missing_count}")
-                
+                print(f"Valid {time_col} values: {valid_count}")
+                print(f"Missing {time_col} values: {missing_count}")
+
                 if valid_count == 0:
-                    print("Warning: All actualTime values are missing. Cannot extract temporal features.")
-                    logger.warning("All actualTime values are missing")
+                    print(f"Warning: All {time_col} values are missing. Cannot extract temporal features.")
+                    logger.warning(f"All {time_col} values are missing")
                     return df
-                
+
                 print("--- END DEBUGGING ---\n")
-                
-                # Convert actualTime to datetime
-                print("Converting actualTime to datetime...")
-                df['actualTime_parsed'] = pd.to_datetime(df['actualTime'], errors='coerce')
-                
+
+                # Convert the time column to datetime
+                print(f"Converting {time_col} to datetime...")
+                df['actualTime_parsed'] = pd.to_datetime(df[time_col], errors='coerce')
+
                 # Check how many successfully parsed
                 parsed_count = df['actualTime_parsed'].notna().sum()
                 failed_count = len(df) - missing_count - parsed_count
-                
+
                 print(f"Successfully parsed datetime: {parsed_count}")
                 if failed_count > 0:
                     print(f"Failed to parse datetime: {failed_count}")
                     logger.warning(f"Failed to parse {failed_count} datetime values")
-                
+
                 # Extract temporal features only for successfully parsed dates
                 mask = df['actualTime_parsed'].notna()
                 
@@ -2238,13 +2331,13 @@ class PreprocessingPipeline:
                         # Fill NaN values with 0 for rows that couldn't be parsed, then convert to int
                         df[col] = df[col].fillna(0).astype(int)
 
-                # Drop rows where actualTime could not be parsed (month stays 0 after fillna)
+                # Drop rows where the time could not be parsed (month stays 0 after fillna)
                 unparseable_mask = (df['month'] == 0)
                 if unparseable_mask.any():
                     count = int(unparseable_mask.sum())
                     df = df[~unparseable_mask].copy()
-                    print(f"Dropped {count} rows with unparseable actualTime (month=0)")
-                    logger.info(f"Dropped {count} rows with unparseable actualTime (month=0)")
+                    print(f"Dropped {count} rows with unparseable {time_col} (month=0)")
+                    logger.info(f"Dropped {count} rows with unparseable {time_col} (month=0)")
 
                 # Log statistics if we have valid data
                 if len(df) > 0 and 'month' in df.columns:
@@ -2299,7 +2392,7 @@ class PreprocessingPipeline:
                 return df
                 
             except Exception as e:
-                error_msg = f"Error processing actualTime column: {e}"
+                error_msg = f"Error processing {time_col} column: {e}"
                 print(error_msg)
                 logger.error(error_msg)
                 logger.error(f"Exception details: {str(e)}")
