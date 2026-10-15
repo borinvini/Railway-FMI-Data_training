@@ -86,6 +86,10 @@ class PreprocessingPipeline:
         self.log_dir = os.path.join(self.project_root, "data", "output", "log")
         os.makedirs(self.log_dir, exist_ok=True)
 
+    def _output_dir(self, folder):
+        """Resolve a relative output folder constant against project_root (honours --data-root)."""
+        return os.path.join(self.project_root, folder)
+
     @contextmanager
     def get_logger(self, log_filename, logger_name=None, month_id=None):
         """
@@ -1081,7 +1085,7 @@ class PreprocessingPipeline:
             
         try:
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_FILTER_BY_TARGET_STATION,
+                folder_path=self._output_dir(FOLDER_FILTER_BY_TARGET_STATION),
                 month_id=self.current_file_id,
                 df=filtered_df,
                 file_prefix="filter_by_target_station"
@@ -1311,7 +1315,7 @@ class PreprocessingPipeline:
                 
             try:
                 saved_file_path = save_dataframe_to_parquet(
-                    folder_path=FOLDER_PROCESS_CAUSES_COLUMN,
+                    folder_path=self._output_dir(FOLDER_PROCESS_CAUSES_COLUMN),
                     month_id=self.current_file_id,
                     df=df,
                     file_prefix="process_causes_column"
@@ -1399,7 +1403,7 @@ class PreprocessingPipeline:
                 
             try:
                 saved_file_path = save_dataframe_to_parquet(
-                    folder_path=FOLDER_ADD_TRAIN_DELAYED_FEATURE,
+                    folder_path=self._output_dir(FOLDER_ADD_TRAIN_DELAYED_FEATURE),
                     month_id=self.current_file_id,
                     df=df,
                     file_prefix="add_train_delayed_feature"
@@ -1570,7 +1574,7 @@ class PreprocessingPipeline:
 
         try:
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_ADD_WEATHER_SCENARIOS_COL,
+                folder_path=self._output_dir(FOLDER_ADD_WEATHER_SCENARIOS_COL),
                 month_id=self.current_file_id,
                 df=df,
                 file_prefix="add_weather_scenarios_col"
@@ -1755,7 +1759,7 @@ class PreprocessingPipeline:
 
         try:
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL,
+                folder_path=self._output_dir(FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL),
                 month_id=self.current_file_id,
                 df=df,
                 file_prefix="add_rolling_weather_scenarios_col"
@@ -1853,7 +1857,7 @@ class PreprocessingPipeline:
             print(f"--- SAVING add_wawa_group_col DATA ---")
             try:
                 saved_file_path = save_dataframe_to_parquet(
-                    folder_path=FOLDER_ADD_WAWA_GROUP_COL,
+                    folder_path=self._output_dir(FOLDER_ADD_WAWA_GROUP_COL),
                     month_id=month_id if month_id else self.current_file_id,
                     df=df,
                     file_prefix="add_wawa_group_col"
@@ -2054,7 +2058,7 @@ class PreprocessingPipeline:
             print(f"--- SAVING weather_scenario_one_hot_encoder DATA ---")
 
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
+                folder_path=self._output_dir(FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER),
                 month_id=month_id if month_id else self.current_file_id,
                 df=df,
                 file_prefix="weather_scenario_one_hot_encoder"
@@ -2119,7 +2123,7 @@ class PreprocessingPipeline:
 
             print(f"--- SAVING wawa_group_one_hot_encoder DATA ---")
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_WAWA_GROUP_ONE_HOT_ENCODER,
+                folder_path=self._output_dir(FOLDER_WAWA_GROUP_ONE_HOT_ENCODER),
                 month_id=month_id if month_id else self.current_file_id,
                 df=df,
                 file_prefix="wawa_group_one_hot_encoder"
@@ -2185,7 +2189,7 @@ class PreprocessingPipeline:
         print(f"\n--- SAVING convert_scheduled_time_to_local DATA ---")
         try:
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL,
+                folder_path=self._output_dir(FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL),
                 month_id=month_id if month_id else self.current_file_id,
                 df=df,
                 file_prefix="convert_scheduled_time_to_local"
@@ -2383,7 +2387,7 @@ class PreprocessingPipeline:
                 
                 try:
                     saved_file_path = save_dataframe_to_parquet(
-                        folder_path=FOLDER_PROCESS_ACTUAL_TIME_COLUMN,
+                        folder_path=self._output_dir(FOLDER_PROCESS_ACTUAL_TIME_COLUMN),
                         month_id=self.current_file_id,
                         df=df,
                         file_prefix="process_actual_time_column"
@@ -2563,7 +2567,7 @@ class PreprocessingPipeline:
                 
                 try:
                     saved_file_path = save_dataframe_to_parquet(
-                        folder_path=FOLDER_FILTER_COLUMNS,
+                        folder_path=self._output_dir(FOLDER_FILTER_COLUMNS),
                         month_id=self.current_file_id,
                         df=filtered_df,
                         file_prefix="filter_columns"
@@ -2672,7 +2676,7 @@ class PreprocessingPipeline:
                 
                     try:
                         saved_file_path = save_dataframe_to_parquet(
-                            folder_path=FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
+                            folder_path=self._output_dir(FOLDER_CONVERT_BOOLEAN_TO_NUMERIC),
                             month_id=self.current_file_id,
                             df=df,
                             file_prefix="convert_boolean_to_numeric"
@@ -3041,7 +3045,7 @@ class PreprocessingPipeline:
                 
             try:
                 saved_file_path = save_dataframe_to_parquet(
-                    folder_path=FOLDER_HANDLE_MISSING_VALUES,
+                    folder_path=self._output_dir(FOLDER_HANDLE_MISSING_VALUES),
                     month_id=self.current_file_id,
                     df=df,
                     file_prefix="handle_missing_values"
@@ -3242,7 +3246,7 @@ class PreprocessingPipeline:
                 
                 try:
                     saved_file_path = save_dataframe_to_parquet(
-                        folder_path=FOLDER_CONVERT_HOUR_TO_SINCOS,
+                        folder_path=self._output_dir(FOLDER_CONVERT_HOUR_TO_SINCOS),
                         month_id=self.current_file_id,
                         df=df,
                         file_prefix="convert_hour_to_sincos"
@@ -3425,7 +3429,7 @@ class PreprocessingPipeline:
                 
                 try:
                     saved_file_path = save_dataframe_to_parquet(
-                        folder_path=FOLDER_CONVERT_MONTH_TO_SINCOS,
+                        folder_path=self._output_dir(FOLDER_CONVERT_MONTH_TO_SINCOS),
                         month_id=self.current_file_id,
                         df=df,
                         file_prefix="convert_month_to_sincos"
@@ -3606,7 +3610,7 @@ class PreprocessingPipeline:
                 
                     try:
                         saved_file_path = save_dataframe_to_parquet(
-                            folder_path=FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS,
+                            folder_path=self._output_dir(FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS),
                             month_id=self.current_file_id,
                             df=df,
                             file_prefix="convert_dayofweek_to_sincos"
@@ -3723,7 +3727,7 @@ class PreprocessingPipeline:
                 
                 try:
                     saved_file_path = save_dataframe_to_parquet(
-                        folder_path=FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS,
+                        folder_path=self._output_dir(FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS),
                         month_id=self.current_file_id,
                         df=df,
                         file_prefix="drop_original_temporal_columns"
@@ -3812,7 +3816,7 @@ class PreprocessingPipeline:
                 
         try:
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_SELECT_TARGET,
+                folder_path=self._output_dir(FOLDER_SELECT_TARGET),
                 month_id=self.current_file_id,
                 df=df,
                 file_prefix="select_target_feature"
@@ -4054,7 +4058,7 @@ class PreprocessingPipeline:
             
             try:
                 saved_file_path = save_dataframe_to_parquet(
-                    folder_path=FOLDER_FILTER_STRONG_WEATHER_CAUSES,
+                    folder_path=self._output_dir(FOLDER_FILTER_STRONG_WEATHER_CAUSES),
                     month_id=self.current_file_id,
                     df=filtered_df,
                     file_prefix="filter_weather_train_schedules"
@@ -4160,7 +4164,7 @@ class PreprocessingPipeline:
                     
         try:
             saved_file_path = save_dataframe_to_parquet(
-                folder_path=FOLDER_REMOVE_DUPLICATES,
+                folder_path=self._output_dir(FOLDER_REMOVE_DUPLICATES),
                 month_id=self.current_file_id,
                 df=df_deduplicated,
                 file_prefix="remove_duplicates"
@@ -4183,7 +4187,7 @@ class PreprocessingPipeline:
                 print(f"Warning: Cannot save empty dataframe for {month_id}")
                 return False
 
-            training_ready_dir = TRAINING_READY_OUTPUT_FOLDER
+            training_ready_dir = self.training_ready_dir
             filename = f"training_ready_{month_id}.parquet"
             file_path = os.path.join(training_ready_dir, filename)
 

@@ -25,6 +25,7 @@ def _make_pipeline(tmp_path):
     from src.preprocessing_pipeline import PreprocessingPipeline
 
     pipeline = PreprocessingPipeline.__new__(PreprocessingPipeline)
+    pipeline.project_root = str(tmp_path)
     pipeline.log_dir = str(tmp_path)
     pipeline.current_file_id = "2023_01"
     return pipeline
