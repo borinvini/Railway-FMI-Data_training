@@ -34,7 +34,7 @@ Python pipeline that trains train-delay models (`trainDelayed`: delay > 5 min at
 - Always re-preprocess **all** months, never a subset: `SCHEMA_MISMATCH_STRATEGY='intersect'` silently drops columns missing in any month.
 
 ## CSC Roihu
-Puhti and Mahti are retired. Project `project_2019266`, ssh alias `roihu`. Code `/projappl/project_2019266/railway-fmi-code`, env `/projappl/project_2019266/railway-env` (Tykky), data `/scratch/project_2019266/railway-fmi` (250 GiB quota, untouched files deleted after 180 days). Cluster branch: `feat/csc-roihu-port`. Code goes by git, features by scp, data by `stage_data.sh`. Runbooks: `docs/ROIHU-QUICKSTART.md`, `docs/ROIHU-RERUN.md`, `docs/CSC-SETUP.md`.
+Puhti and Mahti are retired. Project `project_2019266`, ssh alias `roihu`. Code `/projappl/project_2019266/railway-fmi-code`, env `/projappl/project_2019266/railway-env` (Tykky), data `/scratch/project_2019266/railway-fmi` (250 GiB quota, untouched files deleted after 180 days). Cluster branch: `main`. Code goes by git, features by scp, data by `stage_data.sh`. Runbooks: `docs/ROIHU-QUICKSTART.md`, `docs/ROIHU-RERUN.md`, `docs/CSC-SETUP.md`.
 - `hpc/roihu-auth.sh [-r]`: daily 24 h SSH certificate (a morning `Permission denied (publickey)` is expected). Uses `hpc/vendor/csc_cert.py`; do not edit it.
 - `hpc/stage_data.sh [--raw]`: default sends `101-preprocessed_training_ready` (~26 MB); `--raw` also sends `data/input` (~2.6 GB), which `fcll_net` needs. Unknown options are refused.
 - `hpc/push-features.sh [file]`: validates with the real parser, then scps into the cluster clone.

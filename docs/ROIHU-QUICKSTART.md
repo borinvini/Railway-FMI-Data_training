@@ -51,7 +51,7 @@ ssh-keygen -L -f ~/.ssh/id_csc-cert.pub | grep Valid
 cd "/d/OneDrive - University of Oulu and Oamk/Railway-FMI-Data_training-CSC"
 git status --short
 echo "local:  $(git rev-parse --short HEAD)"
-echo "remote: $(git ls-remote --heads Railway-FMI-Data_training feat/csc-roihu-port | cut -c1-7)"
+echo "remote: $(git ls-remote --heads Railway-FMI-Data_training main | cut -c1-7)"
 ```
 
 Clean tree and matching hashes → skip to step 2.
@@ -60,7 +60,7 @@ Clean tree and matching hashes → skip to step 2.
 
 ```bash
 git add -A && git commit -m "your message"
-git push Railway-FMI-Data_training feat/csc-roihu-port
+git push Railway-FMI-Data_training main
 ```
 
 ---
@@ -78,10 +78,10 @@ cd /projappl/project_2019266/railway-fmi-code 2>/dev/null && \
   git fetch origin -q && \
   echo "branch: $(git branch --show-current)" && \
   echo "local:  $(git rev-parse --short HEAD)" && \
-  echo "remote: $(git rev-parse --short origin/feat/csc-roihu-port)"
+  echo "remote: $(git rev-parse --short origin/main)"
 ```
 
-Branch is `feat/csc-roihu-port` and both hashes match → skip to step 3.
+Branch is `main` and both hashes match → skip to step 3.
 
 ⚠️ **If the hashes differ, run `git pull` before doing anything else.** The
 `git fetch` above only downloads; your files on disk are still the old version.
@@ -94,7 +94,7 @@ stale `environment-linux.yml` and getting an identical failure 20 minutes later.
 cd /projappl/project_2019266
 git clone https://github.com/borinvini/Railway-FMI-Data_training.git railway-fmi-code
 cd railway-fmi-code
-git checkout feat/csc-roihu-port
+git checkout main
 ```
 
 **FIX — on `main`, or checkout says `pathspec ... did not match`:** the clone
@@ -102,7 +102,7 @@ predates the branch. No need to re-clone:
 
 ```bash
 git fetch origin
-git checkout feat/csc-roihu-port
+git checkout main
 ```
 
 **FIX — hashes differ (behind the remote):**
@@ -442,7 +442,7 @@ echo "== repo =="
 cd /projappl/project_2019266/railway-fmi-code 2>/dev/null && \
   git fetch origin -q && \
   echo "  branch: $(git branch --show-current)" && \
-  echo "  local:  $(git rev-parse --short HEAD)  remote: $(git rev-parse --short origin/feat/csc-roihu-port)" \
+  echo "  local:  $(git rev-parse --short HEAD)  remote: $(git rev-parse --short origin/main)" \
   || echo "  NOT CLONED"
 echo "== data =="
 echo "  files: $(ls -1 /scratch/project_2019266/railway-fmi/data/output/101-preprocessed_training_ready 2>/dev/null | wc -l) (expect 96)"

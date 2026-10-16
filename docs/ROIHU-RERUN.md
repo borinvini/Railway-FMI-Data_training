@@ -36,7 +36,7 @@ hpc/push-features.sh config/scenarios.txt
 # [LOCAL] code changes — only if you have something uncommitted or unpushed
 git status -sb    # no file lines and no "ahead"? skip the next two commands
 git add -A && git commit -m "your message"
-git push Railway-FMI-Data_training feat/csc-roihu-port
+git push Railway-FMI-Data_training main
 
 # [LOCAL] re-preprocessed the data? then this, every time — git does not carry it
 hpc/stage_data.sh
@@ -136,7 +136,7 @@ The cluster reads its own clone, so anything you change under `src/`, `config/`
 ```bash
 git status --short
 git add -A && git commit -m "your message"
-git push Railway-FMI-Data_training feat/csc-roihu-port
+git push Railway-FMI-Data_training main
 ```
 
 ### Already committed and pushed earlier? Skip the commit and push
@@ -149,7 +149,7 @@ git status -sb | head -1
 ```
 
 ```
-## feat/csc-roihu-port...Railway-FMI-Data_training/feat/csc-roihu-port
+## main...Railway-FMI-Data_training/main
 ```
 
 No `[ahead N]` on that line and no files listed underneath means everything is
