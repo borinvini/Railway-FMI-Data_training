@@ -4,6 +4,7 @@ PREPROCESSING_STATE_MACHINE = {
     "filter_by_target_station": True,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
+    "null_out_of_bounds_weather": True,
     "add_weather_scenarios_col": True,
     "add_rolling_weather_scenarios_col": True,
     "weather_scenario_one_hot_encoder": True,
@@ -42,6 +43,7 @@ STATION_ID_COLUMN = "stationUICCode"
 FOLDER_FILTER_BY_TARGET_STATION = "data/output/2-filter_by_target_station"
 FOLDER_PROCESS_CAUSES_COLUMN = "data/output/3-process_causes_column"
 FOLDER_ADD_TRAIN_DELAYED_FEATURE = "data/output/4-add_train_delayed_feature"
+FOLDER_NULL_OUT_OF_BOUNDS_WEATHER = "data/output/4b-null_out_of_bounds_weather"
 FOLDER_ADD_WEATHER_SCENARIOS_COL = "data/output/7-add_weather_scenarios_col"
 FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL = "data/output/7b-add_rolling_weather_scenarios_col"
 FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER = "data/output/8-weather_scenario_one_hot_encoder"
@@ -374,6 +376,44 @@ SELECTED_WEATHER_FEATURES = [
     'Snow depth',
 ]
 
+
+
+# Physical limits per weather reading (low, high), applied to the base column and to its
+# 12h/24h/72h aggregates by null_out_of_bounds_weather. A value outside, or not finite, is
+# set to NaN (never dropped or clipped) and filled later by the train-only median imputation.
+# The limits sit well outside the real data (air -38.8..34.0, pressure 947..1056, wind <= 26.6,
+# gust <= 44.8, humidity 4..100, visibility <= 75000, cloud 0..9, snow depth <= 116, precipitation
+# intensity <= 129.4 over 2018-2025), so only glitches trigger. Snow depth and the precipitation
+# columns allow -1: that is the "not measured" sentinel, and window means that average it with
+# real values land between -1 and 0; both are deliberately left alone here.
+# Origin: Dew-point temperature = -84.8 at Jarvenpaa Sorto, 2019-03-23 05:29 UTC (air 1.5 C,
+# humidity 63% imply about -4.8 C), present in the raw matched_data_flat_2019_03.
+WEATHER_PHYSICAL_BOUNDS = {
+    'Air temperature': (-60, 45),
+    'Dew-point temperature': (-70, 35),
+    'Relative humidity': (0, 100),
+    'Wind speed': (0, 60),
+    'Gust speed': (0, 90),
+    'Wind direction': (0, 360),
+    'Pressure (msl)': (900, 1100),
+    'Horizontal visibility': (0, 200000),
+    'Cloud amount': (0, 9),
+    'Snow depth': (-1, 400),
+    'Precipitation intensity': (-1, 400),
+    'Precipitation amount': (-1, 1000),
+}
+
+# More than this share of one column out of bounds in one month is not a glitch but an
+# upstream unit or schema change: the stage raises instead of nulling it silently.
+WEATHER_BOUNDS_MAX_NULLED_SHARE = 0.001
+
+
+def weather_bounds_for(column):
+    """(low, high) for a weather column or one of its '<base> (<window> <agg>)' aggregates, else None."""
+    for base in sorted(WEATHER_PHYSICAL_BOUNDS, key=len, reverse=True):
+        if column == base or column.startswith(base + " ("):
+            return WEATHER_PHYSICAL_BOUNDS[base]
+    return None
 
 
 # Train filtering configuration

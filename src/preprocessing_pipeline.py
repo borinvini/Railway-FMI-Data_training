@@ -21,6 +21,9 @@ from config.const import (
 from config.const_preprocessing import (
     GROUP_KEY_COLUMN,
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
+    FOLDER_NULL_OUT_OF_BOUNDS_WEATHER,
+    WEATHER_BOUNDS_MAX_NULLED_SHARE,
+    weather_bounds_for,
     FOLDER_ADD_WEATHER_SCENARIOS_COL,
     FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL,
     FOLDER_ADD_WAWA_GROUP_COL,
@@ -637,6 +640,33 @@ class PreprocessingPipeline:
                 result["errors"].append("add_train_delayed_feature skipped - no data available")
         else:
             print(f"    ⊝ add_train_delayed_feature (disabled)")
+
+        if state_machine.get("null_out_of_bounds_weather", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → null_out_of_bounds_weather")
+                    bounded_df = self.null_out_of_bounds_weather(dataframe=result["data"], month_id=file_id)
+
+                    if bounded_df is not None:
+                        result["data"] = bounded_df
+                        result["steps_executed"].append("null_out_of_bounds_weather")
+                        result["file_info"]["rows"] = len(bounded_df)
+                        result["file_info"]["columns"] = len(bounded_df.columns)
+                        print(f"      ✓ Checked weather bounds for {len(bounded_df)} rows")
+                    else:
+                        result["errors"].append("null_out_of_bounds_weather failed")
+                        print(f"      ✗ Failed to check weather bounds")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"null_out_of_bounds_weather failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ null_out_of_bounds_weather (no data available)")
+                result["errors"].append("null_out_of_bounds_weather skipped - no data available")
+        else:
+            print(f"    ⊝ null_out_of_bounds_weather (disabled)")
 
         if state_machine.get("add_weather_scenarios_col", False):
             if result["data"] is not None:
@@ -1529,6 +1559,70 @@ class PreprocessingPipeline:
             print(f"Error adding 'trainDelayed' column: {e}")
             return dataframe  # Return original dataframe on error
         
+    def null_out_of_bounds_weather(self, dataframe=None, month_id=None):
+        """
+        Set weather values outside their physical limits to NaN.
+
+        The limits (config WEATHER_PHYSICAL_BOUNDS) apply to each base reading and to its
+        12h/24h/72h aggregates. A value outside them, or not finite, becomes NaN: the row and
+        every other column stay, and the train-only median imputation at the split fills the
+        gap. The -1 "not measured" sentinel of Snow depth and the precipitation columns is
+        inside their limits and is left alone.
+
+        Raises ValueError when no weather column is present, or when more than
+        WEATHER_BOUNDS_MAX_NULLED_SHARE of a column would be nulled in this month: that is an
+        upstream unit or schema change, not a sensor glitch, and must not be hidden.
+
+        Returns the frame with the offending cells set to NaN, or None if no frame was given.
+        """
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+
+        df = dataframe.copy()
+        month_str = f" for {month_id}" if month_id else ""
+        print(f"Checking weather values against physical bounds{month_str} ({len(df)} rows)")
+
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+
+        bounded = {col: weather_bounds_for(col) for col in df.columns if weather_bounds_for(col)}
+        if not bounded:
+            raise ValueError(
+                f"null_out_of_bounds_weather: no weather column found{month_str}; "
+                f"available: {list(df.columns)}")
+
+        nulled = {}
+        for col, (low, high) in bounded.items():
+            values = pd.to_numeric(df[col], errors="coerce")
+            bad = (values < low) | (values > high) | np.isinf(values)
+            n_bad = int(bad.sum())
+            if not n_bad:
+                continue
+            share = n_bad / len(df)
+            if share > WEATHER_BOUNDS_MAX_NULLED_SHARE:
+                raise ValueError(
+                    f"null_out_of_bounds_weather: {n_bad:,} of {len(df):,} values ({share * 100:.3f}%) "
+                    f"of '{col}' are outside [{low}, {high}]{month_str}; more than "
+                    f"{WEATHER_BOUNDS_MAX_NULLED_SHARE * 100:.1f}% points to an upstream unit or schema "
+                    f"change, not a sensor glitch")
+            worst = values[bad].abs().idxmax()
+            nulled[col] = (n_bad, float(values[worst]))
+            df.loc[bad, col] = np.nan
+
+        if nulled:
+            print(f"⚠️  Nulled out-of-bounds weather values{month_str}:")
+            for col, (n_bad, extreme) in nulled.items():
+                low, high = bounded[col]
+                print(f"  - {col}: {n_bad} cell(s) outside [{low}, {high}], most extreme {extreme:g}")
+        else:
+            print(f"✓ All {len(bounded)} weather columns are inside their physical bounds")
+
+        self._save_stage("null_out_of_bounds_weather", FOLDER_NULL_OUT_OF_BOUNDS_WEATHER,
+                         month_id, df, "null_out_of_bounds_weather")
+        return df
+
     def add_weather_scenarios_col(self, dataframe, output_file=None, month_id=None):
         """
         Add a categorical weather scenario column based on comprehensive weather conditions.
