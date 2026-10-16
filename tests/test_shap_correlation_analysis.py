@@ -10,6 +10,8 @@ def test_shap_correlation_analysis_output_folder_is_700():
 
 
 import os
+from unittest.mock import patch
+
 from src.training_pipeline import TrainingPipeline
 
 
@@ -60,6 +62,7 @@ def _make_synthetic_train_parquet(tmp_path):
     return str(data_dir)
 
 
+@patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "trainDelayed")
 def test_end_to_end_produces_csv_and_charts(tmp_path):
     pipeline = _make_pipeline(tmp_path)
     data_dir = _make_synthetic_train_parquet(tmp_path)

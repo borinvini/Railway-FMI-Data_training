@@ -66,6 +66,7 @@ from config.const_preprocessing import (
     GROUP_KEY_COLUMN,
     VALID_TARGET_FEATURES,
     TARGET_STATION_CODE,
+    LABEL_COLUMNS,
     PREPROCESSED_OUTPUT_FOLDER,
     DATA_FILE_PREFIX_FOR_TRAINING,
     DEFAULT_TARGET_FEATURE,
@@ -895,7 +896,7 @@ class TrainingPipeline:
             print(f"    balance_classes: {msg}")
             return {"success": False, "error": msg}
 
-        if target_col == "trainDelayed":
+        if target_col in ("trainDelayed", "trainDisrupted"):
             counterpart_col = "differenceInMinutes"
         elif is_regression:
             counterpart_col = "trainDelayed"
@@ -1323,6 +1324,17 @@ class TrainingPipeline:
         # Same for the monthly-file key: split_dataset imputes with it, then drops it.
         if MONTH_KEY_COLUMN in df.columns and MONTH_KEY_COLUMN not in keep:
             keep.append(MONTH_KEY_COLUMN)
+        # Labels: only the target may stay. The trainers use every non-target column as a
+        # feature, so a second label (trainDelayed beside trainDisrupted, cancelled, ...) would
+        # hand the model its own answer, whatever a feature catalogue lists.
+        if DEFAULT_TARGET_FEATURE in df.columns:
+            other_labels = [c for c in LABEL_COLUMNS if c != DEFAULT_TARGET_FEATURE and c in keep]
+            if other_labels:
+                print(f"    apply_column_selection: dropping label columns other than the target "
+                      f"'{DEFAULT_TARGET_FEATURE}': {other_labels}")
+                keep = [c for c in keep if c not in other_labels]
+            if DEFAULT_TARGET_FEATURE not in keep:
+                keep.append(DEFAULT_TARGET_FEATURE)
         return df[keep]
 
     def select_training_cols(self, data=None, original_file_path=None):

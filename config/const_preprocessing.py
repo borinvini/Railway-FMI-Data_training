@@ -99,9 +99,12 @@ TRAINING_READY_OUTPUT_FOLDER = "data/output/101-preprocessed_training_ready"
 WEATHER_MISSING_THRESHOLD = 30.0
 
 # Target feature to use for prediction
-DEFAULT_TARGET_FEATURE = 'trainDelayed'  
-# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 
-# 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled'
+# 'trainDisrupted' = delayed by more than TRAIN_DELAY_MINUTES OR cancelled. A cancelled train has no
+# delay value, so 'trainDelayed' alone can neither include nor label it. Switch to 'trainDelayed'
+# to train on the pure delay again (cancelled trains stay in the data either way).
+DEFAULT_TARGET_FEATURE = 'trainDisrupted'
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset',
+# 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled', 'trainDisrupted'
 
 # Target column to use for calculating trainDelayed feature
 TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes'
@@ -113,10 +116,11 @@ VALID_TARGET_FEATURES = [
     'differenceInMinutes_offset', 
     'differenceInMinutes_eachStation_offset', 
     'trainDelayed', 
-    'cancelled'
+    'cancelled',
+    'trainDisrupted'
 ]
 
-CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled']
+CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled', 'trainDisrupted']
 REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
 
 # Station short code to filter data for - only exact matches will be kept
@@ -139,7 +143,11 @@ TEMPORAL_SINCOS_FEATURES = ['month_sin', 'month_cos', 'hour_sin', 'hour_cos', 'd
 VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week", "day_of_month", "causes_related_to_weather", "train_id", "weather_scenario"]
 
 # Target features that are categoricals for classification problems
-CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled']
+CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled', 'trainDisrupted']
+
+# Columns that carry the answer. Only DEFAULT_TARGET_FEATURE may survive column selection (stage 502);
+# the trainers use every non-target column as a feature, so any other label would leak the target.
+LABEL_COLUMNS = ['trainDelayed', 'trainDisrupted', 'cancelled']
 
 # Boolean features that need to be converted to numeric
 BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']
@@ -333,6 +341,8 @@ delay = True
 # Value to be considered as a delay (in minutes)
 # Long-distance trains: 5 min
 # Short trains: 2-3 min
+# The single source of this threshold: trainDelayed, trainDisrupted, the balance step, the regression
+# metrics (const_training.DELAY_THRESHOLD_MINUTES) and the FCLL label all read it.
 TRAIN_DELAY_MINUTES = 5
 
 ALL_WEATHER_FEATURES = [

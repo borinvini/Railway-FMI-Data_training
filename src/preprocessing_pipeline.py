@@ -82,6 +82,15 @@ from config.const_preprocessing import (
 
 
 
+def _cancelled_flags(series):
+    """Boolean mask of cancelled trains from a bool, string-encoded or null-bearing column.
+
+    The source stores real booleans, but a CSV or older parquet read can hand back the strings
+    "True"/"False"; a missing value means not cancelled.
+    """
+    return series.astype(str).str.strip().str.lower().isin(("true", "1", "1.0")).to_numpy()
+
+
 class PreprocessingPipeline:
     def __init__(self):
         """Initialize the PreprocessingPipeline class with default values."""
@@ -1519,6 +1528,13 @@ class PreprocessingPipeline:
             print("Warning: Empty dataframe")
             return df
         
+        # Required input for trainDisrupted; raised outside the try below, which returns the
+        # input frame on any error and would hide the missing label.
+        if 'cancelled' not in df.columns:
+            raise ValueError(
+                f"add_train_delayed_feature: required column 'cancelled' not found; "
+                f"available: {list(df.columns)}")
+
         try:
             # Check if the target column exists
             if TRAIN_DELAYED_TARGET_COLUMN not in df.columns:
@@ -1531,6 +1547,11 @@ class PreprocessingPipeline:
 
             # Create trainDelayed column based on the configured target column
             df['trainDelayed'] = df[TRAIN_DELAYED_TARGET_COLUMN] > TRAIN_DELAY_MINUTES
+
+            # A cancelled train has no delay (NaN > threshold is False), so it needs its own
+            # route into the label: disrupted = late by more than TRAIN_DELAY_MINUTES OR cancelled.
+            cancelled = pd.Series(_cancelled_flags(df['cancelled']), index=df.index)
+            df['trainDisrupted'] = df['trainDelayed'] | cancelled
             
             # Reorder columns to place trainDelayed after the target column
             cols = list(df.columns)
@@ -1550,6 +1571,9 @@ class PreprocessingPipeline:
             
             print(f"Successfully added 'trainDelayed' column based on '{TRAIN_DELAYED_TARGET_COLUMN}'")
             print(f"Number of delayed trains: {df['trainDelayed'].sum()} ({df['trainDelayed'].mean() * 100:.2f}%)")
+            print(f"Number of cancelled trains: {int(cancelled.sum())} ({cancelled.mean() * 100:.2f}%)")
+            print(f"Number of disrupted trains (delayed > {TRAIN_DELAY_MINUTES} min or cancelled): "
+                  f"{int(df['trainDisrupted'].sum())} ({df['trainDisrupted'].mean() * 100:.2f}%)")
 
             self._save_stage("add_train_delayed_feature", FOLDER_ADD_TRAIN_DELAYED_FEATURE, None, df, "add_train_delayed_feature")
             
@@ -2823,7 +2847,8 @@ class PreprocessingPipeline:
           over all months by decide_weather_columns_to_drop (falls back to this
           month alone, with a warning, when the list was not set)
         - Drop rows where all remaining weather condition columns have missing values
-        - Drop rows where differenceInMinutes or cancelled are None
+        - Drop rows where differenceInMinutes is None, unless the train was cancelled (a
+          cancelled train has no delay; it is kept and labelled by trainDisrupted)
         - Fill missing values in trainStopping and commercialStop with False
         - Leave remaining NaN for the post-split train-median imputer
           (TrainingPipeline.write_splits); no statistic is computed here
@@ -2937,7 +2962,9 @@ class PreprocessingPipeline:
                         logger.info(f"Coerced '{col}' to numeric: {coerced_to_nan} non-numeric values became NaN")
 
             # Drop rows only when the numeric delay targets are missing — trainDelayed and cancelled
-            # are derived/boolean and should not gate row retention here.
+            # are derived/boolean and should not gate row retention here. A cancelled train has no
+            # delay by definition: it is kept (trainDisrupted labels it); only a missing delay on a
+            # train that was not cancelled leaves the row without a label.
             NUMERIC_DELAY_COLS = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
             required_cols = [col for col in NUMERIC_DELAY_COLS if col in df.columns]
             
@@ -2946,8 +2973,16 @@ class PreprocessingPipeline:
                 logger.info(f"Checking for missing values in required columns: {required_cols}")
                 # Store the count before dropping rows
                 before_required_drop = len(df)
-                # Drop rows where any of the required columns are None/NaN
-                df = df.dropna(subset=required_cols)
+                # Drop rows where any of the required columns are None/NaN, except cancelled trains
+                if 'cancelled' in df.columns:
+                    cancelled_rows = pd.Series(_cancelled_flags(df['cancelled']), index=df.index)
+                else:
+                    cancelled_rows = pd.Series(False, index=df.index)
+                missing_delay = df[required_cols].isna().any(axis=1)
+                kept_cancelled = int((missing_delay & cancelled_rows).sum())
+                df = df[~missing_delay | cancelled_rows]
+                print(f"- Kept {kept_cancelled} cancelled trains that have no delay value")
+                logger.info(f"Kept {kept_cancelled} cancelled trains that have no delay value")
                 # Calculate dropped rows
                 dropped_required = before_required_drop - len(df)
                 dropped_percentage = (dropped_required / before_required_drop) * 100 if before_required_drop > 0 else 0

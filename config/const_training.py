@@ -1,4 +1,5 @@
 from scipy.stats import randint, loguniform
+from config.const_preprocessing import TRAIN_DELAY_MINUTES
 import numpy as np
 import os
 
@@ -261,7 +262,7 @@ MONTH_KEY_COLUMN = 'year_month'
 WEIGHT_DELAY_COLUMN = 'NONE' # Put 'NONE' to disable the weights
 MAX_SAMPLE_WEIGHT_CLASSIFICATION = 5.0  # Put 1 to disable the weights for classification
 MAX_SAMPLE_WEIGHT_REGRESSION = 3.0      # Put 1 to disable the weights for regression
-DELAY_THRESHOLD_MINUTES = 5  # delay > 5 min = late (1), else on time (0)
+DELAY_THRESHOLD_MINUTES = TRAIN_DELAY_MINUTES  # delay > this = late (1), else on time (0); one source in const_preprocessing
 
 # Parameter distributions for RandomizedSearchCV
 DECISION_TREE_PARAM_DISTRIBUTIONS = {

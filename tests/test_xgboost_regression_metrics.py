@@ -10,8 +10,10 @@ def _src():
 
 
 def test_delay_threshold_constant_exists():
+    from config.const_preprocessing import TRAIN_DELAY_MINUTES
     from config.const_training import DELAY_THRESHOLD_MINUTES
-    assert DELAY_THRESHOLD_MINUTES == 5
+    # one source for the threshold: const_preprocessing.TRAIN_DELAY_MINUTES
+    assert DELAY_THRESHOLD_MINUTES == TRAIN_DELAY_MINUTES
 
 
 def test_wmape_formula_correctness():
