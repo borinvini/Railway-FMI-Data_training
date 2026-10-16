@@ -44,6 +44,7 @@ FCLL_SEQUENCES_OUTPUT_FOLDER = "data/output/506-build_fcll_sequences"
 FCLL_NET_OUTPUT_FOLDER = "data/output/1005-fcll_net"
 
 # Sequence lengths, per Huang et al. (2020) section 4.1.
+
 FCLL_H_TRAINS = 5
 FCLL_Z_STATIONS = 5
 MERGED_BALANCED_OUTPUT_FOLDER = "data/output/504-balance_classes"
@@ -249,6 +250,12 @@ TEST_FRACTION = 0.25
 # max year into a third *_holdout.parquet file and drops the column before saving.
 HOLDOUT_LAST_YEAR = True
 HOLDOUT_YEAR_COLUMN = 'year'
+
+# Key of the monthly file a row came from ("2023-01"), stamped by merge_data_files
+# like HOLDOUT_YEAR_COLUMN. split_dataset fits the weather imputation medians per
+# monthly file (then per calendar month, then globally) on the TRAIN rows and drops
+# the key right after, so it is never a feature. It does not need month_sin/month_cos.
+MONTH_KEY_COLUMN = 'year_month'
 
 # Sample weighting parameters for delay-based weighting
 WEIGHT_DELAY_COLUMN = 'NONE' # Put 'NONE' to disable the weights

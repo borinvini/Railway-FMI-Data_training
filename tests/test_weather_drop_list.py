@@ -85,8 +85,12 @@ def test_a_column_absent_from_one_month_aborts(tmp_path):
 
 
 def test_other_stations_do_not_change_the_decision(tmp_path):
+    # Pins the filter_by_target_station=True behaviour: only OL rows are counted.
+    # With the stage off every station counts (tests/test_station_filter_off.py).
     files = _months(tmp_path, [{"other_station_rows": 200}] * 2)
-    assert _pipeline(tmp_path).decide_weather_columns_to_drop(files) == []
+    with patch("src.preprocessing_pipeline.PREPROCESSING_STATE_MACHINE",
+               {"filter_by_target_station": True}):
+        assert _pipeline(tmp_path).decide_weather_columns_to_drop(files) == []
 
 
 def test_the_decision_is_written_for_audit(tmp_path):

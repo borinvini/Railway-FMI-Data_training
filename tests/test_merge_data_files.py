@@ -109,7 +109,8 @@ def test_intersect_strategy_drops_extra_columns(tmp_path):
     # 'year' is stamped onto every row by merge_data_files (parsed from each source
     # file's YYYY_MM name) so split_dataset can carve out an out-of-time hold-out —
     # it is always present/common across files, unlike the schema-mismatch columns.
-    assert sorted(result["data"].columns) == ["a", "b", "year"]
+    # 'year_month' is stamped the same way (the monthly-file key for imputation).
+    assert sorted(result["data"].columns) == ["a", "b", "year", "year_month"]
 
 
 @patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')
@@ -127,7 +128,7 @@ def test_intersect_strategy_drops_missing_columns(tmp_path):
     assert "b" not in result["data"].columns
     # 'year' is stamped onto every row by merge_data_files (see comment above) — it
     # survives the intersect strategy just like 'a' does.
-    assert list(result["data"].columns) == ["a", "year"]
+    assert list(result["data"].columns) == ["a", "year", "year_month"]
 
 
 @patch('src.training_pipeline.SCHEMA_MISMATCH_STRATEGY', 'intersect')
@@ -146,3 +147,18 @@ def test_intersect_strategy_reselects_already_loaded_dfs(tmp_path):
     assert result["success"] is True
     assert "extra" not in result["data"].columns
     assert result.get("files_merged") == 3
+
+
+def test_merge_stamps_the_monthly_file_key_from_the_file_name(tmp_path):
+    """split_dataset imputes weather NaN per monthly file, so every row carries the
+    YYYY-MM of the file it came from (the same route as the 'year' column)."""
+    pipeline = _make_pipeline(tmp_path)
+    src = _make_source_dir(tmp_path)
+    pd.DataFrame({"a": [1, 2]}).to_parquet(src / "training_ready_2024_01.parquet", index=False)
+    pd.DataFrame({"a": [3]}).to_parquet(src / "training_ready_2024_12.parquet", index=False)
+
+    result = pipeline.merge_data_files([])
+
+    keys = result["data"]["year_month"]
+    assert sorted(keys.unique()) == ["2024-01", "2024-12"]
+    assert (keys == "2024-01").sum() == 2

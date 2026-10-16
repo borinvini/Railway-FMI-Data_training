@@ -5,15 +5,26 @@ includes days that split_dataset later sends to test or the hold-out year. The
 imputation now runs inside the split: medians come from the train frame and are
 applied to val, test and hold-out. It touches 0.01% of weather cells at OL, so
 this is about the principle, not the score.
+
+Weather columns are filled with the train median of their own monthly file
+("year_month", stamped by merge_data_files), then of their calendar month over all
+train years (the hold-out year has no train rows of its own), then the global train
+median. One all-year median is wrong in winter: at OL the all-year Air temperature
+median is +2.9 C against -6.3 C in January, and Snow depth is 0 against 32-55 cm
+from January to April. The key is dropped after the split; the fitted imputer is
+saved at the split and copied beside the scaler, which must run after it.
 """
 import json
 import os
+
+import joblib
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from config.const_preprocessing import GROUP_KEY_COLUMN
+from config.const_training import MONTH_KEY_COLUMN
 from src.training_pipeline import TrainingPipeline
 
 
@@ -106,3 +117,121 @@ def test_target_columns_are_never_imputed(tmp_path):
     merged = pd.concat(split["frames"].values())
     assert merged["trainDelayed"].isna().sum() == 1
     assert merged["differenceInMinutes"].isna().sum() == 1
+
+
+# --- per monthly file ----------------------------------------------------------
+
+LEVELS = {"2022-01": -6.0, "2023-01": -12.0, "2022-07": 17.0}
+
+
+def _monthly_days(levels=LEVELS, days_per_month=12, rows_per_day=4, seed=0):
+    """One row block per day; every monthly file has its own temperature level."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for key, level in levels.items():
+        for d in range(days_per_month):
+            for _ in range(rows_per_day):
+                rows.append({
+                    GROUP_KEY_COLUMN: f"{key}-{d + 1:02d}",
+                    MONTH_KEY_COLUMN: key,
+                    "Air temperature": level + rng.normal(0, 0.2),
+                    "Snow depth (24h max)": 40.0 if key.endswith("-01") else 0.0,
+                    "trainStopping": 1,
+                    "trainDelayed": int(rng.integers(0, 2)),
+                })
+    return pd.DataFrame(rows)
+
+
+def test_a_nan_gets_the_median_of_its_own_monthly_file(tmp_path):
+    df = _monthly_days()
+    nan_rows = list(df.index[df[MONTH_KEY_COLUMN] == "2023-01"][::5])
+    df.loc[nan_rows, "Air temperature"] = np.nan
+    df.loc[nan_rows, "Snow depth (24h max)"] = np.nan
+    split = _pipeline(tmp_path).write_splits(df, output_dir=str(tmp_path / "out"), identifier="t")
+
+    by_key = split["month_medians"]["year_month"]
+    own = by_key["2023-01"]
+    assert own["Air temperature"] == pytest.approx(-12.0, abs=0.5)
+    # not the neighbouring January, and not the all-year median
+    assert abs(own["Air temperature"] - by_key["2022-01"]["Air temperature"]) > 3
+    assert abs(own["Air temperature"] - split["medians"]["Air temperature"]) > 3
+    seen = 0
+    for part in split["frames"].values():
+        for idx in part.index.intersection(nan_rows):
+            assert part.loc[idx, "Air temperature"] == own["Air temperature"]
+            assert part.loc[idx, "Snow depth (24h max)"] == own["Snow depth (24h max)"]
+            seen += 1
+    assert seen == len(nan_rows)
+
+
+def test_a_year_month_without_train_rows_uses_the_calendar_month_median():
+    frame = pd.DataFrame({MONTH_KEY_COLUMN: ["2024-01"], "Air temperature": [np.nan]})
+    month_medians = {"year_month": {"2023-01": {"Air temperature": -12.0}},
+                     "calendar_month": {1: {"Air temperature": -9.0}}}
+    out = TrainingPipeline.apply_medians(frame, {"Air temperature": 5.0}, month_medians)
+    assert out["Air temperature"].tolist() == [-9.0]
+
+
+def test_a_calendar_month_without_a_train_value_uses_the_global_median():
+    frame = pd.DataFrame({MONTH_KEY_COLUMN: ["2024-03"], "Air temperature": [np.nan]})
+    month_medians = {"year_month": {"2023-01": {"Air temperature": -12.0}},
+                     "calendar_month": {1: {"Air temperature": -9.0}}}
+    out = TrainingPipeline.apply_medians(frame, {"Air temperature": 5.0}, month_medians)
+    assert out["Air temperature"].tolist() == [5.0]
+
+
+def test_month_medians_never_see_val_or_test_values(tmp_path):
+    df = _monthly_days(levels={"2023-01": -12.0}, days_per_month=30)
+    late = df[GROUP_KEY_COLUMN] >= "2023-01-25"
+    df.loc[late, "Air temperature"] = 100.0
+    victim = df.index[late][0]
+    df.loc[victim, "Air temperature"] = np.nan
+    split = _pipeline(tmp_path).write_splits(df, output_dir=str(tmp_path / "out"), identifier="t")
+    train_index = split["frames"]["train"].index
+    expected = df.loc[train_index, "Air temperature"].median()
+    assert split["month_medians"]["year_month"]["2023-01"]["Air temperature"] == pytest.approx(expected)
+    filled = next(p.loc[victim, "Air temperature"] for p in split["frames"].values() if victim in p.index)
+    assert filled == pytest.approx(expected)
+
+
+def test_without_the_month_key_it_is_the_global_imputation(tmp_path):
+    df = _days()
+    df.loc[[0, 7, 30], "Air temperature"] = np.nan
+    split = _pipeline(tmp_path).write_splits(df, output_dir=str(tmp_path / "out"), identifier="t")
+    assert split["month_medians"] == {}
+    assert sum(p["Air temperature"].isna().sum() for p in split["frames"].values()) == 0
+
+
+def test_the_month_key_never_reaches_the_written_splits(tmp_path):
+    split = _pipeline(tmp_path).write_splits(
+        _monthly_days(), output_dir=str(tmp_path / "out"), identifier="t")
+    for name in ("train", "val", "test"):
+        assert MONTH_KEY_COLUMN not in split["frames"][name].columns
+        assert MONTH_KEY_COLUMN not in pd.read_parquet(split["files"][name]["path"]).columns
+    assert MONTH_KEY_COLUMN not in split["medians"]
+
+
+def test_the_imputer_is_saved_beside_the_scaler(tmp_path):
+    from config.const_training import (
+        MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER, SPLIT_DATASET_OUTPUT_FOLDER)
+    pipeline = _pipeline(tmp_path)
+    split_dir = tmp_path / SPLIT_DATASET_OUTPUT_FOLDER
+    split_dir.mkdir(parents=True)
+    medians = {"Air temperature": 3.0}
+    month_medians = {"year_month": {"2023-01": {"Air temperature": -12.0}},
+                     "calendar_month": {1: {"Air temperature": -9.0}}}
+    report = TrainingPipeline.imputation_report(medians, month_medians)
+    (split_dir / "imputation_medians.json").write_text(json.dumps(report), encoding="utf-8")
+    train = pd.DataFrame({"Air temperature": np.linspace(-10, 20, 50)})
+    train.to_parquet(split_dir / "merged_data_x_train.parquet", index=False)
+    train.iloc[:10].to_parquet(split_dir / "merged_data_x_test.parquet", index=False)
+
+    result = pipeline.scale_weather_features(data_dir=str(split_dir))
+
+    assert result["success"] is True
+    scaled = tmp_path / MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+    artifact = joblib.load(scaled / "weather_scaler.joblib")
+    assert artifact["imputer"]["per_year_month"]["2023-01"] == {"Air temperature": -12.0}
+    assert artifact["imputer"]["per_calendar_month"]["1"] == {"Air temperature": -9.0}
+    assert artifact["imputer"]["global"] == medians
+    assert json.loads((scaled / "imputation_medians.json").read_text(encoding="utf-8")) == report

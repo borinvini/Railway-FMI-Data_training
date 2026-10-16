@@ -111,3 +111,16 @@ def test_dispatcher_updates_result_data_after_select_cols(tmp_path):
         result = pipeline.execute_training_pipeline_steps([], state_machine)
 
     assert result["data"] is df_selected
+
+
+def test_the_monthly_file_key_survives_column_selection(tmp_path):
+    """year_month is not a feature and no scenario lists it, but split_dataset needs
+    it for the per-month imputation, so selection keeps it like the grouping key."""
+    pipeline = _make_pipeline(tmp_path)
+    df_in = pd.DataFrame({"col_a": [1, 2], "col_b": [3, 4], "year_month": ["2023-01", "2023-02"]})
+
+    with patch("src.training_pipeline.SELECTED_COLUMNS", ["col_a"]):
+        result = pipeline.select_training_cols(data=df_in)
+
+    assert result["success"] is True
+    assert list(result["data"].columns) == ["col_a", "year_month"]

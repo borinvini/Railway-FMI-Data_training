@@ -108,6 +108,7 @@ from config.const_training import (
     RANDOM_STATE,
     HOLDOUT_LAST_YEAR,
     HOLDOUT_YEAR_COLUMN,
+    MONTH_KEY_COLUMN,
     SCORE_METRIC,
     RANDOM_SEARCH_ITERATIONS,
     RANDOM_SEARCH_CV_FOLDS,
@@ -1135,6 +1136,7 @@ class TrainingPipeline:
                     # split_dataset a real per-row year signal for the out-of-time hold-out;
                     # it is dropped again right after the split so it never becomes a feature.
                     df[HOLDOUT_YEAR_COLUMN] = year
+                    df[MONTH_KEY_COLUMN] = f"{year}-{month_number:02d}"
 
                     print(f"      Loaded {len(df):,} rows, {len(df.columns)} columns")
 
@@ -1318,6 +1320,9 @@ class TrainingPipeline:
         keep = list(columns)
         if GROUP_KEY_COLUMN in df.columns and GROUP_KEY_COLUMN not in keep:
             keep.append(GROUP_KEY_COLUMN)
+        # Same for the monthly-file key: split_dataset imputes with it, then drops it.
+        if MONTH_KEY_COLUMN in df.columns and MONTH_KEY_COLUMN not in keep:
+            keep.append(MONTH_KEY_COLUMN)
         return df[keep]
 
     def select_training_cols(self, data=None, original_file_path=None):
@@ -1695,7 +1700,7 @@ class TrainingPipeline:
         are never imputed. A column that is entirely NaN in train has no median to
         borrow, so it raises instead of inventing a value.
         """
-        skip = set(VALID_TARGET_FEATURES) | {GROUP_KEY_COLUMN, HOLDOUT_YEAR_COLUMN}
+        skip = set(VALID_TARGET_FEATURES) | {GROUP_KEY_COLUMN, HOLDOUT_YEAR_COLUMN, MONTH_KEY_COLUMN}
         numeric = train_df.select_dtypes(include="number").columns
         medians = {}
         empty = []
@@ -1712,17 +1717,94 @@ class TrainingPipeline:
         return medians
 
     @staticmethod
-    def apply_medians(frame, medians):
-        """Fill NaN in `frame` with the train medians; other columns are untouched."""
-        known = {col: v for col, v in medians.items() if col in frame.columns}
-        return frame.fillna(value=known)
+    def weather_columns(frame):
+        """Weather columns of `frame`: base readings plus the 12h/24h/72h aggregates.
+
+        The same selection scale_weather_features uses.
+        """
+        window_patterns = ('(12h', '(24h', '(72h')
+        return [c for c in frame.columns
+                if c in ALL_WEATHER_FEATURES or any(p in c for p in window_patterns)]
+
+    @staticmethod
+    def _calendar_month(key):
+        """Calendar month (1-12) parsed from a "YYYY-MM" key Series; NaN when unreadable."""
+        return pd.to_numeric(key.astype("string").str[5:7], errors="coerce")
+
+    @classmethod
+    def fit_month_medians(cls, train_df):
+        """Weather medians per monthly file and per calendar month, from the TRAIN split only.
+
+        Returns {"year_month": {"2023-01": {col: median}}, "calendar_month": {1: {col: median}}},
+        or {} when the frame carries no MONTH_KEY_COLUMN. A group with no train value for a
+        column is left out, so apply_medians falls through to the next level.
+        """
+        if MONTH_KEY_COLUMN not in train_df.columns:
+            return {}
+        skip = set(VALID_TARGET_FEATURES) | {GROUP_KEY_COLUMN, HOLDOUT_YEAR_COLUMN, MONTH_KEY_COLUMN}
+        numeric = set(train_df.select_dtypes(include="number").columns)
+        columns = [c for c in cls.weather_columns(train_df) if c in numeric and c not in skip]
+        if not columns:
+            return {}
+        key = train_df[MONTH_KEY_COLUMN]
+
+        def rows(grouped, name):
+            return {name(k): {c: float(v) for c, v in row.items() if pd.notna(v)}
+                    for k, row in grouped.iterrows()}
+
+        by_year_month = train_df[columns].groupby(key).median()
+        by_calendar = train_df[columns].groupby(cls._calendar_month(key)).median()
+        return {"year_month": rows(by_year_month, str),
+                "calendar_month": rows(by_calendar, int)}
+
+    @classmethod
+    def apply_medians(cls, frame, medians, month_medians=None):
+        """Fill NaN in `frame` from the train medians; other columns are untouched.
+
+        A weather cell takes the median of its own monthly file first, then of its
+        calendar month over all train years (the hold-out year has no train rows of
+        its own), then the global train median of the column.
+        """
+        out = frame
+        if month_medians and MONTH_KEY_COLUMN in frame.columns:
+            key = frame[MONTH_KEY_COLUMN]
+            calendar = cls._calendar_month(key)
+            by_year_month = month_medians.get("year_month", {})
+            by_calendar = month_medians.get("calendar_month", {})
+            columns = ({c for v in by_year_month.values() for c in v}
+                       | {c for v in by_calendar.values() for c in v})
+            out = frame.copy(deep=False)
+            for col in sorted(columns & set(out.columns)):
+                missing = out[col].isna()
+                if not missing.any():
+                    continue
+                own = key.map({k: v[col] for k, v in by_year_month.items() if col in v})
+                fallback = calendar.map({m: v[col] for m, v in by_calendar.items() if col in v})
+                out[col] = out[col].where(~missing, own.fillna(fallback))
+        known = {col: v for col, v in medians.items() if col in out.columns}
+        return out.fillna(value=known)
+
+    @staticmethod
+    def imputation_report(medians, month_medians):
+        """The fitted imputer as a JSON-ready dict (saved beside the splits and the scaler)."""
+        month_medians = month_medians or {}
+        return {
+            "key": MONTH_KEY_COLUMN if month_medians else None,
+            "global": medians,
+            "per_calendar_month": {str(m): v for m, v in
+                                   sorted(month_medians.get("calendar_month", {}).items())},
+            "per_year_month": dict(sorted(month_medians.get("year_month", {}).items())),
+        }
 
     def write_splits(self, df, output_dir, identifier, group_column=GROUP_KEY_COLUMN,
                      random_state=RANDOM_STATE, basename=None):
         """Split and write train/val/test parquet, dropping the grouping key.
 
-        Missing numeric features are filled with the median of the TRAIN split
-        only (stage 12 no longer imputes), so no statistic sees val/test days.
+        Missing numeric features are filled with medians of the TRAIN split only
+        (stage 12 no longer imputes), so no statistic sees val/test days. Weather
+        columns use the median of their own monthly file, then of their calendar
+        month, then the global train median (the all-year Air temperature median at
+        OL is +2.9 C, January's is -6.3 C). The month key is dropped from the output.
 
         `basename` exists because split_dataset names its outputs after the source
         file it found, not after an identifier it chose.
@@ -1731,16 +1813,22 @@ class TrainingPipeline:
         basename = basename or f"merged_data_{identifier}"
         train, val, test = self.split_by_group(df, group_column=group_column,
                                                random_state=random_state)
-        medians = self.fit_train_medians(train.drop(columns=[group_column]))
+        train_features = train.drop(columns=[group_column])
+        medians = self.fit_train_medians(train_features)
+        month_medians = self.fit_month_medians(train_features)
+        if not month_medians:
+            print(f"      ⚠️  No '{MONTH_KEY_COLUMN}' column: weather NaN get the global train median")
         written = {}
         frames = {}
         for name, part in (("train", train), ("val", val), ("test", test)):
-            part = self.apply_medians(part.drop(columns=[group_column]), medians)
+            part = self.apply_medians(part.drop(columns=[group_column]), medians, month_medians)
+            part = part.drop(columns=[MONTH_KEY_COLUMN], errors="ignore")
             path = os.path.join(output_dir, f"{basename}_{name}.parquet")
             part.to_parquet(path, index=False)
             written[name] = {"path": path, "rows": len(part)}
             frames[name] = part
-        return {"success": True, "files": written, "frames": frames, "medians": medians}
+        return {"success": True, "files": written, "frames": frames,
+                "medians": medians, "month_medians": month_medians}
 
     def split_dataset(self, data_dir=None, output_dir=None, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify_column=None):
         """
@@ -1906,8 +1994,9 @@ class TrainingPipeline:
                 val_df = split["frames"]["val"]
                 test_df = split["frames"]["test"]
                 medians = split["medians"]
+                month_medians = split["month_medians"]
                 n_days = dev_df[GROUP_KEY_COLUMN].nunique()
-                dev_df = dev_df.drop(columns=[GROUP_KEY_COLUMN])
+                dev_df = dev_df.drop(columns=[GROUP_KEY_COLUMN, MONTH_KEY_COLUMN], errors="ignore")
                 print(f"      Day-grouped split on '{GROUP_KEY_COLUMN}' ({n_days:,} operating days)")
             else:
                 # No grouping key: the source predates the key, or is a fixture.
@@ -1923,8 +2012,11 @@ class TrainingPipeline:
                 val_df = dev_df.iloc[0:0]
                 val_filename = None
                 medians = self.fit_train_medians(train_df)
-                train_df = self.apply_medians(train_df, medians)
-                test_df = self.apply_medians(test_df, medians)
+                month_medians = self.fit_month_medians(train_df)
+                train_df = self.apply_medians(train_df, medians, month_medians)
+                test_df = self.apply_medians(test_df, medians, month_medians)
+                train_df = train_df.drop(columns=[MONTH_KEY_COLUMN], errors="ignore")
+                test_df = test_df.drop(columns=[MONTH_KEY_COLUMN], errors="ignore")
                 train_df.to_parquet(os.path.join(split_output_dir, train_filename), index=False)
                 test_df.to_parquet(os.path.join(split_output_dir, test_filename), index=False)
 
@@ -1935,8 +2027,9 @@ class TrainingPipeline:
             print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(dev_df)) * 100:.1f}%)")
 
             with open(os.path.join(split_output_dir, "imputation_medians.json"), "w", encoding="utf-8") as f:
-                json.dump(medians, f, indent=2)
-            print(f"      Imputed {len(medians)} numeric columns with train medians")
+                json.dump(self.imputation_report(medians, month_medians), f, indent=2)
+            print(f"      Imputed {len(medians)} numeric columns with train medians "
+                  f"({len(month_medians.get('year_month', {}))} monthly files for weather columns)")
 
             print(f"      Saved train set to: {train_filename}")
             if val_filename:
@@ -1947,7 +2040,8 @@ class TrainingPipeline:
                 holdout_path = os.path.join(split_output_dir, holdout_filename)
                 if GROUP_KEY_COLUMN in holdout_df.columns:
                     holdout_df = holdout_df.drop(columns=[GROUP_KEY_COLUMN])
-                holdout_df = self.apply_medians(holdout_df, medians)
+                holdout_df = self.apply_medians(holdout_df, medians, month_medians)
+                holdout_df = holdout_df.drop(columns=[MONTH_KEY_COLUMN], errors="ignore")
                 holdout_df.to_parquet(holdout_path, index=False)
                 print(f"      Saved hold-out set to: {holdout_filename}")
             
@@ -2390,11 +2484,29 @@ class TrainingPipeline:
             # applied to new data at inference time
             scaler_filename = "weather_scaler.joblib"
             scaler_path = os.path.join(scaled_training_ready_dir, scaler_filename)
+
+            # The imputer was fitted at the split (stage 503); keep it beside the
+            # scaler, which must run after it on new data.
+            imputer = None
+            imputation_path = os.path.join(
+                self.project_root, SPLIT_DATASET_OUTPUT_FOLDER, "imputation_medians.json")
+            if os.path.isfile(imputation_path):
+                with open(imputation_path, encoding="utf-8") as f:
+                    imputer = json.load(f)
+                shutil.copyfile(
+                    imputation_path,
+                    os.path.join(scaled_training_ready_dir, "imputation_medians.json"))
+                print(f"    scale_weather_features: ✓ Imputation medians copied beside the scaler")
+            else:
+                print(f"    scale_weather_features: ⚠️  {imputation_path} not found; "
+                      f"the scaler artifact carries no imputer")
+
             joblib.dump(
                 {
                     "scaler": scaler,
                     "weather_features": available_weather_features,
                     "skewed_features": skewed_cols,
+                    "imputer": imputer,
                 },
                 scaler_path,
             )
