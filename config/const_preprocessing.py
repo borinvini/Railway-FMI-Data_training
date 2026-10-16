@@ -24,6 +24,21 @@ PREPROCESSING_STATE_MACHINE = {
     "save_training_ready_parquet": True
 }
 
+# Per-stage intermediate parquet files that are actually written. Every stage used
+# to write one file per month; with filter_by_target_station off a month has about
+# 507k rows and each stage folder costs 2.45-3.0 GB over 96 months (about 48 GB for
+# all 17 folders, against about 0.5 GB at OL). Nothing downstream reads them: training
+# reads only 101-preprocessed_training_ready. Keys are state-machine names.
+# 100-preprocessed and 101-... keep their own switches (save_month_df_to_parquet,
+# save_training_ready_parquet). Keeping "process_actual_time_column" gives a debug
+# checkpoint with every engineered column next to the raw ones (~3.0 GB / 96 months).
+SAVE_STAGE_OUTPUTS = {"process_actual_time_column"}
+
+# Station identifier kept through filter_columns when filter_by_target_station is off,
+# so rows from different stations stay distinguishable. stationUICCode is int64 with
+# no nulls in all 96 months and maps 1:1 to stationShortCode, so it needs no encoder.
+STATION_ID_COLUMN = "stationUICCode"
+
 FOLDER_FILTER_BY_TARGET_STATION = "data/output/2-filter_by_target_station"
 FOLDER_PROCESS_CAUSES_COLUMN = "data/output/3-process_causes_column"
 FOLDER_ADD_TRAIN_DELAYED_FEATURE = "data/output/4-add_train_delayed_feature"

@@ -60,6 +60,8 @@ from config.const_preprocessing import (
     TRAINING_READY_OUTPUT_FOLDER,
     DEFAULT_TARGET_FEATURE,
     PREPROCESSING_STATE_MACHINE,
+    SAVE_STAGE_OUTPUTS,
+    STATION_ID_COLUMN,
     TARGET_STATION_CODE,
     TRAIN_DELAYED_TARGET_COLUMN,
     TRAIN_DELAY_MINUTES,
@@ -147,6 +149,37 @@ class PreprocessingPipeline:
                 handler.close()
                 logger.removeHandler(handler)
 
+    @staticmethod
+    def _station_filter_enabled():
+        """True when filter_by_target_station is on (read at call time, so tests can patch it)."""
+        return bool(PREPROCESSING_STATE_MACHINE.get("filter_by_target_station", False))
+
+    def _save_stage(self, stage_key, folder, month_id, df, file_prefix):
+        """Write a stage's intermediate parquet only when stage_key is in SAVE_STAGE_OUTPUTS.
+
+        With the station filter off each stage file is about 26-31 MB per month
+        (2.5-3.0 GB per stage over 96 months), and nothing downstream reads them.
+        month_id defaults to self.current_file_id, resolved only when the stage is
+        saved. A failed save is a warning, never a stage failure. Returns the path or None.
+        """
+        if stage_key not in SAVE_STAGE_OUTPUTS:
+            return None
+        month_id = month_id or self.current_file_id
+        print(f"\n--- SAVING {stage_key} DATA ---")
+        try:
+            saved_file_path = save_dataframe_to_parquet(
+                folder_path=self._output_dir(folder),
+                month_id=month_id,
+                df=df,
+                file_prefix=file_prefix
+            )
+            print(f"✓ Successfully saved {stage_key} data to: {saved_file_path}")
+            return saved_file_path
+        except Exception as save_error:
+            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
+            print("Continuing with processing, but data was not saved to folder.")
+            return None
+
     def _remove_stale_outputs(self, file_id):
         """Delete this month's training-ready and preprocessed files from an earlier run.
 
@@ -175,8 +208,10 @@ class PreprocessingPipeline:
         pools the counts, and raises when any month would decide differently, so
         the disagreement is fixed in the data rather than hidden by the merge.
 
-        The rows counted are the target-station rows with a numeric delay, which
-        is what stage 12 sees apart from small changes made by stages 3-11.
+        The rows counted are the target-station rows with a numeric delay when
+        filter_by_target_station is on, and every station's rows with a numeric
+        delay when it is off: what stage 12 sees apart from small changes made
+        by stages 3-11.
 
         Returns the sorted list of columns to drop and writes it, with the
         per-month missing percentages, to weather_columns_to_drop.json.
@@ -184,6 +219,10 @@ class PreprocessingPipeline:
         def weather_like(name):
             return any(w in name for w in IMPORTANT_WEATHER_FEATURES)
 
+        # The rows counted must be the rows stage 12 sees: target-station rows when
+        # stage 2 is on, every station's rows when it is off.
+        scope_label = (f"'{TARGET_STATION_CODE}'" if self._station_filter_enabled()
+                       else "all-station")
         per_month = {}
         for path in files:
             match = re.search(r'(\d{4}_\d{2})\.parquet$', os.path.basename(path))
@@ -196,9 +235,10 @@ class PreprocessingPipeline:
             has_delay = 'differenceInMinutes' in names
             if has_delay:
                 columns.append('differenceInMinutes')
-            table = pq.read_table(
-                path, columns=columns,
-                filters=[('stationShortCode', '==', TARGET_STATION_CODE)])
+            station_filter = (
+                [('stationShortCode', '==', TARGET_STATION_CODE)]
+                if self._station_filter_enabled() else None)
+            table = pq.read_table(path, columns=columns, filters=station_filter)
             frame = table.to_pandas()
             if has_delay:
                 delay = pd.to_numeric(frame['differenceInMinutes'], errors='coerce')
@@ -212,7 +252,7 @@ class PreprocessingPipeline:
                 per_month[month]['missing_pct'][col] = count / n * 100
 
         if not per_month:
-            raise ValueError(f"No '{TARGET_STATION_CODE}' rows in any of the {len(files)} files")
+            raise ValueError(f"No {scope_label} rows in any of the {len(files)} files")
 
         all_columns = sorted(set().union(*(m['present'] for m in per_month.values())))
         total_rows = sum(m['rows'] for m in per_month.values())
@@ -262,7 +302,7 @@ class PreprocessingPipeline:
         with open(os.path.join(report_dir, 'weather_columns_to_drop.json'), 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2)
         print(f"✓ Weather column drop list decided over {len(per_month)} months "
-              f"({total_rows:,} {TARGET_STATION_CODE} rows): {to_drop}")
+              f"({total_rows:,} {scope_label} rows): {to_drop}")
         return to_drop
 
     def run_pipeline(self, csv_files, target_feature=DEFAULT_TARGET_FEATURE):
@@ -1190,21 +1230,7 @@ class PreprocessingPipeline:
             unique_trains = filtered_df['trainNumber'].nunique()
             print(f"  • Unique trains at {TARGET_STATION_CODE}: {unique_trains}")
 
-        print(f"\n--- SAVING filter_by_target_station DATA ---")
-            
-        try:
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_FILTER_BY_TARGET_STATION),
-                month_id=self.current_file_id,
-                df=filtered_df,
-                file_prefix="filter_by_target_station"
-            )
-                
-            print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-        
-        except Exception as save_error:
-            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-            print("Continuing with processing, but data was not saved to folder.")
+        self._save_stage("filter_by_target_station", FOLDER_FILTER_BY_TARGET_STATION, None, filtered_df, "filter_by_target_station")
 
 
         return filtered_df
@@ -1421,21 +1447,7 @@ class PreprocessingPipeline:
             print(f"  - Weak weather (1): {stats['weather_weak']:,} ({stats['weather_weak']/total_processed*100:.1f}%)")
             print(f"  - No weather indicator (0): {stats['weather_none']:,} ({stats['weather_none']/total_processed*100:.1f}%)")
             
-            print(f"\n--- SAVING PROCESSED process_causes_column DATA ---")
-                
-            try:
-                saved_file_path = save_dataframe_to_parquet(
-                    folder_path=self._output_dir(FOLDER_PROCESS_CAUSES_COLUMN),
-                    month_id=self.current_file_id,
-                    df=df,
-                    file_prefix="process_causes_column"
-                )
-                    
-                print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-            except Exception as save_error:
-                print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                print("Continuing with processing, but data was not saved to folder.")
+            self._save_stage("process_causes_column", FOLDER_PROCESS_CAUSES_COLUMN, None, df, "process_causes_column")
 
             return df
             
@@ -1509,21 +1521,7 @@ class PreprocessingPipeline:
             print(f"Successfully added 'trainDelayed' column based on '{TRAIN_DELAYED_TARGET_COLUMN}'")
             print(f"Number of delayed trains: {df['trainDelayed'].sum()} ({df['trainDelayed'].mean() * 100:.2f}%)")
 
-            print(f"\n--- SAVING PROCESSED add_train_delayed_feature DATA ---")
-                
-            try:
-                saved_file_path = save_dataframe_to_parquet(
-                    folder_path=self._output_dir(FOLDER_ADD_TRAIN_DELAYED_FEATURE),
-                    month_id=self.current_file_id,
-                    df=df,
-                    file_prefix="add_train_delayed_feature"
-                )
-                    
-                print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-            except Exception as save_error:
-                print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                print("Continuing with processing, but data was not saved to folder.")
+            self._save_stage("add_train_delayed_feature", FOLDER_ADD_TRAIN_DELAYED_FEATURE, None, df, "add_train_delayed_feature")
             
             return df
             
@@ -1680,19 +1678,7 @@ class PreprocessingPipeline:
         if null_weather_data > 0:
             print(f"⚠ Warning: {null_weather_data} missing weather data points detected")
         
-        print(f"\n--- SAVING add_weather_scenarios_col DATA ---")
-
-        try:
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_ADD_WEATHER_SCENARIOS_COL),
-                month_id=self.current_file_id,
-                df=df,
-                file_prefix="add_weather_scenarios_col"
-            )
-            print(f"✓ Successfully saved weather scenarios data to: {saved_file_path}")
-        except Exception as save_error:
-            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-            print("Continuing with processing, but data was not saved to folder.")
+        self._save_stage("add_weather_scenarios_col", FOLDER_ADD_WEATHER_SCENARIOS_COL, None, df, "add_weather_scenarios_col")
 
         return df
 
@@ -1871,19 +1857,7 @@ class PreprocessingPipeline:
         if not windows_processed:
             print(f"⚠ Warning: No rolling-window weather scenario columns could be created{month_str} (no rolling columns found)")
 
-        print(f"\n--- SAVING add_rolling_weather_scenarios_col DATA ---")
-
-        try:
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL),
-                month_id=self.current_file_id,
-                df=df,
-                file_prefix="add_rolling_weather_scenarios_col"
-            )
-            print(f"✓ Successfully saved rolling weather scenarios data to: {saved_file_path}")
-        except Exception as save_error:
-            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-            print("Continuing with processing, but data was not saved to folder.")
+        self._save_stage("add_rolling_weather_scenarios_col", FOLDER_ADD_ROLLING_WEATHER_SCENARIOS_COL, None, df, "add_rolling_weather_scenarios_col")
 
         return df
 
@@ -1970,18 +1944,7 @@ class PreprocessingPipeline:
                 print(f"  {group:<20} : {count:>8,} ({percentage:>6.2f}%)")
             print(f"{'='*60}\n")
 
-            print(f"--- SAVING add_wawa_group_col DATA ---")
-            try:
-                saved_file_path = save_dataframe_to_parquet(
-                    folder_path=self._output_dir(FOLDER_ADD_WAWA_GROUP_COL),
-                    month_id=month_id if month_id else self.current_file_id,
-                    df=df,
-                    file_prefix="add_wawa_group_col"
-                )
-                print(f"✓ Successfully saved wawa group data to: {saved_file_path}")
-            except Exception as save_error:
-                print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                print("Continuing with processing, but data was not saved to folder.")
+            self._save_stage("add_wawa_group_col", FOLDER_ADD_WAWA_GROUP_COL, month_id, df, "add_wawa_group_col")
 
             return df
 
@@ -2170,17 +2133,9 @@ class PreprocessingPipeline:
             print(f"✓ Final dataframe shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
             print(f"{'='*60}\n")
 
-            # Save the dataframe with one-hot encoded features
-            print(f"--- SAVING weather_scenario_one_hot_encoder DATA ---")
-
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER),
-                month_id=month_id if month_id else self.current_file_id,
-                df=df,
-                file_prefix="weather_scenario_one_hot_encoder"
-            )
-
-            print(f"✓ Successfully saved one-hot encoded data to: {saved_file_path}")
+            self._save_stage("weather_scenario_one_hot_encoder", FOLDER_WEATHER_SCENARIO_ONE_HOT_ENCODER,
+                             month_id, df,
+                             "weather_scenario_one_hot_encoder")
 
             return df
 
@@ -2237,14 +2192,9 @@ class PreprocessingPipeline:
             print(f"✓ Final dataframe shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
             print(f"{'='*60}\n")
 
-            print(f"--- SAVING wawa_group_one_hot_encoder DATA ---")
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_WAWA_GROUP_ONE_HOT_ENCODER),
-                month_id=month_id if month_id else self.current_file_id,
-                df=df,
-                file_prefix="wawa_group_one_hot_encoder"
-            )
-            print(f"✓ Successfully saved one-hot encoded data to: {saved_file_path}")
+            self._save_stage("wawa_group_one_hot_encoder", FOLDER_WAWA_GROUP_ONE_HOT_ENCODER,
+                             month_id, df,
+                             "wawa_group_one_hot_encoder")
 
             return df
 
@@ -2302,18 +2252,7 @@ class PreprocessingPipeline:
         print(f"✓ Added '{local_col}' ({LOCAL_TIMEZONE}); "
               f"{int(shifted.sum()):,} rows ({shifted.mean() * 100:.2f}%) fall on a different calendar date than in UTC")
 
-        print(f"\n--- SAVING convert_scheduled_time_to_local DATA ---")
-        try:
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL),
-                month_id=month_id if month_id else self.current_file_id,
-                df=df,
-                file_prefix="convert_scheduled_time_to_local"
-            )
-            print(f"✓ Successfully saved local-time data to: {saved_file_path}")
-        except Exception as save_error:
-            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-            print("Continuing with processing, but data was not saved to folder.")
+        self._save_stage("convert_scheduled_time_to_local", FOLDER_CONVERT_SCHEDULED_TIME_TO_LOCAL, month_id, df, "convert_scheduled_time_to_local")
 
         return df
 
@@ -2499,21 +2438,7 @@ class PreprocessingPipeline:
                 logger.info(f"Temporal feature extraction completed successfully for {len(df)} rows")
                 logger.info(f"Added columns: month, hour, day_of_week, day_of_month")
 
-                print(f"\n--- SAVING PROCESSED process_actual_time_column DATA ---")
-                
-                try:
-                    saved_file_path = save_dataframe_to_parquet(
-                        folder_path=self._output_dir(FOLDER_PROCESS_ACTUAL_TIME_COLUMN),
-                        month_id=self.current_file_id,
-                        df=df,
-                        file_prefix="process_actual_time_column"
-                    )
-                    
-                    print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-                except Exception as save_error:
-                    print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                    print("Continuing with processing, but data was not saved to folder.")
+                self._save_stage("process_actual_time_column", FOLDER_PROCESS_ACTUAL_TIME_COLUMN, None, df, "process_actual_time_column")
                 
                 return df
                 
@@ -2625,6 +2550,13 @@ class PreprocessingPipeline:
                     columns_to_keep.append(GROUP_KEY_COLUMN)
                     logger.info(f"Group key column kept: {GROUP_KEY_COLUMN}")
 
+                # With the station filter off, rows come from every station: keep a
+                # numeric station id so they stay distinguishable. It is a feature.
+                if not self._station_filter_enabled() and STATION_ID_COLUMN in df.columns:
+                    columns_to_keep.append(STATION_ID_COLUMN)
+                    logger.info(f"Station id column kept (station filter off): {STATION_ID_COLUMN}")
+                    print(f"Station id column kept (station filter off): {STATION_ID_COLUMN}")
+
                 # Remove duplicates while preserving order
                 columns_to_keep = list(dict.fromkeys(columns_to_keep))
                 
@@ -2679,21 +2611,7 @@ class PreprocessingPipeline:
                 logger.info(f"Final dataframe shape: {filtered_df.shape}")
                 logger.info(f"Final columns: {list(filtered_df.columns)}")
 
-                print(f"\n--- SAVING PROCESSED filter_columns DATA ---")
-                
-                try:
-                    saved_file_path = save_dataframe_to_parquet(
-                        folder_path=self._output_dir(FOLDER_FILTER_COLUMNS),
-                        month_id=self.current_file_id,
-                        df=filtered_df,
-                        file_prefix="filter_columns"
-                    )
-                    
-                    print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-                except Exception as save_error:
-                    print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                    print("Continuing with processing, but data was not saved to folder.")
+                self._save_stage("filter_columns", FOLDER_FILTER_COLUMNS, None, filtered_df, "filter_columns")
                 
                 return filtered_df
                 
@@ -2788,21 +2706,7 @@ class PreprocessingPipeline:
                     logger.info(f"Total NaN values filled: {total_nulls_filled}")
                     logger.info(f"Final dataframe shape: {df.shape}")
 
-                    print(f"\n--- SAVING PROCESSED convert_boolean_to_numeric DATA ---")
-                
-                    try:
-                        saved_file_path = save_dataframe_to_parquet(
-                            folder_path=self._output_dir(FOLDER_CONVERT_BOOLEAN_TO_NUMERIC),
-                            month_id=self.current_file_id,
-                            df=df,
-                            file_prefix="convert_boolean_to_numeric"
-                        )
-                    
-                        print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-                    except Exception as save_error:
-                        print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                        print("Continuing with processing, but data was not saved to folder.")
+                    self._save_stage("convert_boolean_to_numeric", FOLDER_CONVERT_BOOLEAN_TO_NUMERIC, None, df, "convert_boolean_to_numeric")
                     
                     return df
                     
@@ -3101,21 +3005,7 @@ class PreprocessingPipeline:
                 print(f"\n✓ All missing values successfully handled")
                 logger.info("All missing values successfully handled")
 
-            print(f"\n--- SAVING PROCESSED handle_missing_values DATA ---")
-                
-            try:
-                saved_file_path = save_dataframe_to_parquet(
-                    folder_path=self._output_dir(FOLDER_HANDLE_MISSING_VALUES),
-                    month_id=self.current_file_id,
-                    df=df,
-                    file_prefix="handle_missing_values"
-                )
-                    
-                print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-            except Exception as save_error:
-                print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                print("Continuing with processing, but data was not saved to folder.")
+            self._save_stage("handle_missing_values", FOLDER_HANDLE_MISSING_VALUES, None, df, "handle_missing_values")
             
             return df
 
@@ -3302,21 +3192,7 @@ class PreprocessingPipeline:
                 logger.info(f"Added columns: hour_sin, hour_cos")
                 logger.info(f"Removed column: hour")
                 
-                print(f"\n--- SAVING PROCESSED convert_hour_to_sincos DATA ---")
-                
-                try:
-                    saved_file_path = save_dataframe_to_parquet(
-                        folder_path=self._output_dir(FOLDER_CONVERT_HOUR_TO_SINCOS),
-                        month_id=self.current_file_id,
-                        df=df,
-                        file_prefix="convert_hour_to_sincos"
-                    )
-                    
-                    print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-                except Exception as save_error:
-                    print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                    print("Continuing with processing, but data was not saved to folder.")
+                self._save_stage("convert_hour_to_sincos", FOLDER_CONVERT_HOUR_TO_SINCOS, None, df, "convert_hour_to_sincos")
 
                 return df
                 
@@ -3485,21 +3361,7 @@ class PreprocessingPipeline:
                 logger.info(f"Added columns: month_sin, month_cos")
                 logger.info("Original month column preserved")
 
-                print(f"\n--- SAVING PROCESSED convert_month_to_sincos DATA ---")
-                
-                try:
-                    saved_file_path = save_dataframe_to_parquet(
-                        folder_path=self._output_dir(FOLDER_CONVERT_MONTH_TO_SINCOS),
-                        month_id=self.current_file_id,
-                        df=df,
-                        file_prefix="convert_month_to_sincos"
-                    )
-                    
-                    print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-                except Exception as save_error:
-                    print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                    print("Continuing with processing, but data was not saved to folder.")
+                self._save_stage("convert_month_to_sincos", FOLDER_CONVERT_MONTH_TO_SINCOS, None, df, "convert_month_to_sincos")
                 
                 return df
                 
@@ -3666,21 +3528,7 @@ class PreprocessingPipeline:
                     logger.info(f"Added columns: day_week_sin, day_week_cos")
                     logger.info(f"Preserved column: day_of_week")
                     
-                    print(f"\n--- SAVING PROCESSED convert_dayofweek_to_sincos DATA ---")
-                
-                    try:
-                        saved_file_path = save_dataframe_to_parquet(
-                            folder_path=self._output_dir(FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS),
-                            month_id=self.current_file_id,
-                            df=df,
-                            file_prefix="convert_dayofweek_to_sincos"
-                        )
-                    
-                        print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-                    except Exception as save_error:
-                        print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                        print("Continuing with processing, but data was not saved to folder.")
+                    self._save_stage("convert_dayofweek_to_sincos", FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS, None, df, "convert_dayofweek_to_sincos")
 
                     return df
                     
@@ -3783,21 +3631,7 @@ class PreprocessingPipeline:
                 logger.info(f"Dropped columns: {existing_columns}")
                 logger.info(f"Final dataset shape: {df.shape}")
 
-                print(f"\n--- SAVING PROCESSED drop_original_temporal_columns DATA ---")
-                
-                try:
-                    saved_file_path = save_dataframe_to_parquet(
-                        folder_path=self._output_dir(FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS),
-                        month_id=self.current_file_id,
-                        df=df,
-                        file_prefix="drop_original_temporal_columns"
-                    )
-                    
-                    print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-                except Exception as save_error:
-                    print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-                    print("Continuing with processing, but data was not saved to folder.")
+                self._save_stage("drop_original_temporal_columns", FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS, None, df, "drop_original_temporal_columns")
                 
                 return df
                 
@@ -3873,21 +3707,7 @@ class PreprocessingPipeline:
                 print("No train features found to drop")
         """
 
-        print(f"\n--- SAVING PROCESSED select_target_feature DATA ---")
-                
-        try:
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_SELECT_TARGET),
-                month_id=self.current_file_id,
-                df=df,
-                file_prefix="select_target_feature"
-            )
-                    
-            print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-            
-        except Exception as save_error:
-            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-            print("Continuing with processing, but data was not saved to folder.")
+        self._save_stage("select_target", FOLDER_SELECT_TARGET, None, df, "select_target_feature")
         
         print(f"Final dataframe shape: {df.shape}")
         return df
@@ -3977,21 +3797,7 @@ class PreprocessingPipeline:
                 print(f"✓ {success_msg}")  # Use checkmark only for console output
                 logger.info(success_msg)  # Log success message too
         
-        print(f"\n--- SAVING PROCESSED remove_duplicates DATA ---")
-                    
-        try:
-            saved_file_path = save_dataframe_to_parquet(
-                folder_path=self._output_dir(FOLDER_REMOVE_DUPLICATES),
-                month_id=self.current_file_id,
-                df=df_deduplicated,
-                file_prefix="remove_duplicates"
-            )
-                        
-            print(f"✓ Successfully saved extracted nested data to: {saved_file_path}")
-                
-        except Exception as save_error:
-            print(f"⚠️  Warning: Failed to save processed data: {save_error}")
-            print("Continuing with processing, but data was not saved to folder.")
+        self._save_stage("remove_duplicates", FOLDER_REMOVE_DUPLICATES, None, df_deduplicated, "remove_duplicates")
 
         return df_deduplicated
 

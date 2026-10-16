@@ -64,7 +64,8 @@ def test_intermediate_saves_resolve_against_project_root(tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     pipeline = _pipeline(root, tmp_path)
 
-    with patch.object(pipeline, "get_logger", _null_logger):
+    with patch.object(pipeline, "get_logger", _null_logger), \
+         patch("src.preprocessing_pipeline.SAVE_STAGE_OUTPUTS", {"remove_duplicates"}):
         out = pipeline.remove_duplicates(dataframe=_frame(), month_id="2023_01")
 
     assert out is not None
