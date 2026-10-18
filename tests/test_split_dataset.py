@@ -325,7 +325,9 @@ def _training_ready_files():
 
 
 def test_the_base_rate_survives_the_split():
-    """Measured 2026-08-20: 27,387 delayed of 116,733 OL rows = 23.461%.
+    """Each split keeps the overall delay rate (measured 2026-08-20 at a 5-minute threshold:
+    27,387 delayed of 116,733 OL rows = 23.461%). The rate depends on TRAIN_DELAY_MINUTES,
+    so it is compared with the data's own rate instead of a fixed 23.5%.
 
     Day-grouped assignment is not stratified, so this is the check that it did
     not accidentally concentrate bad-weather days in one split."""
@@ -344,8 +346,9 @@ def test_the_base_rate_survives_the_split():
         [pd.read_parquet(f, columns=["trainDelayed", GROUP_KEY_COLUMN]) for f in files],
         ignore_index=True,
     )
+    overall = df["trainDelayed"].mean()
     pipeline = TrainingPipeline()
     for part in pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN):
         # (train, test)
         rate = part["trainDelayed"].mean()
-        assert 0.21 < rate < 0.26, f"base rate {rate:.3%} drifted from 23.5%"
+        assert abs(rate - overall) < 0.03, f"base rate {rate:.3%} drifted from the overall {overall:.3%}"

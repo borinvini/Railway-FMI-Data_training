@@ -52,7 +52,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from src.cv_utils import groups_path, load_train_groups, make_cv, neg_pos_ratio
+from src.cv_utils import (filled_path, groups_path, load_filled_flags, load_train_groups,
+                          mae_baseline, make_cv, make_minutes_mae_scorer, neg_pos_ratio,
+                          residual_quantiles)
 from src.day_split import split_days
 from src.file_utils import (
     save_dataframe_to_parquet,
@@ -85,6 +87,8 @@ from config.const_training import (
     MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER,
     FILTER_LOWER_QUANTILE,
     FILTER_UPPER_QUANTILE,
+    REGRESSION_FILTER_TRAIN_ONLY,
+    REGRESSION_CANCELLED_POLICY,
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     RANDOM_FOREST_PARAM_DISTRIBUTIONS,
     RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION,
@@ -803,11 +807,20 @@ class TrainingPipeline:
         df = data.copy()
         rows_before = len(df)
 
-        lower_bound = float(df[target_col].quantile(FILTER_LOWER_QUANTILE))
-        upper_bound = float(df[target_col].quantile(FILTER_UPPER_QUANTILE))
+        # A numeric target is trimmed on the train rows only, after the split (stage 503):
+        # bounds taken from every row would also trim test and hold-out, and RMSE / R2
+        # would then be measured on a target without its extreme delays. The data is
+        # still saved below so stage 502 never picks up a stale filtered file.
+        defer_to_split = DEFAULT_TARGET_FEATURE in REGRESSION_PROBLEM and REGRESSION_FILTER_TRAIN_ONLY
+        if defer_to_split:
+            lower_bound = upper_bound = None
+            lower_mask = upper_mask = pd.Series(False, index=df.index)
+        else:
+            lower_bound = float(df[target_col].quantile(FILTER_LOWER_QUANTILE))
+            upper_bound = float(df[target_col].quantile(FILTER_UPPER_QUANTILE))
 
-        lower_mask = df[target_col] < lower_bound
-        upper_mask = df[target_col] > upper_bound
+            lower_mask = df[target_col] < lower_bound
+            upper_mask = df[target_col] > upper_bound
 
         rows_removed_lower = int(lower_mask.sum())
         rows_removed_upper = int(upper_mask.sum())
@@ -816,9 +829,15 @@ class TrainingPipeline:
         rows_after = len(df)
 
         print(f"\n    filter_delay_outliers: Filtering {rows_before:,} rows...")
-        print(f"      Lower bound (q={FILTER_LOWER_QUANTILE}): {lower_bound:.2f} min")
-        print(f"      Upper bound (q={FILTER_UPPER_QUANTILE}): {upper_bound:.2f} min")
-        if rows_before > 0:
+        if defer_to_split:
+            print(f"      Numeric target '{DEFAULT_TARGET_FEATURE}': no rows removed here; the tails are cut "
+                  f"from the train split only in split_dataset (REGRESSION_FILTER_TRAIN_ONLY)")
+        else:
+            print(f"      Lower bound (q={FILTER_LOWER_QUANTILE}): {lower_bound:.2f} min")
+            print(f"      Upper bound (q={FILTER_UPPER_QUANTILE}): {upper_bound:.2f} min")
+        if defer_to_split:
+            pass
+        elif rows_before > 0:
             print(f"      Removed (lower tail): {rows_removed_lower:,} ({rows_removed_lower / rows_before * 100:.2f}%)")
             print(f"      Removed (upper tail): {rows_removed_upper:,} ({rows_removed_upper / rows_before * 100:.2f}%)")
             print(f"      Rows after: {rows_after:,} ({rows_after / rows_before * 100:.2f}% kept)")
@@ -930,6 +949,27 @@ class TrainingPipeline:
 
         if target_col not in df.columns:
             print(f"    balance_classes: '{target_col}' not found — saving train unchanged")
+            train_out = os.path.join(output_folder, os.path.basename(train_path))
+            df.to_parquet(train_out, index=False)
+            return {
+                "success": True,
+                "rows_before": rows_before,
+                "rows_after": rows_before,
+                "minority_share_before": None,
+                "minority_share_after": None,
+                "resampling_method": "NONE",
+                "skipped": True,
+                "dropped_non_numeric_cols": [],
+                "dropped_counterpart_col": dropped_counterpart_col,
+                "train_output_path": train_out,
+                "test_output_path": test_output_path,
+                "holdout_output_path": holdout_output_path,
+            }
+
+        if is_regression:
+            # Resampling classes is meaningless for a numeric target (the old branch
+            # binarised it and ran SMOTE). The train rows pass through unchanged.
+            print(f"    balance_classes: '{target_col}' is a numeric target — nothing to balance, saving train unchanged")
             train_out = os.path.join(output_folder, os.path.basename(train_path))
             df.to_parquet(train_out, index=False)
             return {
@@ -1325,9 +1365,12 @@ class TrainingPipeline:
             keep.append(MONTH_KEY_COLUMN)
         # Labels: only the target may stay. The trainers use every non-target column as a
         # feature, so a second label (trainDelayed beside trainDisrupted, cancelled, ...) would
-        # hand the model its own answer, whatever a feature catalogue lists.
+        # hand the model its own answer, whatever a feature catalogue lists. Every target-like
+        # column counts, the differenceInMinutes* ones too: with a numeric target the other two
+        # delay columns are the same quantity, and with a classification target they are what
+        # the label was computed from.
         if DEFAULT_TARGET_FEATURE in df.columns:
-            other_labels = [c for c in LABEL_COLUMNS if c != DEFAULT_TARGET_FEATURE and c in keep]
+            other_labels = [c for c in VALID_TARGET_FEATURES if c != DEFAULT_TARGET_FEATURE and c in keep]
             if other_labels:
                 print(f"    apply_column_selection: dropping label columns other than the target "
                       f"'{DEFAULT_TARGET_FEATURE}': {other_labels}")
@@ -1384,6 +1427,8 @@ class TrainingPipeline:
                     found = [
                         f for f in glob.glob(os.path.join(search_dir, "merged_data_*.parquet"))
                         if not f.endswith(("_train.parquet", "_val.parquet", "_train_groups.parquet",
+                                           "_train_filled.parquet", "_test_filled.parquet",
+                                           "_holdout_filled.parquet",
                                            "_test.parquet", "_holdout.parquet"))
                     ]
                     if found:
@@ -1797,8 +1842,69 @@ class TrainingPipeline:
             "per_year_month": dict(sorted(month_medians.get("year_month", {}).items())),
         }
 
+    @staticmethod
+    def trim_train_tails(train, target_column):
+        """Cut the delay tails of a NUMERIC target from the train rows only.
+
+        The bounds are the FILTER_LOWER/UPPER_QUANTILE of the train split's own target, so
+        test and hold-out never influence them and keep every real delay. Returns
+        (train, info); `info` is None when the target is not numeric or the option is off.
+        """
+        if not (REGRESSION_FILTER_TRAIN_ONLY and target_column in REGRESSION_PROBLEM
+                and target_column in train.columns):
+            return train, None
+        lower = float(train[target_column].quantile(FILTER_LOWER_QUANTILE))
+        upper = float(train[target_column].quantile(FILTER_UPPER_QUANTILE))
+        keep = train[target_column].between(lower, upper) | train[target_column].isna()
+        info = {"target": target_column, "lower_bound": lower, "upper_bound": upper,
+                "train_rows_before": int(len(train)), "train_rows_removed": int((~keep).sum())}
+        print(f"      Train-only delay filter on '{target_column}': bounds {lower:.2f} .. {upper:.2f} min, "
+              f"removed {info['train_rows_removed']:,} of {info['train_rows_before']:,} train rows "
+              f"(test and hold-out untouched)")
+        return train[keep], info
+
+    @staticmethod
+    def cancelled_fill_value(train, target_column):
+        """Delay given to a train with no delay under REGRESSION_CANCELLED_POLICY = 'cap'.
+
+        The FILTER_UPPER_QUANTILE bound of the real delays of the TRAIN rows (NaN are skipped),
+        so test and hold-out never influence it. None when the policy is 'drop' or the target is
+        not numeric.
+        """
+        if not (REGRESSION_CANCELLED_POLICY == 'cap' and target_column in REGRESSION_PROBLEM
+                and target_column in train.columns):
+            return None
+        return float(train[target_column].quantile(FILTER_UPPER_QUANTILE))
+
+    @staticmethod
+    def drop_missing_target(frame, target_column):
+        """'drop' policy: remove the rows of one split that have no delay (numeric target only).
+
+        Applied after the day split, never before, so which days are train, test or hold-out
+        does not depend on REGRESSION_CANCELLED_POLICY. Returns (frame, n_dropped).
+        """
+        if not (REGRESSION_CANCELLED_POLICY == 'drop' and target_column in REGRESSION_PROBLEM
+                and target_column in frame.columns):
+            return frame, 0
+        keep = frame[target_column].notna()
+        return frame[keep], int((~keep).sum())
+
+    @staticmethod
+    def fill_missing_target(frame, target_column, value):
+        """Fill NaN targets of `frame` with `value`; returns (frame, flags).
+
+        `flags` is a bool array, True where the target was filled in (row-aligned with
+        `frame`), or None when `value` is None and the frame is returned untouched.
+        """
+        if value is None:
+            return frame, None
+        missing = frame[target_column].isna().to_numpy()
+        frame = frame.copy()
+        frame[target_column] = frame[target_column].fillna(value)
+        return frame, missing
+
     def write_splits(self, df, output_dir, identifier, group_column=GROUP_KEY_COLUMN,
-                     random_state=RANDOM_STATE, basename=None):
+                     random_state=RANDOM_STATE, basename=None, target_column=None):
         """Split and write train/test parquet, dropping the grouping key.
 
         The operating day of each train row goes to `<basename>_train_groups.parquet`,
@@ -1818,6 +1924,15 @@ class TrainingPipeline:
         basename = basename or f"merged_data_{identifier}"
         train, test = self.split_by_group(df, group_column=group_column,
                                           random_state=random_state)
+        train, dropped_train = self.drop_missing_target(train, target_column)
+        test, dropped_test = self.drop_missing_target(test, target_column)
+        # The fill value uses the same train quantile as the tail cut, so it is taken before the cut.
+        cap_value = self.cancelled_fill_value(train, target_column)
+        # Before medians and before the day sidecar, so both describe the rows that are kept.
+        train, outlier_filter = self.trim_train_tails(train, target_column)
+        train, train_flags = self.fill_missing_target(train, target_column, cap_value)
+        test, test_flags = self.fill_missing_target(test, target_column, cap_value)
+        flags = {"train": train_flags, "test": test_flags}
         train_features = train.drop(columns=[group_column])
         medians = self.fit_train_medians(train_features)
         month_medians = self.fit_month_medians(train_features)
@@ -1835,8 +1950,15 @@ class TrainingPipeline:
             frames[name] = part
             if name == "train":
                 days.to_frame(group_column).to_parquet(groups_path(path), index=False)
+            if flags[name] is not None:
+                pd.DataFrame({"filled": flags[name]}).to_parquet(filled_path(path), index=False)
         return {"success": True, "files": written, "frames": frames,
-                "medians": medians, "month_medians": month_medians}
+                "medians": medians, "month_medians": month_medians,
+                "train_outlier_filter": outlier_filter,
+                "dropped_missing_target": {"train": dropped_train, "test": dropped_test},
+                "cancelled_fill": None if cap_value is None else {
+                    "value": cap_value, "filled_train": int(train_flags.sum()),
+                    "filled_test": int(test_flags.sum())}}
 
     def split_dataset(self, data_dir=None, output_dir=None, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify_column=None):
         """
@@ -1875,6 +1997,7 @@ class TrainingPipeline:
             # _val and _holdout are outputs of a previous run, not sources. Without
             # this the second run of the stage sees three source files and aborts.
             split_suffixes = ('_train.parquet', '_val.parquet', '_train_groups.parquet',
+                              '_train_filled.parquet', '_test_filled.parquet', '_holdout_filled.parquet',
                               '_test.parquet', '_holdout.parquet')
             source_parquet_files = [f for f in all_parquet_files if not f.endswith(split_suffixes)]
 
@@ -1950,6 +2073,13 @@ class TrainingPipeline:
                         print(f"        Class {class_value}: {stats['count']:,} samples ({stats['percentage']:.2f}%)")
                 else:
                     print(f"      Detected regression problem with target '{target_column}'")
+                    # Cancelled trains have no delay. The label of a numeric target cannot be
+                    # NaN: the fit, the shap stage and every metric fail on it.
+                    n_missing = int(df[target_column].isna().sum())
+                    if n_missing:
+                        print(f"      {n_missing:,} rows have no '{target_column}' (cancelled trains). "
+                              f"REGRESSION_CANCELLED_POLICY='{REGRESSION_CANCELLED_POLICY}' is applied after the "
+                              f"split, so the train/test days are the same under both policies")
             else:
                 print(f"      No target column detected - using simple random split")
 
@@ -1989,7 +2119,9 @@ class TrainingPipeline:
 
             # Files of an earlier run that this run may not rewrite: the old validation
             # split, and the day sidecar (stale once the rows of train change).
-            for stale in (f"{base_name}_val.parquet", os.path.basename(groups_path(train_filename))):
+            for stale in (f"{base_name}_val.parquet", os.path.basename(groups_path(train_filename)),
+                          f"{base_name}_train_filled.parquet", f"{base_name}_test_filled.parquet",
+                          f"{base_name}_holdout_filled.parquet"):
                 stale_path = os.path.join(split_output_dir, stale)
                 if os.path.exists(stale_path):
                     os.remove(stale_path)
@@ -1999,12 +2131,17 @@ class TrainingPipeline:
             # leaks weather and knock-on delay for the tabular models too, since one
             # operating day's rows are far from independent.
             grouped = GROUP_KEY_COLUMN in dev_df.columns
+            cancelled_fill = None
+            dropped_missing = {"train": 0, "test": 0, "holdout": 0}
             if grouped:
                 split = self.write_splits(
                     dev_df, output_dir=split_output_dir, identifier=base_name,
                     group_column=GROUP_KEY_COLUMN, random_state=random_state,
-                    basename=base_name,
+                    basename=base_name, target_column=target_column,
                 )
+                train_outlier_filter = split["train_outlier_filter"]
+                cancelled_fill = split["cancelled_fill"]
+                dropped_missing.update(split["dropped_missing_target"])
                 train_df = split["frames"]["train"]
                 test_df = split["frames"]["test"]
                 medians = split["medians"]
@@ -2023,6 +2160,15 @@ class TrainingPipeline:
                     random_state=random_state,
                     stratify=stratify
                 )
+                train_df, dropped_missing["train"] = self.drop_missing_target(train_df, target_column)
+                test_df, dropped_missing["test"] = self.drop_missing_target(test_df, target_column)
+                cap_value = self.cancelled_fill_value(train_df, target_column)
+                train_df, train_outlier_filter = self.trim_train_tails(train_df, target_column)
+                train_df, train_flags = self.fill_missing_target(train_df, target_column, cap_value)
+                test_df, test_flags = self.fill_missing_target(test_df, target_column, cap_value)
+                if cap_value is not None:
+                    cancelled_fill = {"value": cap_value, "filled_train": int(train_flags.sum()),
+                                      "filled_test": int(test_flags.sum())}
                 medians = self.fit_train_medians(train_df)
                 month_medians = self.fit_month_medians(train_df)
                 train_df = self.apply_medians(train_df, medians, month_medians)
@@ -2031,6 +2177,10 @@ class TrainingPipeline:
                 test_df = test_df.drop(columns=[MONTH_KEY_COLUMN], errors="ignore")
                 train_df.to_parquet(os.path.join(split_output_dir, train_filename), index=False)
                 test_df.to_parquet(os.path.join(split_output_dir, test_filename), index=False)
+                for flag_name, flag_values in ((train_filename, train_flags), (test_filename, test_flags)):
+                    if flag_values is not None:
+                        pd.DataFrame({"filled": flag_values}).to_parquet(
+                            filled_path(os.path.join(split_output_dir, flag_name)), index=False)
 
             print(f"      Split results:")
             print(f"        Train set: {len(train_df):,} samples ({(len(train_df) / len(dev_df)) * 100:.1f}%)")
@@ -2048,11 +2198,26 @@ class TrainingPipeline:
                 holdout_path = os.path.join(split_output_dir, holdout_filename)
                 if GROUP_KEY_COLUMN in holdout_df.columns:
                     holdout_df = holdout_df.drop(columns=[GROUP_KEY_COLUMN])
+                holdout_df, dropped_missing["holdout"] = self.drop_missing_target(holdout_df, target_column)
+                holdout_df, holdout_flags = self.fill_missing_target(
+                    holdout_df, target_column, cancelled_fill["value"] if cancelled_fill else None)
                 holdout_df = self.apply_medians(holdout_df, medians, month_medians)
                 holdout_df = holdout_df.drop(columns=[MONTH_KEY_COLUMN], errors="ignore")
                 holdout_df.to_parquet(holdout_path, index=False)
+                if holdout_flags is not None:
+                    pd.DataFrame({"filled": holdout_flags}).to_parquet(filled_path(holdout_path), index=False)
+                    cancelled_fill["filled_holdout"] = int(holdout_flags.sum())
                 print(f"      Saved hold-out set to: {holdout_filename}")
             
+            if sum(dropped_missing.values()):
+                print(f"      Dropped rows with no '{target_column}' (cancelled trains): "
+                      f"{dropped_missing['train']:,} train, {dropped_missing['test']:,} test, "
+                      f"{dropped_missing['holdout']:,} hold-out")
+            if cancelled_fill:
+                print(f"      Cancelled trains (no delay) filled with {cancelled_fill['value']:.2f} min, the train bound: "
+                      f"{cancelled_fill['filled_train']:,} train, {cancelled_fill['filled_test']:,} test, "
+                      f"{cancelled_fill.get('filled_holdout', 0):,} hold-out rows (flags saved beside the splits)")
+
             # Calculate class distribution after split for classification problems
             class_distribution_train = {}
             class_distribution_test = {}
@@ -2096,6 +2261,9 @@ class TrainingPipeline:
                 'train_file': train_filename,
                 'test_file': test_filename,
                 'grouped_by': GROUP_KEY_COLUMN if grouped else None,
+                'train_outlier_filter': train_outlier_filter,
+                'cancelled_fill': cancelled_fill,
+                'dropped_missing_target': dropped_missing,
                 'holdout_file': holdout_filename,
                 'test_size_requested': test_size,
                 'test_size_actual': len(test_df) / len(dev_df),
@@ -2138,6 +2306,16 @@ class TrainingPipeline:
 
                 f.write(f"Split Results:\n")
                 f.write(f"  Grouped by: {result_data['grouped_by'] or 'NONE (random row split)'}\n")
+                if cancelled_fill:
+                    f.write(f"  Cancelled trains filled with {cancelled_fill['value']:.2f} min (train bound): "
+                            f"{cancelled_fill['filled_train']:,} train, {cancelled_fill['filled_test']:,} test, "
+                            f"{cancelled_fill.get('filled_holdout', 0):,} hold-out rows\n")
+                if train_outlier_filter:
+                    f.write(f"  Train-only delay filter on {train_outlier_filter['target']}: "
+                            f"{train_outlier_filter['lower_bound']:.2f} .. {train_outlier_filter['upper_bound']:.2f} min, "
+                            f"removed {train_outlier_filter['train_rows_removed']:,} of "
+                            f"{train_outlier_filter['train_rows_before']:,} train rows "
+                            f"(test and hold-out untouched)\n")
                 f.write(f"  Train set: {result_data['train_rows']:,} samples ({(result_data['train_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
                 f.write(f"  Test set: {result_data['test_rows']:,} samples ({(result_data['test_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
                 f.write(f"  Actual test size: {result_data['test_size_actual']:.3f}\n")
@@ -2339,6 +2517,21 @@ class TrainingPipeline:
             if not same_folder and os.path.exists(sidecar_src):
                 shutil.copy2(sidecar_src, sidecar_dst)
                 print(f"    scale_weather_features: Copied operating-day groups to: {os.path.basename(sidecar_dst)}")
+
+            # Flags of rows whose delay was filled in (REGRESSION_CANCELLED_POLICY = 'cap').
+            for split_src, split_name in ((train_file_path, train_filename), (test_file_path, test_filename),
+                                          (holdout_file_path, holdout_filename)):
+                if not split_src:
+                    continue
+                flags_src = filled_path(split_src)
+                flags_dst = filled_path(os.path.join(scaled_training_ready_dir, split_name))
+                if os.path.abspath(flags_src) == os.path.abspath(flags_dst):
+                    continue
+                if os.path.exists(flags_dst):
+                    os.remove(flags_dst)
+                if os.path.exists(flags_src):
+                    shutil.copy2(flags_src, flags_dst)
+                    print(f"    scale_weather_features: Copied filled-row flags to: {os.path.basename(flags_dst)}")
 
             print(f"    scale_weather_features: Train dataset shape: {train_df.shape}")
             print(f"    scale_weather_features: Test dataset shape: {test_df.shape}")
@@ -3006,6 +3199,38 @@ class TrainingPipeline:
         # (mirroring "Training Summary") once these metrics are in hand.
         return metrics
 
+    @staticmethod
+    def _save_regression_diagnostics(y_true, y_pred, title, path):
+        """Predicted-vs-actual (hexbin) and residual histogram for a numeric target, in minutes."""
+        y_true = np.asarray(y_true, dtype=float)
+        y_pred = np.asarray(y_pred, dtype=float)
+        resid = y_true - y_pred
+        lo = float(min(y_true.min(), y_pred.min()))
+        hi = float(max(np.quantile(y_true, 0.995), np.quantile(y_pred, 0.995)))
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        hb = ax1.hexbin(y_true, y_pred, gridsize=60, extent=(lo, hi, lo, hi), bins='log', mincnt=1, cmap='viridis')
+        ax1.plot([lo, hi], [lo, hi], 'r--', linewidth=1, label='perfect prediction')
+        ax1.set_xlabel('Actual delay (min)')
+        ax1.set_ylabel('Predicted delay (min)')
+        ax1.set_title('Predicted vs actual (log colour scale)')
+        ax1.legend(loc='upper left')
+        fig.colorbar(hb, ax=ax1, label='rows')
+
+        r_lo, r_hi = np.quantile(resid, [0.005, 0.995])
+        ax2.hist(resid, bins=80, range=(float(r_lo), float(r_hi)), color='tab:blue', alpha=0.8)
+        ax2.axvline(0, color='red', linestyle='--', linewidth=1)
+        ax2.axvline(float(np.median(resid)), color='black', linewidth=1, label=f'median {np.median(resid):.2f} min')
+        ax2.set_xlabel('Actual - predicted (min); negative = predicted too late')
+        ax2.set_ylabel('rows')
+        ax2.set_title('Residuals (0.5% - 99.5% range shown)')
+        ax2.legend()
+
+        fig.suptitle(title, fontsize=12)
+        fig.tight_layout()
+        fig.savefig(path, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+
     def train_xgboost_with_randomized_search_cv(self, data_dir=None):
         """
         Modified XGBoost training method that tests different iteration counts and plots performance curve.
@@ -3115,6 +3340,14 @@ class TrainingPipeline:
             X_holdout, y_holdout = self._load_holdout_set(
                 scaled_data_dir, feature_columns, target_feature, "train_xgboost_with_randomized_search_cv"
             )
+
+            # Rows whose delay was filled in (REGRESSION_CANCELLED_POLICY = 'cap'); None otherwise.
+            test_filled = load_filled_flags(test_file, len(test_df))
+            holdout_filled = None
+            if X_holdout is not None:
+                holdout_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_holdout.parquet"))
+                if len(holdout_files) == 1:
+                    holdout_filled = load_filled_flags(holdout_files[0], len(X_holdout))
             
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
@@ -3159,11 +3392,13 @@ class TrainingPipeline:
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
                 )
-                scoring_metric = 'neg_mean_absolute_error'
                 # Shift target so all values are positive, then log-transform to compress
                 # the extreme right tail (max 963 min) that deflates R² artificially.
                 y_shift = max(0.0, -float(y_train.min())) + 1.0
                 y_train_log = np.log1p(y_train + y_shift)
+                # The search fits on the log target; score it as MAE in minutes so the
+                # tuning score and the reported test / hold-out MAE are the same quantity.
+                scoring_metric = make_minutes_mae_scorer(y_shift)
                 print(f"      Log-transform target: shift={y_shift:.2f}, "
                       f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
                       f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
@@ -3181,6 +3416,7 @@ class TrainingPipeline:
             test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
+            test_r2_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
@@ -3279,6 +3515,7 @@ class TrainingPipeline:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
                     test_wmape_scores.append(test_wmape)
+                    test_r2_scores.append(test_r2)
                     test_bin_precision_scores.append(test_bin_precision)
                     test_bin_recall_scores.append(test_bin_recall)
                     test_bin_f1_scores.append(test_bin_f1)
@@ -3297,6 +3534,7 @@ class TrainingPipeline:
                     'test_confusion_matrix': test_confusion_matrix if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
+                    'test_r2': test_r2_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
@@ -3331,6 +3569,16 @@ class TrainingPipeline:
                 final_test_r2 = r2_score(y_test, final_y_pred)
                 denom = np.sum(np.abs(y_test))
                 final_test_wmape = (np.sum(np.abs(y_test - final_y_pred)) / denom * 100) if denom > 0 else 0.0
+                final_baseline = mae_baseline(y_train, y_test, final_test_mae)
+                final_residuals = residual_quantiles(y_test, final_y_pred)
+                final_running = None
+                if test_filled is not None and test_filled.any():
+                    keep = ~test_filled
+                    y_run, p_run = np.asarray(y_test)[keep], np.asarray(final_y_pred)[keep]
+                    final_running = self._score_predictions(y_run, p_run, False)
+                    final_running.update(mae_baseline(y_train, y_run, final_running['mae']))
+                    final_running['n_rows'] = int(keep.sum())
+                    final_running['n_filled_excluded'] = int(test_filled.sum())
 
                 y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
                 final_y_pred_binary = (final_y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
@@ -3463,6 +3711,14 @@ class TrainingPipeline:
                 self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
                 print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
 
+                if not is_classification:
+                    diag_filename = os.path.join(output_dir, f'xgboost_residuals_{file_identifier}.png')
+                    self._save_regression_diagnostics(
+                        y_test, final_y_pred,
+                        f'XGBoost regression, test split | Dataset: {file_identifier} | Best Iteration: {best_iteration}',
+                        diag_filename)
+                    print(f"      Regression diagnostics plot saved to: {diag_filename}")
+
                 # Create comprehensive results dictionary
                 results = {
                     "file_identifier": file_identifier,
@@ -3497,6 +3753,9 @@ class TrainingPipeline:
                         "test_mae": float(final_test_mae),
                         "test_wmape": float(final_test_wmape),
                         "test_r2": float(final_test_r2),
+                        "baseline_mae_train_median": final_baseline["baseline_mae"],
+                        "mae_skill": final_baseline["mae_skill"],
+                        "residual_quantiles": final_residuals,
                         "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
@@ -3504,6 +3763,9 @@ class TrainingPipeline:
                         "test_bin_accuracy": float(final_bin_accuracy),
                         "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
+
+                if not is_classification and final_running is not None:
+                    results["final_metrics_running_trains"] = final_running
 
                 # Add iteration-wise metrics summary
                 if is_classification:
@@ -3527,13 +3789,16 @@ class TrainingPipeline:
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
                         "wmape_values": [float(x) for x in test_wmape_scores],
+                        "r2_values": [float(x) for x in test_r2_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_rmse": float(min(test_f1_scores)),
                         "best_mae": float(min(test_mae_scores)),
                         "best_wmape": float(min(test_wmape_scores)),
+                        "best_r2": float(max(test_r2_scores)),
                         "average_rmse": float(np.mean(test_f1_scores)),
                         "average_mae": float(np.mean(test_mae_scores)),
                         "average_wmape": float(np.mean(test_wmape_scores)),
+                        "average_r2": float(np.mean(test_r2_scores)),
                         "bin_f1_values": [float(x) for x in test_bin_f1_scores],
                         "bin_accuracy_values": [float(x) for x in test_bin_accuracy_scores],
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
@@ -3547,6 +3812,24 @@ class TrainingPipeline:
                         "train_xgboost_with_randomized_search_cv"
                     )
                     results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    if not is_classification:
+                        h_pred = np.expm1(best_model.predict(X_holdout)) - y_shift
+                        results["holdout_metrics"].update(
+                            mae_baseline(y_train, y_holdout, results["holdout_metrics"]["mae"]))
+                        results["holdout_metrics"]["residual_quantiles"] = residual_quantiles(y_holdout, h_pred)
+                        if holdout_filled is not None and holdout_filled.any():
+                            keep = ~holdout_filled
+                            y_run, p_run = np.asarray(y_holdout)[keep], np.asarray(h_pred)[keep]
+                            hold_running = self._score_predictions(y_run, p_run, False)
+                            hold_running.update(mae_baseline(y_train, y_run, hold_running['mae']))
+                            hold_running['n_rows'] = int(keep.sum())
+                            hold_running['n_filled_excluded'] = int(holdout_filled.sum())
+                            results["holdout_metrics_running_trains"] = hold_running
+                        self._save_regression_diagnostics(
+                            y_holdout, h_pred,
+                            f'XGBoost regression, hold-out year | Dataset: {file_identifier} | Best Iteration: {best_iteration}',
+                            os.path.join(output_dir, f'xgboost_residuals_holdout_{file_identifier}.png'))
 
                     # Per-iteration hold-out metrics plus a summary mirroring
                     # iteration_metrics_summary above.
@@ -3576,6 +3859,7 @@ class TrainingPipeline:
                             h_rmse = [float(h['rmse']) for h in valid_holdout]
                             h_mae = [float(h['mae']) for h in valid_holdout]
                             h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_r2 = [float(h['r2']) for h in valid_holdout]
                             h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
                             h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
                             h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
@@ -3584,6 +3868,9 @@ class TrainingPipeline:
                                 "rmse_values": h_rmse,
                                 "mae_values": h_mae,
                                 "wmape_values": h_wmape,
+                                "r2_values": h_r2,
+                                "best_r2": float(max(h_r2)),
+                                "average_r2": float(np.mean(h_r2)),
                                 "best_rmse": float(min(h_rmse)),
                                 "best_mae": float(min(h_mae)),
                                 "best_wmape": float(min(h_wmape)),
@@ -3618,12 +3905,18 @@ class TrainingPipeline:
             print(f"        Problem Type: {problem_type}")
             print(f"        Best Iteration Count: {best_iteration}")
             print(f"        Best CV Score: {best_cv_score:.4f}")
-            print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+            print(f"        {'F1' if is_classification else 'RMSE'} Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
             if is_classification:
                 print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
             if not is_classification:
                 print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
-                print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+                print(f"        Baseline MAE (always the train median): {final_baseline['baseline_mae']:.4f} min  MAE skill: {final_baseline['mae_skill']:.3f}")
+                if final_running is not None:
+                    print(f"        Running trains only (n={final_running['n_rows']:,}, {final_running['n_filled_excluded']:,} filled rows excluded): "
+                          f"RMSE: {final_running['rmse']:.4f}  MAE: {final_running['mae']:.4f}  R²: {final_running['r2']:.4f}  "
+                          f"MAE skill: {final_running['mae_skill']:.3f}")
+                print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min; "
+                      f"{'filled cancelled rows count as delayed' if final_running is not None else 'cancelled trains are not in a numeric run'}):")
                 print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
 
             if results.get("holdout_metrics"):
@@ -3633,6 +3926,11 @@ class TrainingPipeline:
                     print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
                 else:
                     print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+                    print(f"        Baseline MAE (always the train median): {hm['baseline_mae']:.4f} min  MAE skill: {hm['mae_skill']:.3f}")
+                    hr = results.get("holdout_metrics_running_trains")
+                    if hr:
+                        print(f"        Running trains only (n={hr['n_rows']:,}, {hr['n_filled_excluded']:,} filled rows excluded): "
+                              f"RMSE: {hr['rmse']:.4f}  MAE: {hr['mae']:.4f}  R²: {hr['r2']:.4f}  MAE skill: {hr['mae_skill']:.3f}")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
                     print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
 

@@ -105,6 +105,22 @@ SCHEMA_MISMATCH_STRATEGY = 'intersect'  # 'intersect' = auto-drop; 'fail' = auto
 FILTER_LOWER_QUANTILE = 0.005
 FILTER_UPPER_QUANTILE = 0.995
 
+# Numeric targets only (differenceInMinutes ...): cut the delay tails from the TRAIN rows
+# only, with bounds taken from the train split (stage 503), instead of from every row at
+# stage 501. Test and hold-out keep their real delays, so RMSE / MAE / R2 are measured on
+# the target as it really is. A classification target is unaffected and keeps stage 501.
+REGRESSION_FILTER_TRAIN_ONLY = True
+
+# Numeric targets only: what to do with rows that have no delay (cancelled trains, 684 at OL).
+#   'drop' - remove them. The numeric model answers "how late, given the train runs".
+#   'cap'  - keep them with the delay set to the train split's FILTER_UPPER_QUANTILE bound
+#            (about 111 min at OL: "a cancellation counts as a worst-case delay"). The bound
+#            comes from the train rows only. A huge sentinel such as 9999 would put 63% of the
+#            target variance on 0.6% of the rows, make RMSE ~780 min and disable the tail cut.
+#            The filled rows are flagged next to the split files, and the XGBoost results also
+#            report the metrics on the running trains only.
+REGRESSION_CANCELLED_POLICY = 'drop'
+
 
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_search"
 LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1001-lightgbm_randomized_search"

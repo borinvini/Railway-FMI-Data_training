@@ -402,15 +402,21 @@ def test_bool_columns_survive_resampling(tmp_path):
 
 
 @patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", "differenceInMinutes")
-def test_regression_target_stays_continuous(tmp_path):
+def test_regression_target_is_not_resampled(tmp_path):
+    """A numeric target has no classes. The old branch binarised it at the delay threshold and
+    ran SMOTE on that, which invents rows with a made-up delay. The stage now passes the train
+    rows through unchanged (so stage 505 still finds a train file in the 504 folder)."""
     pipeline = _make_pipeline(tmp_path)
     train_df = _make_imbalanced_df(n_punctual=300, n_delayed=100)
     test_df = _make_test_df()
     data_dir = _write_train_test(tmp_path, train_df, test_df)
     result = pipeline.balance_classes(data_dir=data_dir)
     assert result["success"] is True
-    assert result["skipped"] is False
+    assert result["skipped"] is True
+    assert result["resampling_method"] == "NONE"
+    assert result["rows_after"] == result["rows_before"] == len(train_df)
     saved = pd.read_parquet(result["train_output_path"])
+    assert len(saved) == len(train_df)
     assert saved["differenceInMinutes"].dtype.kind == "f"
     assert saved["differenceInMinutes"].nunique() > 10
 
