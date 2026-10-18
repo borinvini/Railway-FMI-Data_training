@@ -23,13 +23,14 @@ MODEL_STAGES = {
 
 # Data-preparation stages every trainer depends on, so that one array task is
 # self-contained. shap_correlation_analysis is excluded: it is diagnostic, not a
-# dependency, and running it five times would waste allocation.
+# dependency, and running it five times would waste allocation. balance_classes is
+# excluded on purpose: SMOTE-Tomek ran before the CV and leaked synthetic rows into
+# the validation folds; the trainers use class weights instead.
 PREREQUISITE_STAGES = (
     "merge_data_files",
     "filter_delay_outliers",
     "select_training_cols",
     "split_dataset",
-    "balance_classes",
     "scale_weather_features",
 )
 
@@ -82,8 +83,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--columns-file",
         default=None,
-        help="Path to a one-name-per-line file of columns to keep, overriding "
-             "SELECTED_COLUMNS in config/const_training.py. Used by hpc/*.sh so "
+        help="Path to a one-name-per-line file of columns to keep. Without it "
+             "config/features.txt is used when that file exists. Used by hpc/*.sh so "
              "changing the feature set needs no commit.",
     )
     parser.add_argument(
@@ -104,7 +105,7 @@ def parse_args(argv=None):
         "--dump-columns",
         action="store_true",
         help="Print the merged dataset's candidate columns and exit, for populating "
-             "SELECTED_COLUMNS. Runs no trainer.",
+             "config/features.txt. Runs no trainer.",
     )
     args = parser.parse_args(argv)
 
@@ -149,6 +150,52 @@ def parse_args(argv=None):
             parser.error(str(exc))
 
     return args
+
+
+# Where a run with no --columns-file looks for its columns. Built from this file's
+# location, not the working directory, so the IDE run button finds it from anywhere.
+DEFAULT_COLUMNS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "config", "features.txt"
+)
+
+
+def resolve_default_columns_file(args):
+    """Point a run with no explicit column choice at config/features.txt.
+
+    Leaves `args` alone when --columns-file, --dump-columns or --list-scenarios is
+    given, or RAILWAY_COLUMNS_FILE is already set (an explicit choice always wins),
+    and when the file does not exist (_run then refuses a training run that would
+    have no columns). A malformed file exits here, as a bad --columns-file does,
+    instead of after the merge.
+    """
+    if (args.columns_file is not None or args.dump_columns or args.list_scenarios
+            or os.environ.get("RAILWAY_COLUMNS_FILE")):
+        return
+    if not os.path.isfile(DEFAULT_COLUMNS_FILE):
+        return
+    from config.columns_file import load_columns  # deferred: see parse_args
+    try:
+        load_columns(DEFAULT_COLUMNS_FILE)
+    except (OSError, ValueError) as exc:
+        sys.exit(f"main.py: error: {DEFAULT_COLUMNS_FILE}: {exc}")
+    args.columns_file = DEFAULT_COLUMNS_FILE
+
+
+def missing_columns_message(selected_columns, state_machine, dump_columns=False):
+    """Why this run cannot start for lack of columns, or None when it can.
+
+    select_training_cols and build_fcll_sequences read SELECTED_COLUMNS. When it is
+    empty, select_training_cols falls into an interactive prompt that hangs a
+    non-interactive run, so the run is refused up front instead of after a merge.
+    """
+    if dump_columns or selected_columns:
+        return None
+    if not (state_machine.get("select_training_cols") or state_machine.get("build_fcll_sequences")):
+        return None
+    return (
+        "No columns selected for training. config/features.txt was not found. "
+        "Copy config/features.example.txt to config/features.txt, or pass --columns-file."
+    )
 
 
 def apply_env_overrides(args):
@@ -215,11 +262,9 @@ def dump_columns(pipeline, parquet_files):
     for index, name in enumerate(columns, start=1):
         print(f"  {index:3d}. {name}")
 
-    print("\nPaste the ones you want into SELECTED_COLUMNS in config/const_training.py:")
-    print("SELECTED_COLUMNS = [")
+    print("\nCopy the ones you want into config/features.txt, one name per line:")
     for name in columns:
-        print(f"    '{name}',")
-    print("]")
+        print(name)
     return 0
 
 
@@ -263,8 +308,19 @@ def _run(args):
 
     from config.const_training import (
         IMPORTANCE_THRESHOLD,
+        SELECTED_COLUMNS,
         TRAINING_STATE_MACHINE,
     )
+
+    # Before anything slow runs: a training run with no columns would otherwise
+    # preprocess every month and then stop at an interactive prompt.
+    if EXECUTE_TRAINING_PIPELINE:
+        refusal = missing_columns_message(
+            SELECTED_COLUMNS, build_state_machine(args, TRAINING_STATE_MACHINE), args.dump_columns
+        )
+        if refusal:
+            print(f"✗ {refusal}")
+            return 1
 
     # STEP 1: Ensure folder structure exists BEFORE any other operations
     print("="*60)
@@ -450,6 +506,7 @@ def main(argv=None):
         for index, (name, columns) in enumerate(load_scenarios(args.columns_file), start=1):
             print(f"{index}. {name}  ({len(columns)} columns)")
         return 0
+    resolve_default_columns_file(args)
     apply_env_overrides(args)
     return _run(args)
 

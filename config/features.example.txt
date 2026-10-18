@@ -6,10 +6,12 @@
 # Copy this file to config/features.txt (gitignored), edit that, then run
 # hpc/push-features.sh to upload it to Roihu. No commit is needed.
 #
-# trainDelayed is the target and must stay: the trainers split it out of the
-# feature matrix by name, so removing it here breaks training outright.
+# A plain `python main.py` (the IDE run button) trains on config/features.txt.
+#
+# trainDisrupted is the target and must stay: the trainers split it out of the
+# feature matrix by name. trainDelayed and cancelled are dropped at stage 502.
 # python main.py --dump-columns lists everything available.
-trainDelayed
+trainDisrupted
 trainStopping
 commercialStop
 month_sin
@@ -18,7 +20,6 @@ hour_sin
 hour_cos
 day_week_sin
 day_week_cos
-day_of_month
 Air temperature (12h max)
 Air temperature (12h min)
 Air temperature (12h mean)
@@ -82,6 +83,15 @@ Horizontal visibility (24h mean)
 Horizontal visibility (72h max)
 Horizontal visibility (72h min)
 Horizontal visibility (72h mean)
+Cloud amount (12h max)
+Cloud amount (12h min)
+Cloud amount (12h mean)
+Cloud amount (24h max)
+Cloud amount (24h min)
+Cloud amount (24h mean)
+Cloud amount (72h max)
+Cloud amount (72h min)
+Cloud amount (72h mean)
 Precipitation amount (12h mean)
 Precipitation amount (12h cumulative)
 Precipitation amount (24h mean)

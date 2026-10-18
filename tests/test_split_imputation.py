@@ -72,7 +72,7 @@ def _days(n_days=20, rows_per_day=5):
     })
 
 
-def test_write_splits_fills_val_and_test_with_the_train_median(tmp_path):
+def test_write_splits_fills_test_with_the_train_median(tmp_path):
     df = _days()
     df.loc[df.index[:], "Air temperature"] = df["Air temperature"]
     pipeline = _pipeline(tmp_path)
@@ -84,7 +84,7 @@ def test_write_splits_fills_val_and_test_with_the_train_median(tmp_path):
     medians = split["medians"]
     train_clean = split["frames"]["train"]["Air temperature"]
     assert medians["Air temperature"] == pytest.approx(train_clean.median())
-    for name in ("train", "val", "test"):
+    for name in ("train", "test"):
         assert split["frames"][name]["Air temperature"].isna().sum() == 0
         on_disk = pd.read_parquet(split["files"][name]["path"])
         assert on_disk["Air temperature"].isna().sum() == 0
@@ -94,17 +94,16 @@ def test_a_test_nan_gets_the_train_median_not_the_test_median(tmp_path):
     df = _days(n_days=30)
     df["Air temperature"] = np.where(df[GROUP_KEY_COLUMN] < "2023-01-20", 1.0, 100.0)
     pipeline = _pipeline(tmp_path)
-    train, val, test = pipeline.split_by_group(df, GROUP_KEY_COLUMN)
+    train, test = pipeline.split_by_group(df, GROUP_KEY_COLUMN)
     # one NaN in the last split's days that carry the 100.0 level
     victim = df.index[df[GROUP_KEY_COLUMN] >= "2023-01-25"][0]
     df.loc[victim, "Air temperature"] = np.nan
     split = pipeline.write_splits(df, output_dir=str(tmp_path / "out"), identifier="t")
     train_median = split["medians"]["Air temperature"]
-    for name in ("val", "test"):
-        part = split["frames"][name]
-        filled = part.loc[part.index == victim, "Air temperature"]
-        if len(filled):
-            assert filled.iloc[0] == train_median
+    part = split["frames"]["test"]
+    filled = part.loc[part.index == victim, "Air temperature"]
+    if len(filled):
+        assert filled.iloc[0] == train_median
 
 
 def test_target_columns_are_never_imputed(tmp_path):
@@ -205,7 +204,7 @@ def test_without_the_month_key_it_is_the_global_imputation(tmp_path):
 def test_the_month_key_never_reaches_the_written_splits(tmp_path):
     split = _pipeline(tmp_path).write_splits(
         _monthly_days(), output_dir=str(tmp_path / "out"), identifier="t")
-    for name in ("train", "val", "test"):
+    for name in ("train", "test"):
         assert MONTH_KEY_COLUMN not in split["frames"][name].columns
         assert MONTH_KEY_COLUMN not in pd.read_parquet(split["files"][name]["path"]).columns
     assert MONTH_KEY_COLUMN not in split["medians"]

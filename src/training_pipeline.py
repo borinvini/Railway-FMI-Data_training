@@ -52,6 +52,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+from src.cv_utils import groups_path, load_train_groups, make_cv, neg_pos_ratio
+from src.day_split import split_days
 from src.file_utils import (
     save_dataframe_to_parquet,
 )
@@ -103,9 +105,6 @@ from config.const_training import (
     FCLL_H_TRAINS,
     FCLL_Z_STATIONS,
     TEST_SIZE,
-    TRAIN_FRACTION,
-    VAL_FRACTION,
-    TEST_FRACTION,
     RANDOM_STATE,
     HOLDOUT_LAST_YEAR,
     HOLDOUT_YEAR_COLUMN,
@@ -1384,7 +1383,7 @@ class TrainingPipeline:
                         continue
                     found = [
                         f for f in glob.glob(os.path.join(search_dir, "merged_data_*.parquet"))
-                        if not f.endswith(("_train.parquet", "_val.parquet",
+                        if not f.endswith(("_train.parquet", "_val.parquet", "_train_groups.parquet",
                                            "_test.parquet", "_holdout.parquet"))
                     ]
                     if found:
@@ -1681,28 +1680,18 @@ class TrainingPipeline:
                 "output_directory": output_dir}
 
     def split_by_group(self, df, group_column, random_state=RANDOM_STATE):
-        """Split `df` into train/val/test so no group value spans two splits.
+        """Split `df` into train/test so no group value spans both splits.
 
-        Groups are shuffled and partitioned, NOT stratified: stratifying by label
-        would require balancing the positive rate across whole days, which is not
-        generally satisfiable and would silently drop days to get there. The base
-        rate is stable enough across days (23.5% overall) that random day
-        assignment holds it; test_the_base_rate_survives_the_split checks that.
+        There is no validation split: it was written but never read by the tabular
+        models (they validate with day-grouped CV inside train, see src/cv_utils.py).
+        Groups are shuffled and partitioned by src/day_split.split_days, NOT
+        stratified; the base rate (23.5% overall) is stable enough across days that
+        random day assignment holds it, which test_the_base_rate_survives_the_split
+        checks.
         """
-        groups = np.array(sorted(df[group_column].unique()))
-        rng = np.random.default_rng(random_state)
-        rng.shuffle(groups)
-
-        n = len(groups)
-        n_train = int(round(n * TRAIN_FRACTION))
-        n_val = int(round(n * VAL_FRACTION))
-
-        train_groups = set(groups[:n_train])
-        val_groups = set(groups[n_train:n_train + n_val])
-        test_groups = set(groups[n_train + n_val:])
-
+        train_groups, test_groups = split_days(df[group_column].unique(), seed=random_state)
         select = lambda wanted: df[df[group_column].isin(wanted)]
-        return select(train_groups), select(val_groups), select(test_groups)
+        return select(train_groups), select(test_groups)
 
     @staticmethod
     def fit_train_medians(train_df):
@@ -1810,7 +1799,11 @@ class TrainingPipeline:
 
     def write_splits(self, df, output_dir, identifier, group_column=GROUP_KEY_COLUMN,
                      random_state=RANDOM_STATE, basename=None):
-        """Split and write train/val/test parquet, dropping the grouping key.
+        """Split and write train/test parquet, dropping the grouping key.
+
+        The operating day of each train row goes to `<basename>_train_groups.parquet`,
+        row-aligned with the train file, so the trainers can run day-grouped CV
+        without the key ever being a feature.
 
         Missing numeric features are filled with medians of the TRAIN split only
         (stage 12 no longer imputes), so no statistic sees val/test days. Weather
@@ -1823,8 +1816,8 @@ class TrainingPipeline:
         """
         os.makedirs(output_dir, exist_ok=True)
         basename = basename or f"merged_data_{identifier}"
-        train, val, test = self.split_by_group(df, group_column=group_column,
-                                               random_state=random_state)
+        train, test = self.split_by_group(df, group_column=group_column,
+                                          random_state=random_state)
         train_features = train.drop(columns=[group_column])
         medians = self.fit_train_medians(train_features)
         month_medians = self.fit_month_medians(train_features)
@@ -1832,13 +1825,16 @@ class TrainingPipeline:
             print(f"      ⚠️  No '{MONTH_KEY_COLUMN}' column: weather NaN get the global train median")
         written = {}
         frames = {}
-        for name, part in (("train", train), ("val", val), ("test", test)):
+        for name, part in (("train", train), ("test", test)):
+            days = part[group_column].reset_index(drop=True)
             part = self.apply_medians(part.drop(columns=[group_column]), medians, month_medians)
             part = part.drop(columns=[MONTH_KEY_COLUMN], errors="ignore")
             path = os.path.join(output_dir, f"{basename}_{name}.parquet")
             part.to_parquet(path, index=False)
             written[name] = {"path": path, "rows": len(part)}
             frames[name] = part
+            if name == "train":
+                days.to_frame(group_column).to_parquet(groups_path(path), index=False)
         return {"success": True, "files": written, "frames": frames,
                 "medians": medians, "month_medians": month_medians}
 
@@ -1878,7 +1874,8 @@ class TrainingPipeline:
             # Filter out existing train/test files to get only source files
             # _val and _holdout are outputs of a previous run, not sources. Without
             # this the second run of the stage sees three source files and aborts.
-            split_suffixes = ('_train.parquet', '_val.parquet', '_test.parquet', '_holdout.parquet')
+            split_suffixes = ('_train.parquet', '_val.parquet', '_train_groups.parquet',
+                              '_test.parquet', '_holdout.parquet')
             source_parquet_files = [f for f in all_parquet_files if not f.endswith(split_suffixes)]
 
             # Check if exactly one parquet file exists
@@ -1984,14 +1981,20 @@ class TrainingPipeline:
             # Generate output filenames
             base_name = csv_filename.replace('.parquet', '')
             train_filename = f"{base_name}_train.parquet"
-            val_filename = f"{base_name}_val.parquet"
             test_filename = f"{base_name}_test.parquet"
             holdout_filename = f"{base_name}_holdout.parquet" if holdout_df is not None else None
 
             split_output_dir = output_dir if output_dir is not None else merged_training_ready_dir
             os.makedirs(split_output_dir, exist_ok=True)
 
-            # Day-grouped three-way split. A random row split leaks for any sequence
+            # Files of an earlier run that this run may not rewrite: the old validation
+            # split, and the day sidecar (stale once the rows of train change).
+            for stale in (f"{base_name}_val.parquet", os.path.basename(groups_path(train_filename))):
+                stale_path = os.path.join(split_output_dir, stale)
+                if os.path.exists(stale_path):
+                    os.remove(stale_path)
+
+            # Day-grouped two-way split. A random row split leaks for any sequence
             # model — a test row's preceding trains land in the training set — and it
             # leaks weather and knock-on delay for the tabular models too, since one
             # operating day's rows are far from independent.
@@ -2003,7 +2006,6 @@ class TrainingPipeline:
                     basename=base_name,
                 )
                 train_df = split["frames"]["train"]
-                val_df = split["frames"]["val"]
                 test_df = split["frames"]["test"]
                 medians = split["medians"]
                 month_medians = split["month_medians"]
@@ -2021,8 +2023,6 @@ class TrainingPipeline:
                     random_state=random_state,
                     stratify=stratify
                 )
-                val_df = dev_df.iloc[0:0]
-                val_filename = None
                 medians = self.fit_train_medians(train_df)
                 month_medians = self.fit_month_medians(train_df)
                 train_df = self.apply_medians(train_df, medians, month_medians)
@@ -2034,8 +2034,6 @@ class TrainingPipeline:
 
             print(f"      Split results:")
             print(f"        Train set: {len(train_df):,} samples ({(len(train_df) / len(dev_df)) * 100:.1f}%)")
-            if val_filename:
-                print(f"        Val set:   {len(val_df):,} samples ({(len(val_df) / len(dev_df)) * 100:.1f}%)")
             print(f"        Test set: {len(test_df):,} samples ({(len(test_df) / len(dev_df)) * 100:.1f}%)")
 
             with open(os.path.join(split_output_dir, "imputation_medians.json"), "w", encoding="utf-8") as f:
@@ -2044,8 +2042,6 @@ class TrainingPipeline:
                   f"({len(month_medians.get('year_month', {}))} monthly files for weather columns)")
 
             print(f"      Saved train set to: {train_filename}")
-            if val_filename:
-                print(f"      Saved val set to: {val_filename}")
             print(f"      Saved test set to: {test_filename}")
 
             if holdout_df is not None:
@@ -2059,7 +2055,6 @@ class TrainingPipeline:
             
             # Calculate class distribution after split for classification problems
             class_distribution_train = {}
-            class_distribution_val = {}
             class_distribution_test = {}
             class_distribution_holdout = {}
 
@@ -2071,15 +2066,6 @@ class TrainingPipeline:
                         'count': int(count),
                         'percentage': (count / len(train_df)) * 100
                     }
-
-                # Validation set distribution
-                if len(val_df):
-                    val_value_counts = val_df[target_column].value_counts()
-                    for class_value, count in val_value_counts.items():
-                        class_distribution_val[class_value] = {
-                            'count': int(count),
-                            'percentage': (count / len(val_df)) * 100
-                        }
 
                 # Test set distribution
                 test_value_counts = test_df[target_column].value_counts()
@@ -2106,10 +2092,8 @@ class TrainingPipeline:
                 'holdout_rows': len(holdout_df) if holdout_df is not None else 0,
                 'holdout_year': holdout_year,
                 'train_rows': len(train_df),
-                'val_rows': len(val_df),
                 'test_rows': len(test_df),
                 'train_file': train_filename,
-                'val_file': val_filename,
                 'test_file': test_filename,
                 'grouped_by': GROUP_KEY_COLUMN if grouped else None,
                 'holdout_file': holdout_filename,
@@ -2123,7 +2107,6 @@ class TrainingPipeline:
             if is_classification:
                 result_data['class_distribution_before'] = class_distribution_before
                 result_data['class_distribution_train'] = class_distribution_train
-                result_data['class_distribution_val'] = class_distribution_val
                 result_data['class_distribution_test'] = class_distribution_test
                 if holdout_df is not None:
                     result_data['class_distribution_holdout'] = class_distribution_holdout
@@ -2156,8 +2139,6 @@ class TrainingPipeline:
                 f.write(f"Split Results:\n")
                 f.write(f"  Grouped by: {result_data['grouped_by'] or 'NONE (random row split)'}\n")
                 f.write(f"  Train set: {result_data['train_rows']:,} samples ({(result_data['train_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
-                if result_data['val_rows']:
-                    f.write(f"  Val set: {result_data['val_rows']:,} samples ({(result_data['val_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
                 f.write(f"  Test set: {result_data['test_rows']:,} samples ({(result_data['test_rows'] / result_data['dev_rows']) * 100:.1f}%)\n")
                 f.write(f"  Actual test size: {result_data['test_size_actual']:.3f}\n")
                 if holdout_df is not None:
@@ -2167,8 +2148,6 @@ class TrainingPipeline:
 
                 f.write(f"Output Files:\n")
                 f.write(f"  Train: {result_data['train_file']}\n")
-                if result_data['val_file']:
-                    f.write(f"  Val: {result_data['val_file']}\n")
                 f.write(f"  Test: {result_data['test_file']}\n")
                 if holdout_filename:
                     f.write(f"  Hold-out: {holdout_filename}\n")
@@ -2347,6 +2326,19 @@ class TrainingPipeline:
                     "error": error_msg,
                     "processed_files": 0
                 }
+
+            # The day sidecar from stage 503 travels with the train rows (scaling keeps
+            # their order) so the trainers can run day-grouped CV from this folder. A
+            # stale copy is removed first; without a source (resampled train, or an
+            # ungrouped fallback split) the trainers fall back to row-wise CV, loudly.
+            sidecar_src = groups_path(train_file_path)
+            sidecar_dst = groups_path(os.path.join(scaled_training_ready_dir, train_filename))
+            same_folder = os.path.abspath(sidecar_src) == os.path.abspath(sidecar_dst)
+            if not same_folder and os.path.exists(sidecar_dst):
+                os.remove(sidecar_dst)
+            if not same_folder and os.path.exists(sidecar_src):
+                shutil.copy2(sidecar_src, sidecar_dst)
+                print(f"    scale_weather_features: Copied operating-day groups to: {os.path.basename(sidecar_dst)}")
 
             print(f"    scale_weather_features: Train dataset shape: {train_df.shape}")
             print(f"    scale_weather_features: Test dataset shape: {test_df.shape}")
@@ -3141,18 +3133,28 @@ class TrainingPipeline:
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
             
+            # Day-grouped CV: rows of one operating day never sit in both the fitting and
+            # the validation fold (see src/cv_utils.py). None without a sidecar file.
+            groups = load_train_groups(train_file, len(train_df))
+            if groups is not None:
+                print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+
             # Set up cross-validation strategy
             y_train_log = None  # assigned in regression branch below
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
-                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
+                # Class weight instead of SMOTE: negatives per positive of the train split.
+                spw = neg_pos_ratio(y_train)
+                print(f"      scale_pos_weight = {spw:.3f} (train negatives / positives)")
                 base_model = xgb.XGBClassifier(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
+                    scale_pos_weight=spw,
                 )
                 scoring_metric = SCORE_METRIC
             else:
-                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = xgb.XGBRegressor(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
@@ -3212,9 +3214,9 @@ class TrainingPipeline:
                 # Fit with sample weights if available; use log-transformed y for regression
                 y_fit = y_train_log if not is_classification else y_train
                 if sample_weights is not None:
-                    randomized_search.fit(X_train, y_fit, sample_weight=sample_weights)
+                    randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
-                    randomized_search.fit(X_train, y_fit)
+                    randomized_search.fit(X_train, y_fit, groups=groups)
                 
                 # Get best model for current iteration count
                 current_best_model = randomized_search.best_estimator_
@@ -3801,20 +3803,30 @@ class TrainingPipeline:
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
 
+            # Day-grouped CV: rows of one operating day never sit in both the fitting and
+            # the validation fold (see src/cv_utils.py). None without a sidecar file.
+            groups = load_train_groups(train_file, len(train_df))
+            if groups is not None:
+                print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+
             # Set up cross-validation strategy
             y_train_log = None  # assigned in regression branch below
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
-                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
+                # Class weight instead of SMOTE: negatives per positive of the train split.
+                spw = neg_pos_ratio(y_train)
+                print(f"      scale_pos_weight = {spw:.3f} (train negatives / positives)")
                 base_model = lgb.LGBMClassifier(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
                     subsample_freq=1,
                     verbose=-1,
+                    scale_pos_weight=spw,
                 )
                 scoring_metric = SCORE_METRIC
             else:
-                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = lgb.LGBMRegressor(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
@@ -3876,9 +3888,9 @@ class TrainingPipeline:
                 # Fit with sample weights if available; use log-transformed y for regression
                 y_fit = y_train_log if not is_classification else y_train
                 if sample_weights is not None:
-                    randomized_search.fit(X_train, y_fit, sample_weight=sample_weights)
+                    randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
-                    randomized_search.fit(X_train, y_fit)
+                    randomized_search.fit(X_train, y_fit, groups=groups)
 
                 # Get best model for current iteration count
                 current_best_model = randomized_search.best_estimator_
@@ -4449,19 +4461,26 @@ class TrainingPipeline:
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
 
+            # Day-grouped CV: rows of one operating day never sit in both the fitting and
+            # the validation fold (see src/cv_utils.py). None without a sidecar file.
+            groups = load_train_groups(train_file, len(train_df))
+            if groups is not None:
+                print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+
             # Set up cross-validation strategy
             y_train_log = None  # assigned in regression branch below
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
-                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = RandomForestClassifier(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
+                    class_weight='balanced',  # instead of SMOTE
                 )
                 param_distributions=RANDOM_FOREST_PARAM_DISTRIBUTIONS
                 scoring_metric = SCORE_METRIC
             else:
-                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = RandomForestRegressor(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
@@ -4522,9 +4541,9 @@ class TrainingPipeline:
                 # Fit with sample weights if available; use log-transformed y for regression
                 y_fit = y_train_log if not is_classification else y_train
                 if sample_weights is not None:
-                    randomized_search.fit(X_train, y_fit, sample_weight=sample_weights)
+                    randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
-                    randomized_search.fit(X_train, y_fit)
+                    randomized_search.fit(X_train, y_fit, groups=groups)
 
                 # Get best model for current iteration count
                 current_best_model = randomized_search.best_estimator_
@@ -5099,21 +5118,28 @@ class TrainingPipeline:
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
 
+            # Day-grouped CV: rows of one operating day never sit in both the fitting and
+            # the validation fold (see src/cv_utils.py). None without a sidecar file.
+            groups = load_train_groups(train_file, len(train_df))
+            if groups is not None:
+                print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+
             # Set up cross-validation strategy
             y_train_log = None  # assigned in regression branch below
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
-                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = LogisticRegression(
                     solver='saga',        # only solver supporting l1/l2/elasticnet — enables the full penalty search
                     max_iter=5000,        # avoid ConvergenceWarning spam; not searched
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
+                    class_weight='balanced',  # instead of SMOTE
                 )
                 param_distributions = LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS
                 scoring_metric = SCORE_METRIC
             else:
-                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = ElasticNet(
                     max_iter=5000,        # coordinate descent headroom; not searched
                     random_state=RANDOM_STATE,
@@ -5175,9 +5201,9 @@ class TrainingPipeline:
                 # Fit with sample weights if available; use log-transformed y for regression
                 y_fit = y_train_log if not is_classification else y_train
                 if sample_weights is not None:
-                    randomized_search.fit(X_train, y_fit, sample_weight=sample_weights)
+                    randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
-                    randomized_search.fit(X_train, y_fit)
+                    randomized_search.fit(X_train, y_fit, groups=groups)
 
                 # Get best model for current iteration count
                 current_best_model = randomized_search.best_estimator_
@@ -5757,17 +5783,23 @@ class TrainingPipeline:
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
 
+            # Day-grouped CV: rows of one operating day never sit in both the fitting and
+            # the validation fold (see src/cv_utils.py). None without a sidecar file.
+            groups = load_train_groups(train_file, len(train_df))
+            if groups is not None:
+                print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+
             # Set up cross-validation strategy
             y_train_log = None  # assigned in regression branch below
             y_shift = 0.0       # assigned in regression branch below
             model_name = 'Naive Bayes' if is_classification else 'Bayesian Ridge'
             if is_classification:
-                cv_splitter = StratifiedKFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = GaussianNB()
                 param_distributions = NAIVE_BAYES_PARAM_DISTRIBUTIONS
                 scoring_metric = SCORE_METRIC
             else:
-                cv_splitter = KFold(n_splits=RANDOM_SEARCH_CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+                cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = BayesianRidge(
                     max_iter=5000,        # coordinate ascent headroom; not searched
                 )
@@ -5827,9 +5859,9 @@ class TrainingPipeline:
                 # Fit with sample weights if available; use log-transformed y for regression
                 y_fit = y_train_log if not is_classification else y_train
                 if sample_weights is not None:
-                    randomized_search.fit(X_train, y_fit, sample_weight=sample_weights)
+                    randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
-                    randomized_search.fit(X_train, y_fit)
+                    randomized_search.fit(X_train, y_fit, groups=groups)
 
                 # Get best model for current iteration count
                 current_best_model = randomized_search.best_estimator_

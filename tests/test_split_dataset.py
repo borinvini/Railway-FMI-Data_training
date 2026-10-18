@@ -223,15 +223,12 @@ def test_no_operating_day_appears_in_two_splits():
         GROUP_KEY_COLUMN: np.repeat(days, 10),
     })
     pipeline = TrainingPipeline()
-    train, val, test = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
+    train, test = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
 
     train_days = set(train[GROUP_KEY_COLUMN])
-    val_days = set(val[GROUP_KEY_COLUMN])
     test_days = set(test[GROUP_KEY_COLUMN])
-    assert train_days & val_days == set()
     assert train_days & test_days == set()
-    assert val_days & test_days == set()
-    assert train_days | val_days | test_days == set(days)
+    assert train_days | test_days == set(days)
 
 
 def test_the_split_is_deterministic():
@@ -250,18 +247,22 @@ def test_the_split_is_deterministic():
         assert set(a[GROUP_KEY_COLUMN]) == set(b[GROUP_KEY_COLUMN])
 
 
-def test_the_split_fractions_are_55_20_25():
+def test_the_split_fractions_are_80_20_and_there_is_no_validation_split():
+    """The old 55/20/25 wrote a validation file that no tabular trainer read, so
+    20% of the days were never used. Validation is now day-grouped CV in train."""
     import numpy as np
-    from config.const_training import TRAIN_FRACTION, VAL_FRACTION, TEST_FRACTION
+    import config.const_training as const
+    from config.const_training import TRAIN_FRACTION, TEST_FRACTION
 
-    assert TRAIN_FRACTION + VAL_FRACTION + TEST_FRACTION == 1.0
+    assert not hasattr(const, "VAL_FRACTION")
+    assert TRAIN_FRACTION + TEST_FRACTION == 1.0
     days = [f"2018-{m:02d}-{d:02d}" for m in range(1, 5) for d in range(1, 26)]
     df = pd.DataFrame({
         "trainDelayed": np.resize([0, 1], len(days) * 4),
         GROUP_KEY_COLUMN: np.repeat(days, 4),
     })
     pipeline = TrainingPipeline()
-    train, val, test = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
+    train, test = pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN)
     n = len(days)
     assert abs(len(set(train[GROUP_KEY_COLUMN])) / n - TRAIN_FRACTION) < 0.05
     assert abs(len(set(test[GROUP_KEY_COLUMN])) / n - TEST_FRACTION) < 0.05
@@ -285,7 +286,7 @@ def test_the_group_key_is_dropped_from_written_output(tmp_path):
     assert GROUP_KEY_COLUMN not in written.columns
 
 
-def test_split_dataset_writes_three_grouped_files_end_to_end(tmp_path):
+def test_split_dataset_writes_two_grouped_files_end_to_end(tmp_path):
     """Exercises the whole stage on data that carries the grouping key — the
     other split_dataset tests predate it and still cover the fallback path."""
     import numpy as np
@@ -309,10 +310,11 @@ def test_split_dataset_writes_three_grouped_files_end_to_end(tmp_path):
     assert result["success"] is True
     detail = result["split_details"][0]
     assert detail["grouped_by"] == GROUP_KEY_COLUMN
-    assert detail["train_rows"] + detail["val_rows"] + detail["test_rows"] == 280
+    assert detail["train_rows"] + detail["test_rows"] == 280
+    assert not (out / "merged_data_val.parquet").exists()
 
     frames = {n: pd.read_parquet(out / f"merged_data_{n}.parquet")
-              for n in ("train", "val", "test")}
+              for n in ("train", "test")}
     for frame in frames.values():
         assert GROUP_KEY_COLUMN not in frame.columns
 
@@ -344,5 +346,6 @@ def test_the_base_rate_survives_the_split():
     )
     pipeline = TrainingPipeline()
     for part in pipeline.split_by_group(df, group_column=GROUP_KEY_COLUMN):
+        # (train, test)
         rate = part["trainDelayed"].mean()
         assert 0.21 < rate < 0.26, f"base rate {rate:.3%} drifted from 23.5%"

@@ -25,7 +25,7 @@ TRAINING_STATE_MACHINE = {
     "filter_delay_outliers": True,
     "select_training_cols": True,
     "split_dataset": True,
-    "balance_classes": True,
+    "balance_classes": False,        # off: class weights instead (resampling before CV leaks)
     "scale_weather_features": True,
     "build_fcll_sequences": False,   # gated: only --model fcll_net needs it
     "shap_correlation_analysis": True,
@@ -53,115 +53,19 @@ MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/505-scale_weather_feat
 SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER = "data/output/700-shap_correlation_analysis"
 SHAP_CORRELATION_TOP_N_PAIRS = 20     # Feature pairs shown in the top-correlated-pairs bar chart
 SHAP_CORRELATION_TOP_N_FEATURES = 15  # Features shown in the top-correlated-features sub-heatmap
-# Frozen from `python main.py --dump-columns` on 2026-08-04. Explicit rather than
-# empty so batch jobs never reach the interactive prompt at training_pipeline.py:1364,
-# which sits inside a `while True:` loop and would consume the entire walltime.
-#
-# The captured merge produced 138 common columns (SCHEMA_MISMATCH_STRATEGY='intersect'
-# drops the 10 "Cloud amount" columns absent from the 2018-01..2019-05 files; FMI did
-# not supply cloud data before June 2019). From those 138, four are excluded here:
-#   - differenceInMinutes, differenceInMinutes_offset,
-#     differenceInMinutes_eachStation_offset: direct transformations of the delay
-#     outcome; including any as a predictor would leak the answer.
-#   - year: HOLDOUT_YEAR_COLUMN, stamped by merge_data_files purely so split_dataset
-#     can carve out the out-of-time hold-out. select_training_cols force-keeps it
-#     even when absent from this list (training_pipeline.py:1416-1418), and
-#     split_dataset drops it again right after the split, so it never reaches
-#     balancing/scaling/training — it is not a predictive feature.
-#
-# trainDelayed (the target) is deliberately KEPT: every trainer stage derives its
-# feature matrix as `[c for c in train_df.columns if c != target_feature]`
-# (training_pipeline.py e.g. lines 2355, 2698), so the target column must survive
-# select_training_cols to be available as the label — dropping it here does not
-# reduce leakage (the trainers already exclude it from X by name) and instead
-# breaks training outright with "Target feature 'trainDelayed' not found in
-# dataset", confirmed by an end-to-end run during this task.
-SELECTED_COLUMNS = [
-    'trainDelayed',
-    'trainStopping',
-    'commercialStop',
-    'month_sin',
-    'month_cos',
-    'hour_sin',
-    'hour_cos',
-    'day_week_sin',
-    'day_week_cos',
-    'day_of_month',
-    'Air temperature (12h max)',
-    'Air temperature (12h min)',
-    'Air temperature (12h mean)',
-    'Air temperature (24h max)',
-    'Air temperature (24h min)',
-    'Air temperature (24h mean)',
-    'Air temperature (72h max)',
-    'Air temperature (72h min)',
-    'Air temperature (72h mean)',
-    'Wind speed (12h max)',
-    'Wind speed (12h min)',
-    'Wind speed (12h mean)',
-    'Wind speed (24h max)',
-    'Wind speed (24h min)',
-    'Wind speed (24h mean)',
-    'Wind speed (72h max)',
-    'Wind speed (72h min)',
-    'Wind speed (72h mean)',
-    'Relative humidity (12h max)',
-    'Relative humidity (12h min)',
-    'Relative humidity (12h mean)',
-    'Relative humidity (24h max)',
-    'Relative humidity (24h min)',
-    'Relative humidity (24h mean)',
-    'Relative humidity (72h max)',
-    'Relative humidity (72h min)',
-    'Relative humidity (72h mean)',
-    'Precipitation intensity (12h max)',
-    'Precipitation intensity (12h min)',
-    'Precipitation intensity (12h mean)',
-    'Precipitation intensity (24h max)',
-    'Precipitation intensity (24h min)',
-    'Precipitation intensity (24h mean)',
-    'Precipitation intensity (72h max)',
-    'Precipitation intensity (72h min)',
-    'Precipitation intensity (72h mean)',
-    'Snow depth (12h max)',
-    'Snow depth (12h min)',
-    'Snow depth (12h mean)',
-    'Snow depth (24h max)',
-    'Snow depth (24h min)',
-    'Snow depth (24h mean)',
-    'Snow depth (72h max)',
-    'Snow depth (72h min)',
-    'Snow depth (72h mean)',
-    'Pressure (msl) (12h max)',
-    'Pressure (msl) (12h min)',
-    'Pressure (msl) (12h mean)',
-    'Pressure (msl) (24h max)',
-    'Pressure (msl) (24h min)',
-    'Pressure (msl) (24h mean)',
-    'Pressure (msl) (72h max)',
-    'Pressure (msl) (72h min)',
-    'Pressure (msl) (72h mean)',
-    'Horizontal visibility (12h max)',
-    'Horizontal visibility (12h min)',
-    'Horizontal visibility (12h mean)',
-    'Horizontal visibility (24h max)',
-    'Horizontal visibility (24h min)',
-    'Horizontal visibility (24h mean)',
-    'Horizontal visibility (72h max)',
-    'Horizontal visibility (72h min)',
-    'Horizontal visibility (72h mean)',
-    'Precipitation amount (12h mean)',
-    'Precipitation amount (12h cumulative)',
-    'Precipitation amount (24h mean)',
-    'Precipitation amount (24h cumulative)',
-    'Precipitation amount (72h mean)',
-    'Precipitation amount (72h cumulative)',
-]
+# Columns the training run keeps. Empty here on purpose: main.py points
+# RAILWAY_COLUMNS_FILE at config/features.txt when no --columns-file is given, so a plain
+# `python main.py` (the IDE run button) trains on that file. The target (trainDisrupted),
+# the day key and the hold-out year are added by the pipeline itself, and the trainers
+# exclude the target from X by name. The differenceInMinutes* columns leak the delay and
+# must never be listed. An empty list with training on is refused by main.py (it would
+# otherwise fall through to the interactive prompt in select_training_cols).
+SELECTED_COLUMNS = []
 # `python main.py --columns-file <path>` exports RAILWAY_COLUMNS_FILE before this
 # module is first imported (main.apply_env_overrides), letting a run select its
-# features from a plain-text file that is never committed — the cluster reads a
-# scp'd copy, so a feature change needs no commit, push or pull. The literal list
-# above stays the default, so a bare `python main.py` is unchanged.
+# features from a plain-text file that is never committed: the cluster reads a
+# scp'd copy, so a feature change needs no commit, push or pull. Without the flag
+# main.py falls back to config/features.txt when that file exists.
 #
 # The resolved list is printed in full: it is the only record of which features a
 # job used, since the file is outside git. Pair it with the sha256 the batch
@@ -236,12 +140,16 @@ TOP_FEATURES_COUNT = 5
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
-# Day-grouped split fractions, matching Huang et al. (2020) section 4.1.
-# TEST_SIZE above is retained only for callers that pass an explicit
-# test_size; the grouped path uses these three.
-TRAIN_FRACTION = 0.55
-VAL_FRACTION = 0.20
-TEST_FRACTION = 0.25
+# Day-grouped split of the years left after the hold-out below: 80% of the operating
+# days train, 20% test. TEST_SIZE above is retained only for callers that pass an
+# explicit test_size; the grouped path uses these two. There is no validation split:
+# the tabular models validate with day-grouped CV inside the train split (see
+# src/cv_utils.py), and fcll_net carves its early-stopping days out of the train days.
+TRAIN_FRACTION = 0.80
+TEST_FRACTION = 0.20
+
+# Share of the TRAIN days that fcll_net holds back for early stopping.
+FCLL_VAL_FRACTION = 0.15
 
 # Out-of-time hold-out: reserve the most recent calendar year as a final evaluation set
 # that is never trained or tuned on, so reported metrics reflect predicting a genuinely
@@ -358,7 +266,8 @@ XGBOOST_PARAM_DISTRIBUTIONS = {
     'learning_rate': [0.01, 0.05, 0.1],
     'subsample': [0.7, 0.8, 0.9],
     'colsample_bytree': [0.7, 0.8, 1.0],
-    # scale_pos_weight omitted: class imbalance handled upstream by balance_classes (SMOTE-Tomek)
+    # scale_pos_weight is not searched: the trainer sets it to the train neg/pos ratio
+    # (class weights replaced SMOTE-Tomek, see TRAINING_STATE_MACHINE["balance_classes"])
 }
 
 LIGHTGBM_PARAM_DISTRIBUTIONS = {

@@ -128,14 +128,16 @@ def test_env_var_overrides_the_frozen_selected_columns(tmp_path, monkeypatch, ca
         importlib.reload(const_training)
 
 
-def test_without_the_env_var_the_frozen_list_is_used(monkeypatch):
+def test_without_the_env_var_there_is_no_hard_coded_list(monkeypatch):
+    """The literal list is gone: columns come from config/features.txt (main.py sets
+    RAILWAY_COLUMNS_FILE to it) or --columns-file. The name stays because
+    training_pipeline imports it."""
     import importlib
     import config.const_training as const_training
 
     monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
     importlib.reload(const_training)
-    assert len(const_training.SELECTED_COLUMNS) == 79
-    assert "trainDelayed" in const_training.SELECTED_COLUMNS
+    assert const_training.SELECTED_COLUMNS == []
 
 
 SCENARIO_FILE = """\

@@ -191,7 +191,7 @@ def _fake_pipeline_class(calls):
     return FakePipeline
 
 
-def test_dump_columns_prints_a_pasteable_block(capsys):
+def test_dump_columns_prints_features_txt_lines(capsys):
     calls = {"merge": 0, "train": 0}
     pipeline = _fake_pipeline_class(calls)()
 
@@ -202,9 +202,9 @@ def test_dump_columns_prints_a_pasteable_block(capsys):
     assert calls["merge"] == 1
     assert calls["train"] == 0, "no trainer may run under --dump-columns"
     assert "alpha" in out and "beta" in out
-    # The printed block must be pasteable straight into SELECTED_COLUMNS
-    assert "SELECTED_COLUMNS = [" in out
-    assert "'alpha'," in out
+    # One bare name per line, the format of config/features.txt
+    assert "\nalpha\n" in out and "\nbeta\n" in out
+    assert "SELECTED_COLUMNS" not in out
 
 
 def test_dump_columns_reports_merge_failure():
@@ -225,8 +225,12 @@ def pipeline_flags(monkeypatch):
     the real 96-month preprocessing pipeline and appears to hang.
     """
     import config.const
+    import config.const_training
     monkeypatch.setattr(config.const, "EXECUTE_PREPROCESSING_DATA_PIPELINE", False)
     monkeypatch.setattr(config.const, "EXECUTE_TRAINING_PIPELINE", True)
+    # SELECTED_COLUMNS is empty until features.txt is resolved, and _run refuses a
+    # training run without columns.
+    monkeypatch.setattr(config.const_training, "SELECTED_COLUMNS", ["trainDisrupted"])
 
 
 def test_run_returns_nonzero_on_training_failure(monkeypatch, pipeline_flags):
@@ -344,6 +348,107 @@ def test_parse_args_does_not_import_const_training(tmp_path, monkeypatch):
     main_module.parse_args(["--columns-file", str(features)])
 
     assert "config.const_training" not in sys.modules
+
+
+# --- default columns file: the IDE run button ----------------------------------
+#
+# `python main.py` with no flags used to train on a hard-coded SELECTED_COLUMNS list
+# that had drifted from config/features.txt (old target, dropped columns). A plain run
+# now uses config/features.txt; an explicit choice always wins.
+
+def _args(argv=()):
+    return main_module.parse_args(list(argv))
+
+
+@pytest.fixture
+def default_file(monkeypatch, tmp_path):
+    path = tmp_path / "features.txt"
+    path.write_text("trainDisrupted\ntrainStopping\n", encoding="utf-8")
+    monkeypatch.setattr(main_module, "DEFAULT_COLUMNS_FILE", str(path))
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+    return path
+
+
+def test_a_plain_run_uses_the_default_features_file(default_file):
+    args = _args()
+    main_module.resolve_default_columns_file(args)
+    assert args.columns_file == str(default_file)
+    main_module.apply_env_overrides(args)
+    assert os.environ["RAILWAY_COLUMNS_FILE"] == str(default_file)
+
+
+def test_the_default_file_is_resolved_from_the_repo_not_the_working_directory():
+    expected = os.path.join(os.path.dirname(os.path.abspath(main_module.__file__)),
+                            "config", "features.txt")
+    assert main_module.DEFAULT_COLUMNS_FILE == expected
+
+
+def test_an_explicit_columns_file_wins(default_file, tmp_path):
+    other = tmp_path / "other.txt"
+    other.write_text("trainDisrupted\n", encoding="utf-8")
+    args = _args(["--columns-file", str(other)])
+    main_module.resolve_default_columns_file(args)
+    assert args.columns_file == str(other)
+
+
+def test_an_exported_columns_file_wins(default_file, monkeypatch):
+    monkeypatch.setenv("RAILWAY_COLUMNS_FILE", "/somewhere/else.txt")
+    args = _args()
+    main_module.resolve_default_columns_file(args)
+    assert args.columns_file is None
+
+
+def test_dump_columns_does_not_need_or_use_the_default_file(default_file):
+    args = _args(["--dump-columns"])
+    main_module.resolve_default_columns_file(args)
+    assert args.columns_file is None
+
+
+def test_a_missing_default_file_is_left_for_run_to_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "DEFAULT_COLUMNS_FILE", str(tmp_path / "absent.txt"))
+    monkeypatch.delenv("RAILWAY_COLUMNS_FILE", raising=False)
+    args = _args()
+    main_module.resolve_default_columns_file(args)
+    assert args.columns_file is None
+
+
+def test_a_malformed_default_file_exits_with_its_message(default_file):
+    default_file.write_text("# nothing but comments\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as err:
+        main_module.resolve_default_columns_file(_args())
+    assert str(default_file) in str(err.value)
+
+
+def test_a_scenario_catalogue_as_the_default_file_is_refused(default_file):
+    default_file.write_text("# 1 - ONE\ntrainDisrupted\n# 2 - TWO\ntrainStopping\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        main_module.resolve_default_columns_file(_args())
+
+
+def test_training_without_columns_is_refused_up_front():
+    machine = {"select_training_cols": True, "build_fcll_sequences": False}
+    message = main_module.missing_columns_message([], machine)
+    assert "features.example.txt" in message
+
+
+def test_the_refusal_only_applies_when_a_stage_reads_the_columns():
+    assert main_module.missing_columns_message([], {"select_training_cols": False}) is None
+    assert main_module.missing_columns_message([], {"build_fcll_sequences": True}) is not None
+    assert main_module.missing_columns_message(["a"], {"select_training_cols": True}) is None
+    assert main_module.missing_columns_message([], {"select_training_cols": True}, dump_columns=True) is None
+
+
+def test_run_returns_1_without_columns_before_any_stage_runs(monkeypatch, pipeline_flags):
+    import config.const_training
+    monkeypatch.setattr(config.const_training, "SELECTED_COLUMNS", [])
+    calls = {"merge": 0, "train": 0}
+    import src.training_pipeline
+    monkeypatch.setattr(src.training_pipeline, "TrainingPipeline", _fake_pipeline_class(calls))
+
+    rc = main_module._run(main_module.parse_args([]))
+
+    assert rc == 1
+    assert calls == {"merge": 0, "train": 0}
 
 
 def test_main_sets_env_var_before_run(monkeypatch, tmp_path):
@@ -495,7 +600,7 @@ def test_the_tabular_models_do_not_build_sequences():
                   "logistic_regression", "naive_bayes"):
         sm = build_state_machine(parse_args(["--model", model]), TRAINING_STATE_MACHINE)
         assert sm["build_fcll_sequences"] is False, model
-        assert sm["balance_classes"] is True, model
+        assert sm["balance_classes"] is False, model
         assert sm["train_fcll_net"] is False, model
 
 
