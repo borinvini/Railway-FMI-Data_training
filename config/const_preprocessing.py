@@ -20,6 +20,7 @@ PREPROCESSING_STATE_MACHINE = {
     "convert_month_to_sincos": True,
     "convert_dayofweek_to_sincos": True,
     "convert_dayofmonth_to_sincos": True,
+    "convert_winddirection_to_sincos": True,
     "drop_original_temporal_columns": False,
     "select_target": False,
     "remove_duplicates": True,
@@ -83,6 +84,7 @@ FOLDER_CONVERT_HOUR_TO_SINCOS = "data/output/13-convert_hour_to_sincos"
 FOLDER_CONVERT_MONTH_TO_SINCOS = "data/output/14-convert_month_to_sincos"
 FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS = "data/output/15-convert_dayofweek_to_sincos"
 FOLDER_CONVERT_DAYOFMONTH_TO_SINCOS = "data/output/15b-convert_dayofmonth_to_sincos"
+FOLDER_CONVERT_WINDDIRECTION_TO_SINCOS = "data/output/15c-convert_winddirection_to_sincos"
 FOLDER_DROP_ORIGINAL_TEMPORAL_COLUMNS = "data/output/16-drop_original_temporal_columns"
 FOLDER_SELECT_TARGET = "data/output/17-select_target"
 FOLDER_REMOVE_DUPLICATES = "data/output/19-remove_duplicates"
@@ -145,6 +147,13 @@ TEMPORAL_SINCOS_FEATURES = ['month_sin', 'month_cos', 'hour_sin', 'hour_cos', 'd
 # Length of the day-of-month circle: day 31 sits next to day 1. Fixed like the other
 # periods (12 months, 24 hours, 7 days); a per-month length would need the year.
 DAY_OF_MONTH_CYCLE = 31
+
+# Wind direction is circular (359 and 1 degrees are both north). Source column, the code FMI
+# uses for calm (every row with direction 0 has wind speed 0.00 at OL; north is 360), and the
+# columns the sin/cos stage adds. Calm gets (0, 0), the no-direction point, not "north".
+WIND_DIRECTION_COLUMN = 'Wind direction'
+WIND_CALM_DIRECTION = 0
+WIND_SINCOS_FEATURES = ['wind_dir_sin', 'wind_dir_cos']
 
 # Valid prediction features (non-target features used for training)
 VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week", "day_of_month", "causes_related_to_weather", "train_id", "weather_scenario"]

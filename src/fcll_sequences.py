@@ -27,7 +27,9 @@ from config.const_preprocessing import (
     WAWA_EMITTED_GROUPS,
     WAWA_FALLBACK_GROUP,
     WAWA_SOURCE_COLUMN,
+    WIND_DIRECTION_COLUMN,
 )
+from src.circular_features import wind_direction_sincos
 
 OF_COLUMNS = [
     "arrival_delay", "departure_delay",
@@ -55,7 +57,14 @@ def derive_station_visits(df, carry_columns=None):
     df["_sched"] = _to_datetime(df["scheduledTime"])
     df["_actual"] = _to_datetime(df["actualTime"])
 
-    keys = ["trainNumber", "departureDate", "stationShortCode"]
+    # The sin/cos of the wind direction is a preprocessing column the raw events lack.
+    # Build it before the carry filter below: build_fcll_sequences silently drops any
+    # requested feature name that is not in the visits, so a missing wind_dir_* would
+    # vanish from the model without a warning.
+    if WIND_DIRECTION_COLUMN in df.columns:
+        df["wind_dir_sin"], df["wind_dir_cos"] = wind_direction_sincos(df[WIND_DIRECTION_COLUMN])
+
+    keys =["trainNumber", "departureDate", "stationShortCode"]
     carry_columns = [c for c in (carry_columns or []) if c in df.columns and c not in keys]
     wide = df.pivot_table(
         index=keys, columns="type",

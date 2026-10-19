@@ -12,6 +12,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.preprocessing import OneHotEncoder
 
+from src.circular_features import wind_direction_sincos
 from src.file_utils import generate_output_path, save_dataframe_to_parquet
 
 from config.const import (
@@ -48,6 +49,8 @@ from config.const_preprocessing import (
     WEATHER_SCENARIO_CATEGORIES,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
     DAY_OF_MONTH_CYCLE,
+    FOLDER_CONVERT_WINDDIRECTION_TO_SINCOS,
+    WIND_DIRECTION_COLUMN,
     FOLDER_CONVERT_DAYOFMONTH_TO_SINCOS,
     FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS,
     FOLDER_CONVERT_HOUR_TO_SINCOS,
@@ -1099,6 +1102,37 @@ class PreprocessingPipeline:
                 result["errors"].append("convert_dayofmonth_to_sincos skipped - no data available")
         else:
             print(f"    ⊝ convert_dayofmonth_to_sincos (disabled)")
+
+        if state_machine.get("convert_winddirection_to_sincos", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_winddirection_to_sincos")
+                    winddirection_sincos_df = self.convert_winddirection_to_sincos(
+                        dataframe=result["data"],
+                        month_id=file_id
+                    )
+
+                    if winddirection_sincos_df is not None and not winddirection_sincos_df.empty:
+                        del result["data"]
+                        result["data"] = winddirection_sincos_df
+                        result["steps_executed"].append("convert_winddirection_to_sincos")
+                        result["file_info"]["rows"] = len(winddirection_sincos_df)
+                        result["file_info"]["columns"] = len(winddirection_sincos_df.columns)
+                        print(f"      ✓ Converted Wind direction to sin/cos features ({len(winddirection_sincos_df)} rows, {len(winddirection_sincos_df.columns)} columns)")
+                    else:
+                        result["errors"].append("convert_winddirection_to_sincos returned empty data")
+                        print(f"      ✗ Failed - empty result")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"convert_winddirection_to_sincos failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_winddirection_to_sincos (no data available)")
+                result["errors"].append("convert_winddirection_to_sincos skipped - no data available")
+        else:
+            print(f"    ⊝ convert_winddirection_to_sincos (disabled)")
 
         if state_machine.get("drop_original_temporal_columns", False):
             if result["data"] is not None:
@@ -3756,6 +3790,59 @@ class PreprocessingPipeline:
 
             except Exception as e:
                 error_msg = f"Error converting day_of_month to sin/cos: {e}"
+                print(error_msg)
+                logger.error(error_msg)
+                raise
+
+    def convert_winddirection_to_sincos(self, dataframe=None, month_id=None):
+        """Add wind_dir_sin / wind_dir_cos for the circular 'Wind direction' (degrees).
+
+        359 and 1 degrees are both north, but as a plain number they are 358 apart: a tree
+        needs two splits to isolate a north wind and a linear model cannot represent it.
+        The raw column is kept. The formula (north = (0, 1), calm = (0, 0)) lives in
+        src.circular_features, shared with FCLL. A missing direction stays NaN: the
+        train-only imputation at the split fills it, so nothing is invented here.
+        """
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+
+        df = dataframe.copy()
+        print(f"Converting {WIND_DIRECTION_COLUMN} column to sin/cos format in dataframe with {len(df)} rows")
+
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+
+        if WIND_DIRECTION_COLUMN not in df.columns:
+            raise ValueError(
+                f"convert_winddirection_to_sincos: required column '{WIND_DIRECTION_COLUMN}' not found; "
+                f"available: {list(df.columns)}")
+
+        with self.get_logger("convert_winddirection_to_sincos.log", "convert_winddirection_to_sincos", month_id) as logger:
+            try:
+                direction = df[WIND_DIRECTION_COLUMN]
+                valid_count = int(direction.notna().sum())
+                if valid_count == 0:
+                    raise ValueError(
+                        f"convert_winddirection_to_sincos: all '{WIND_DIRECTION_COLUMN}' values are missing")
+
+                df['wind_dir_sin'], df['wind_dir_cos'] = wind_direction_sincos(direction)
+
+                # Keep the engineered pair right after the original column
+                cols = [c for c in df.columns if c not in ('wind_dir_sin', 'wind_dir_cos')]
+                at = cols.index(WIND_DIRECTION_COLUMN) + 1
+                df = df[cols[:at] + ['wind_dir_sin', 'wind_dir_cos'] + cols[at:]]
+
+                print(f"Wind direction to sin/cos conversion completed: {valid_count} of {len(df)} rows "
+                      f"({len(df) - valid_count} left missing for the split-time imputation)")
+                logger.info(f"Added columns wind_dir_sin, wind_dir_cos for {valid_count} rows")
+
+                self._save_stage("convert_winddirection_to_sincos", FOLDER_CONVERT_WINDDIRECTION_TO_SINCOS, None, df, "convert_winddirection_to_sincos")
+                return df
+
+            except Exception as e:
+                error_msg = f"Error converting {WIND_DIRECTION_COLUMN} to sin/cos: {e}"
                 print(error_msg)
                 logger.error(error_msg)
                 raise
