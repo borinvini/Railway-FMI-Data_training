@@ -47,6 +47,8 @@ from config.const_preprocessing import (
     ROLLING_WINDOWS,
     WEATHER_SCENARIO_CATEGORIES,
     FOLDER_CONVERT_BOOLEAN_TO_NUMERIC,
+    DAY_OF_MONTH_CYCLE,
+    FOLDER_CONVERT_DAYOFMONTH_TO_SINCOS,
     FOLDER_CONVERT_DAYOFWEEK_TO_SINCOS,
     FOLDER_CONVERT_HOUR_TO_SINCOS,
     FOLDER_CONVERT_MONTH_TO_SINCOS,
@@ -1066,6 +1068,37 @@ class PreprocessingPipeline:
                 result["errors"].append("convert_dayofweek_to_sincos skipped - no data available")
         else:
             print(f"    ⊝ convert_dayofweek_to_sincos (disabled)")
+
+        if state_machine.get("convert_dayofmonth_to_sincos", False):
+            if result["data"] is not None:
+                try:
+                    print(f"    → convert_dayofmonth_to_sincos")
+                    dayofmonth_sincos_df = self.convert_dayofmonth_to_sincos(
+                        dataframe=result["data"],
+                        month_id=file_id
+                    )
+
+                    if dayofmonth_sincos_df is not None and not dayofmonth_sincos_df.empty:
+                        del result["data"]
+                        result["data"] = dayofmonth_sincos_df
+                        result["steps_executed"].append("convert_dayofmonth_to_sincos")
+                        result["file_info"]["rows"] = len(dayofmonth_sincos_df)
+                        result["file_info"]["columns"] = len(dayofmonth_sincos_df.columns)
+                        print(f"      ✓ Converted day_of_month to sin/cos features ({len(dayofmonth_sincos_df)} rows, {len(dayofmonth_sincos_df.columns)} columns)")
+                    else:
+                        result["errors"].append("convert_dayofmonth_to_sincos returned empty data")
+                        print(f"      ✗ Failed - empty result")
+                        return result
+
+                except Exception as e:
+                    result["errors"].append(f"convert_dayofmonth_to_sincos failed: {str(e)}")
+                    print(f"      ✗ Failed - {str(e)}")
+                    return result
+            else:
+                print(f"    ⊝ convert_dayofmonth_to_sincos (no data available)")
+                result["errors"].append("convert_dayofmonth_to_sincos skipped - no data available")
+        else:
+            print(f"    ⊝ convert_dayofmonth_to_sincos (disabled)")
 
         if state_machine.get("drop_original_temporal_columns", False):
             if result["data"] is not None:
@@ -3668,15 +3701,75 @@ class PreprocessingPipeline:
                     logger.error(f"Exception details: {str(e)}")
                     raise
 
+    def convert_dayofmonth_to_sincos(self, dataframe=None, month_id=None):
+        """Add day_month_sin / day_month_cos for day_of_month (1-31), keeping the original.
+
+        Same idea as the month, hour and day-of-week stages: a raw 1-31 integer puts
+        day 31 and day 1 at opposite ends although they are neighbours on the calendar.
+        The circle has DAY_OF_MONTH_CYCLE (31) positions, sin/cos(2*pi*(day-1)/31), so
+        FCLL's `_add_temporal_features` can reproduce it from the date alone. A missing
+        day gets 0.0/0.0, the neutral point, as in the sibling stages.
+        """
+        if dataframe is None:
+            print("Error: Dataframe must be provided")
+            return None
+
+        df = dataframe.copy()
+        print(f"Converting day_of_month column to sin/cos format in dataframe with {len(df)} rows")
+
+        if df.empty:
+            print("Warning: Empty dataframe")
+            return df
+
+        if 'day_of_month' not in df.columns:
+            raise ValueError(
+                f"convert_dayofmonth_to_sincos: required column 'day_of_month' not found; "
+                f"available: {list(df.columns)}")
+
+        with self.get_logger("convert_dayofmonth_to_sincos.log", "convert_dayofmonth_to_sincos", month_id) as logger:
+            try:
+                day = df['day_of_month']
+                valid_count = int(day.notna().sum())
+                if valid_count == 0:
+                    raise ValueError("convert_dayofmonth_to_sincos: all 'day_of_month' values are missing")
+                invalid = int((day.notna() & ((day < 1) | (day > DAY_OF_MONTH_CYCLE))).sum())
+                if invalid:
+                    logger.warning(f"{invalid} day_of_month values outside 1-{DAY_OF_MONTH_CYCLE}")
+                    print(f"Warning: {invalid} day_of_month values outside 1-{DAY_OF_MONTH_CYCLE}")
+
+                angle = 2 * np.pi * (day - 1) / float(DAY_OF_MONTH_CYCLE)
+                df['day_month_sin'] = np.sin(angle).fillna(0.0)
+                df['day_month_cos'] = np.cos(angle).fillna(0.0)
+
+                # Keep the engineered pair right after the original column
+                cols = [c for c in df.columns if c not in ('day_month_sin', 'day_month_cos')]
+                at = cols.index('day_of_month') + 1
+                df = df[cols[:at] + ['day_month_sin', 'day_month_cos'] + cols[at:]]
+
+                print(f"Day of month to sin/cos conversion completed: {valid_count} of {len(df)} rows "
+                      f"(sin {df['day_month_sin'].min():.3f}..{df['day_month_sin'].max():.3f}, "
+                      f"cos {df['day_month_cos'].min():.3f}..{df['day_month_cos'].max():.3f})")
+                logger.info(f"Added columns day_month_sin, day_month_cos for {valid_count} rows")
+
+                self._save_stage("convert_dayofmonth_to_sincos", FOLDER_CONVERT_DAYOFMONTH_TO_SINCOS, None, df, "convert_dayofmonth_to_sincos")
+                return df
+
+            except Exception as e:
+                error_msg = f"Error converting day_of_month to sin/cos: {e}"
+                print(error_msg)
+                logger.error(error_msg)
+                raise
+
     def drop_original_temporal_columns(self, dataframe=None, month_id=None):
         """
         Drop the original temporal columns that have been converted to cyclical features.
-        
+
         This method removes the original categorical temporal columns after they have been
         converted to sin/cos cyclical features, keeping only the engineered features:
         - Drops 'month' (already converted to month_sin, month_cos)
-        - Drops 'hour' (already converted to hour_sin, hour_cos)  
-        - Drops 'day_of_week' (categorical temporal feature)
+        - Drops 'hour' (already converted to hour_sin, hour_cos)
+        - Drops 'day_of_week' (already converted to day_week_sin, day_week_cos)
+        - Drops 'day_of_month' (already converted to day_month_sin, day_month_cos)
         
         Parameters:
         -----------
@@ -3703,7 +3796,7 @@ class PreprocessingPipeline:
             return df
         
         # Define columns to drop
-        columns_to_drop = ['month', 'hour', 'day_of_week']
+        columns_to_drop = ['month', 'hour', 'day_of_week', 'day_of_month']
         
         # Use the logging method for detailed logging
         with self.get_logger("drop_original_temporal_columns.log", "drop_original_temporal_columns", month_id) as logger:

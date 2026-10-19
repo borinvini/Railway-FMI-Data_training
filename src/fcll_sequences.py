@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from config.const_preprocessing import (
+    DAY_OF_MONTH_CYCLE,
     LOCAL_TIMEZONE,
     PREPROCESSING_STATE_MACHINE,
     TIME_FEATURE_SOURCE_COLUMN,
@@ -271,11 +272,14 @@ def _add_temporal_features(wide, moment):
     wide["day_week_sin"] = np.sin(2 * np.pi * (day_of_week - 1) / 7.0)
     wide["day_week_cos"] = np.cos(2 * np.pi * (day_of_week - 1) / 7.0)
     wide["day_of_month"] = moment.dt.day
+    wide["day_month_sin"] = np.sin(2 * np.pi * (moment.dt.day - 1) / float(DAY_OF_MONTH_CYCLE))
+    wide["day_month_cos"] = np.cos(2 * np.pi * (moment.dt.day - 1) / float(DAY_OF_MONTH_CYCLE))
 
     # A neutral position on the unit circle for unparseable timestamps, as the
     # preprocessing stages do.
     for name in ("month_sin", "month_cos", "hour_sin", "hour_cos",
-                 "day_week_sin", "day_week_cos", "day_of_month"):
+                 "day_week_sin", "day_week_cos", "day_of_month",
+                 "day_month_sin", "day_month_cos"):
         wide[name] = wide[name].fillna(0.0)
     return wide
 

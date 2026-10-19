@@ -57,6 +57,7 @@ VALID = {
     "convert_hour_to_sincos": pd.DataFrame({"hour": ["10:30"]}),
     "convert_month_to_sincos": pd.DataFrame({"month": [3]}),
     "convert_dayofweek_to_sincos": pd.DataFrame({"day_of_week": [2]}),
+    "convert_dayofmonth_to_sincos": pd.DataFrame({"day_of_month": [15]}),
     "drop_original_temporal_columns": pd.DataFrame({"month": [3], "hour": ["10:30"], "day_of_week": [2]}),
 }
 
@@ -83,6 +84,7 @@ MISSING_INPUT = [
     ("convert_hour_to_sincos", "hour", pd.DataFrame({"a": [1]})),
     ("convert_month_to_sincos", "month", pd.DataFrame({"a": [1]})),
     ("convert_dayofweek_to_sincos", "day_of_week", pd.DataFrame({"a": [1]})),
+    ("convert_dayofmonth_to_sincos", "day_of_month", pd.DataFrame({"a": [1]})),
 ]
 
 
@@ -100,6 +102,7 @@ def test_a_missing_required_column_fails_and_names_it(stage, column, frame, tmp_
     ("convert_hour_to_sincos", "hour"),
     ("convert_month_to_sincos", "month"),
     ("convert_dayofweek_to_sincos", "day_of_week"),
+    ("convert_dayofmonth_to_sincos", "day_of_month"),
 ])
 def test_an_all_missing_input_column_fails(stage, column, tmp_path):
     pipeline = _pipeline(tmp_path)
@@ -127,7 +130,7 @@ def test_select_target_still_keeps_the_chosen_target(tmp_path):
 
 @pytest.mark.parametrize("stage", [
     "process_causes_column", "process_actual_time_column", "convert_hour_to_sincos",
-    "convert_month_to_sincos", "convert_dayofweek_to_sincos",
+    "convert_month_to_sincos", "convert_dayofweek_to_sincos", "convert_dayofmonth_to_sincos",
     "drop_original_temporal_columns", "filter_columns", "convert_boolean_to_numeric",
 ])
 def test_an_empty_frame_is_returned_unchanged(stage, tmp_path):

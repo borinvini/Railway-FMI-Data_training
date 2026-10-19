@@ -168,6 +168,8 @@ def test_fcll_and_preprocessing_derive_the_same_calendar_features(tmp_path, monk
     assert visits["hour_sin"] == pytest.approx(np.sin(2 * np.pi * (hh + mm / 60.0) / 24.0))
     assert visits["hour_cos"] == pytest.approx(np.cos(2 * np.pi * (hh + mm / 60.0) / 24.0))
     assert visits["day_of_month"] == pre["day_of_month"]
+    assert visits["day_month_sin"] == pytest.approx(np.sin(2 * np.pi * (pre["day_of_month"] - 1) / 31.0))
+    assert visits["day_month_cos"] == pytest.approx(np.cos(2 * np.pi * (pre["day_of_month"] - 1) / 31.0))
     assert visits["month_sin"] == pytest.approx(np.sin(2 * np.pi * (pre["month"] - 1) / 12.0))
     assert visits["day_week_sin"] == pytest.approx(
         np.sin(2 * np.pi * (pre["day_of_week"] - 1) / 7.0))
