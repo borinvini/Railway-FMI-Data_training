@@ -128,15 +128,30 @@ class R2Minutes(NegMaeMinutes):
 _MINUTES_SCORERS = {"mae": NegMaeMinutes, "rmse": NegRmseMinutes, "r2": R2Minutes}
 
 
-def make_minutes_scorer(y_shift, metric="mae"):
-    """sklearn scorer (higher is better) for a log-shifted target, scored in minutes.
+_SKLEARN_SCORING = {"mae": "neg_mean_absolute_error", "rmse": "neg_root_mean_squared_error",
+                    "r2": "r2"}
 
+
+def make_minutes_scorer(y_shift, metric="mae"):
+    """sklearn scorer (higher is better), scored in minutes.
+
+    `y_shift` is the shift of a log1p(y + y_shift) target, or None when the model is fitted
+    on the raw minutes (then sklearn's own scorer is already in minutes).
     `metric` is one of 'mae' (-MAE), 'rmse' (-RMSE), 'r2'.
     """
     if metric not in _MINUTES_SCORERS:
         raise ValueError(
             f"REGRESSION_SCORE_METRIC={metric!r} is not one of {sorted(_MINUTES_SCORERS)}")
+    if y_shift is None:
+        return _SKLEARN_SCORING[metric]
     return make_scorer(_MINUTES_SCORERS[metric](y_shift))
+
+
+def to_minutes(pred, y_shift):
+    """Model output in minutes: undo log1p(y + y_shift), or pass through when y_shift is None."""
+    if y_shift is None:
+        return pred
+    return np.expm1(pred) - y_shift
 
 
 def mae_baseline(y_train, y_true, mae):

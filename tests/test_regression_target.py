@@ -419,10 +419,44 @@ def _scaled_folder(tmp_path, df):
     return folder
 
 
-def test_xgboost_regression_uses_day_grouped_cv_and_a_minutes_scorer(tmp_path):
+def test_xgboost_regression_defaults_to_absolute_error_on_the_raw_minutes(tmp_path):
+    """Hold-out 2025: the log + squared-error fit scored mae_skill -0.060 (worse than always
+    predicting the train median); reg:absoluteerror on the raw minutes scored +0.040."""
+    from config.const_training import REGRESSION_LOG_TARGET, REGRESSION_OBJECTIVE
+    assert REGRESSION_OBJECTIVE == "reg:absoluteerror" and REGRESSION_LOG_TARGET is False
+
     folder = _scaled_folder(tmp_path, _delay_frame())
     train = pd.read_parquet(folder / "merged_data_x_train.parquet")
     with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
+         patch("src.training_pipeline.RandomizedSearchCV", _SearchSpy):
+        _pipeline(tmp_path).train_xgboost_with_randomized_search_cv(data_dir=str(folder))
+
+    seen = _SearchSpy.seen
+    assert seen["init"]["estimator"].get_params()["objective"] == "reg:absoluteerror"
+    np.testing.assert_array_equal(np.asarray(seen["y"]), train[TARGET].to_numpy())  # no log1p
+    assert seen["init"]["scoring"] == "neg_mean_absolute_error"   # already minutes
+
+
+def test_to_minutes_undoes_the_log_only_when_there_is_a_shift():
+    from src.cv_utils import to_minutes
+    y = np.array([-5.0, 0.0, 10.0])
+    np.testing.assert_allclose(to_minutes(np.log1p(y + 21.0), 21.0), y, atol=1e-9)
+    np.testing.assert_array_equal(to_minutes(y, None), y)
+
+
+def test_minutes_scorer_without_a_shift_is_the_sklearn_scorer():
+    from src.cv_utils import make_minutes_scorer
+    assert make_minutes_scorer(None, "mae") == "neg_mean_absolute_error"
+    assert make_minutes_scorer(None, "rmse") == "neg_root_mean_squared_error"
+    assert make_minutes_scorer(None, "r2") == "r2"
+
+
+def test_xgboost_regression_uses_day_grouped_cv_and_a_minutes_scorer(tmp_path):
+    """The log-target path (REGRESSION_LOG_TARGET = True), which must still score in minutes."""
+    folder = _scaled_folder(tmp_path, _delay_frame())
+    train = pd.read_parquet(folder / "merged_data_x_train.parquet")
+    with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
+         patch("src.training_pipeline.REGRESSION_LOG_TARGET", True), \
          patch("src.training_pipeline.RandomizedSearchCV", _SearchSpy):
         _pipeline(tmp_path).train_xgboost_with_randomized_search_cv(data_dir=str(folder))
 

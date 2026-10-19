@@ -54,7 +54,7 @@ import matplotlib.pyplot as plt
 
 from src.cv_utils import (filled_path, groups_path, load_filled_flags, load_train_groups,
                           mae_baseline, make_cv, make_minutes_scorer, neg_pos_ratio,
-                          residual_quantiles)
+                          residual_quantiles, to_minutes)
 from src.day_split import split_days
 from src.file_utils import (
     save_dataframe_to_parquet,
@@ -115,6 +115,8 @@ from config.const_training import (
     MONTH_KEY_COLUMN,
     SCORE_METRIC,
     REGRESSION_SCORE_METRIC,
+    REGRESSION_OBJECTIVE,
+    REGRESSION_LOG_TARGET,
     RANDOM_SEARCH_ITERATIONS,
     RANDOM_SEARCH_CV_FOLDS,
     WEIGHT_DELAY_COLUMN,
@@ -3188,7 +3190,7 @@ class TrainingPipeline:
         """
         y_pred = model.predict(X_holdout)
         if not is_classification:
-            y_pred = np.expm1(y_pred) - y_shift
+            y_pred = to_minutes(y_pred, y_shift)
 
         metrics = self._score_predictions(y_holdout, y_pred, is_classification)
 
@@ -3392,18 +3394,25 @@ class TrainingPipeline:
                 base_model = xgb.XGBRegressor(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
+                    objective=REGRESSION_OBJECTIVE,
                 )
-                # Shift target so all values are positive, then log-transform to compress
-                # the extreme right tail (max 963 min) that deflates R² artificially.
-                y_shift = max(0.0, -float(y_train.min())) + 1.0
-                y_train_log = np.log1p(y_train + y_shift)
-                # The search fits on the log target; score it as MAE in minutes so the
-                # tuning score and the reported test / hold-out MAE are the same quantity.
+                print(f"      Objective: {REGRESSION_OBJECTIVE}")
+                if REGRESSION_LOG_TARGET:
+                    # Shift target so all values are positive, then log-transform to compress
+                    # the extreme right tail (max 963 min) that deflates R² artificially.
+                    y_shift = max(0.0, -float(y_train.min())) + 1.0
+                    y_train_log = np.log1p(y_train + y_shift)
+                    print(f"      Log-transform target: shift={y_shift:.2f}, "
+                          f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
+                          f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
+                else:
+                    # y_shift None = the model is fitted and predicts in minutes (to_minutes).
+                    y_shift = None
+                    print("      Target fitted on the raw minutes (no log transform)")
+                # Score in minutes whatever the fit, so the tuning score and the reported
+                # test / hold-out metrics are the same quantity.
                 scoring_metric = make_minutes_scorer(y_shift, REGRESSION_SCORE_METRIC)
                 print(f"      Tuning metric: {REGRESSION_SCORE_METRIC} (minutes)")
-                print(f"      Log-transform target: shift={y_shift:.2f}, "
-                      f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
-                      f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
 
             # Define iteration range: 10 to 100 (step=10)
             iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
@@ -3450,20 +3459,20 @@ class TrainingPipeline:
                 )
                 
                 # Fit with sample weights if available; use log-transformed y for regression
-                y_fit = y_train_log if not is_classification else y_train
+                y_fit = y_train if (is_classification or y_shift is None) else y_train_log
                 if sample_weights is not None:
                     randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
                     randomized_search.fit(X_train, y_fit, groups=groups)
-                
+
                 # Get best model for current iteration count
                 current_best_model = randomized_search.best_estimator_
                 current_cv_score = randomized_search.best_score_
-                
+
                 # Make predictions on test set; inverse-transform for regression
                 y_pred = current_best_model.predict(X_test)
                 if not is_classification:
-                    y_pred = np.expm1(y_pred) - y_shift
+                    y_pred = to_minutes(y_pred, y_shift)
 
                 # Calculate test metrics
                 if is_classification:
@@ -3550,7 +3559,7 @@ class TrainingPipeline:
             print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
             final_y_pred = best_model.predict(X_test)
             if not is_classification:
-                final_y_pred = np.expm1(final_y_pred) - y_shift
+                final_y_pred = to_minutes(final_y_pred, y_shift)
 
             if is_classification:
                 final_test_accuracy = accuracy_score(y_test, final_y_pred)
@@ -3816,7 +3825,7 @@ class TrainingPipeline:
                     results["dataset_info"]["holdout_samples"] = len(X_holdout)
 
                     if not is_classification:
-                        h_pred = np.expm1(best_model.predict(X_holdout)) - y_shift
+                        h_pred = to_minutes(best_model.predict(X_holdout), y_shift)
                         results["holdout_metrics"].update(
                             mae_baseline(y_train, y_holdout, results["holdout_metrics"]["mae"]))
                         results["holdout_metrics"]["residual_quantiles"] = residual_quantiles(y_holdout, h_pred)

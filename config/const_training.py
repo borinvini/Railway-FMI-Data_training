@@ -324,6 +324,16 @@ SCORE_METRIC = 'f1'
 #   'r2'   : R2
 REGRESSION_SCORE_METRIC = 'mae'
 
+# XGBoost objective for the numeric target, and whether to fit it on log1p(y + shift).
+# On the OL data (hold-out 2025, 50-iteration search) the old log fit with squared error
+# lost to always predicting the train median (mae_skill -0.060, MAE 6.14); the median-type
+# losses on the raw minutes beat it (reg:absoluteerror +0.040, MAE 5.56;
+# reg:pseudohubererror +0.019). The log fit pulls predictions below the mean of a
+# right-skewed delay. Set REGRESSION_LOG_TARGET = True to get the old behaviour back
+# (with reg:squarederror).
+REGRESSION_OBJECTIVE = 'reg:absoluteerror'
+REGRESSION_LOG_TARGET = False
+
 
 # RandomizedSearchCV settings
 # Minimum meaningful value is 10: training_pipeline.py builds
