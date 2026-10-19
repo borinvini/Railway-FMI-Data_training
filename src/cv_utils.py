@@ -106,6 +106,39 @@ def make_minutes_mae_scorer(y_shift):
     return make_scorer(NegMaeMinutes(y_shift))
 
 
+class NegRmseMinutes(NegMaeMinutes):
+    """-RMSE in minutes for an estimator fitted on log1p(y + y_shift)."""
+
+    def __call__(self, y_true_log, y_pred_log):
+        y_true = np.expm1(np.asarray(y_true_log, dtype=float)) - self.y_shift
+        y_pred = np.expm1(np.asarray(y_pred_log, dtype=float)) - self.y_shift
+        return -float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
+
+
+class R2Minutes(NegMaeMinutes):
+    """R2 in minutes for an estimator fitted on log1p(y + y_shift)."""
+
+    def __call__(self, y_true_log, y_pred_log):
+        y_true = np.expm1(np.asarray(y_true_log, dtype=float)) - self.y_shift
+        y_pred = np.expm1(np.asarray(y_pred_log, dtype=float)) - self.y_shift
+        ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
+        return float(1.0 - np.sum((y_true - y_pred) ** 2) / ss_tot) if ss_tot > 0 else 0.0
+
+
+_MINUTES_SCORERS = {"mae": NegMaeMinutes, "rmse": NegRmseMinutes, "r2": R2Minutes}
+
+
+def make_minutes_scorer(y_shift, metric="mae"):
+    """sklearn scorer (higher is better) for a log-shifted target, scored in minutes.
+
+    `metric` is one of 'mae' (-MAE), 'rmse' (-RMSE), 'r2'.
+    """
+    if metric not in _MINUTES_SCORERS:
+        raise ValueError(
+            f"REGRESSION_SCORE_METRIC={metric!r} is not one of {sorted(_MINUTES_SCORERS)}")
+    return make_scorer(_MINUTES_SCORERS[metric](y_shift))
+
+
 def mae_baseline(y_train, y_true, mae):
     """MAE of always predicting the train median, and how much better `mae` is.
 

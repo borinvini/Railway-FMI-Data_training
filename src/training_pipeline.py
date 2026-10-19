@@ -53,7 +53,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from src.cv_utils import (filled_path, groups_path, load_filled_flags, load_train_groups,
-                          mae_baseline, make_cv, make_minutes_mae_scorer, neg_pos_ratio,
+                          mae_baseline, make_cv, make_minutes_scorer, neg_pos_ratio,
                           residual_quantiles)
 from src.day_split import split_days
 from src.file_utils import (
@@ -114,6 +114,7 @@ from config.const_training import (
     HOLDOUT_YEAR_COLUMN,
     MONTH_KEY_COLUMN,
     SCORE_METRIC,
+    REGRESSION_SCORE_METRIC,
     RANDOM_SEARCH_ITERATIONS,
     RANDOM_SEARCH_CV_FOLDS,
     WEIGHT_DELAY_COLUMN,
@@ -3398,7 +3399,8 @@ class TrainingPipeline:
                 y_train_log = np.log1p(y_train + y_shift)
                 # The search fits on the log target; score it as MAE in minutes so the
                 # tuning score and the reported test / hold-out MAE are the same quantity.
-                scoring_metric = make_minutes_mae_scorer(y_shift)
+                scoring_metric = make_minutes_scorer(y_shift, REGRESSION_SCORE_METRIC)
+                print(f"      Tuning metric: {REGRESSION_SCORE_METRIC} (minutes)")
                 print(f"      Log-transform target: shift={y_shift:.2f}, "
                       f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
                       f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")

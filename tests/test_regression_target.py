@@ -360,6 +360,24 @@ def test_the_scorer_reports_mae_in_minutes_not_in_log_units():
     assert abs(float(np.mean(np.abs(y_log - pred_log)))) < 0.5
 
 
+def test_the_tuning_metric_is_configurable_and_scored_in_minutes():
+    from src.cv_utils import make_minutes_scorer
+    shift = 21.0
+    y = np.array([-5.0, 0.0, 10.0, 50.0])
+    pred = np.array([-3.0, 1.0, 12.0, 40.0])
+    y_log, pred_log = np.log1p(y + shift), np.log1p(pred + shift)
+    X = np.zeros((4, 1))
+
+    rmse = -float(np.sqrt(np.mean((y - pred) ** 2)))
+    r2 = 1.0 - float(np.sum((y - pred) ** 2) / np.sum((y - y.mean()) ** 2))
+    mae = -float(np.mean(np.abs(y - pred)))
+    assert make_minutes_scorer(shift, "mae")(_Echo(pred_log), X, y_log) == pytest.approx(mae)
+    assert make_minutes_scorer(shift, "rmse")(_Echo(pred_log), X, y_log) == pytest.approx(rmse)
+    assert make_minutes_scorer(shift, "r2")(_Echo(pred_log), X, y_log) == pytest.approx(r2)
+    with pytest.raises(ValueError):
+        make_minutes_scorer(shift, "f1")
+
+
 def test_the_scorer_can_be_pickled_for_the_parallel_search():
     import pickle
     restored = pickle.loads(pickle.dumps(NegMaeMinutes(21.0)))

@@ -317,6 +317,13 @@ LIGHTGBM_PARAM_DISTRIBUTIONS = {
 # ===================================================================================================================
 SCORE_METRIC = 'f1'
 
+# Metric the numeric target (differenceInMinutes) is tuned on, XGBoost only so far.
+# All are computed in minutes (the model is fitted on log1p of the delay):
+#   'mae'  : -MAE, robust to the long delay tail (default, matches mae_skill)
+#   'rmse' : -RMSE, punishes the tail harder
+#   'r2'   : R2
+REGRESSION_SCORE_METRIC = 'mae'
+
 
 # RandomizedSearchCV settings
 # Minimum meaningful value is 10: training_pipeline.py builds
