@@ -92,6 +92,8 @@ elif [ "${TRAIN_ALL}" -eq 1 ]; then
     if [ "${MODELS_ONLY}" -eq 0 ]; then
         CANDIDATES+=("${SCRATCH}/data/output/50[0-5]-*")
         CANDIDATES+=("${SCRATCH}/data/output/700-*")
+        CANDIDATES+=("${SCRATCH}/data/output/701-*")
+        CANDIDATES+=("${SCRATCH}/data/output/702-*")
     fi
     CANDIDATES+=("${SCRATCH}/data/output/100[0-4]-*")
 else
@@ -101,6 +103,8 @@ else
         # other four copies are redundant and roughly five times the transfer.
         CANDIDATES+=("${SCRATCH}/run_0/data/output/50[0-5]-*")
         CANDIDATES+=("${SCRATCH}/run_0/data/output/700-*")
+        CANDIDATES+=("${SCRATCH}/run_0/data/output/701-*")
+        CANDIDATES+=("${SCRATCH}/run_0/data/output/702-*")
     fi
     # Model directories from every run root: each array task enables exactly one
     # trainer, so these five never collide.
@@ -172,6 +176,14 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
             *700-*)
                 echo "      (700-shap_correlation_analysis is produced only by"
                 echo "       hpc/train_all.sh; after an array run this is normal.)"
+                ;;
+            *701-*)
+                echo "      (701-explore_training_data is produced only by"
+                echo "       hpc/train_all.sh; after an array run this is normal.)"
+                ;;
+            *702-*)
+                echo "      (702-model_feature_importance is produced only by hpc/train_all.sh"
+                echo "       with model_feature_importance_analysis switched on; it is off by default.)"
                 ;;
             *run_0/data/output/50\[0-5\]-*)
                 echo "      (run_0 did not complete, so the prep stages are"

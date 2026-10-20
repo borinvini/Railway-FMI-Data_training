@@ -29,6 +29,8 @@ TRAINING_STATE_MACHINE = {
     "scale_weather_features": True,
     "build_fcll_sequences": False,   # gated: only --model fcll_net needs it
     "shap_correlation_analysis": True,
+    "explore_training_data": True,
+    "model_feature_importance_analysis": False,  # model-based and slower; run it on demand
     "train_xgboost_with_randomized_search_cv": True,
     "train_lightgbm_with_randomized_search_cv": True,
     "train_random_forest_with_randomized_search_cv": True,
@@ -53,6 +55,35 @@ MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER = "data/output/505-scale_weather_feat
 SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER = "data/output/700-shap_correlation_analysis"
 SHAP_CORRELATION_TOP_N_PAIRS = 20     # Feature pairs shown in the top-correlated-pairs bar chart
 SHAP_CORRELATION_TOP_N_FEATURES = 15  # Features shown in the top-correlated-features sub-heatmap
+
+# Stage 701, explore_training_data: charts and tables that describe the data itself (target,
+# calendar and weather patterns, distributions, Spearman correlations and clusters, drift between
+# the development years and the hold-out year). No model is fitted. Reads stage 502.
+DATA_EXPLORATION_OUTPUT_FOLDER = "data/output/701-explore_training_data"
+SPEARMAN_CLUSTER_ABS_CORR = 0.90 # |rho| at or above which two continuous columns share a cluster
+EXPLORATION_N_BINS = 10          # quantile bins of a continuous variable in the binned charts
+EXPLORATION_WIND_SECTORS = 16    # compass sectors of the wind-direction chart (22.5 degrees each)
+EXPLORATION_MIN_CELL_COUNT = 30  # cells with fewer rows are masked in the weekday x hour heatmap
+EXPLORATION_ANNOTATE_MAX = 25    # the Spearman heatmap prints its values only up to this many variables
+EXPLORATION_MAX_PANELS = 16      # panels in the small-multiple charts (the strongest / first variables)
+
+# Stage 702, model_feature_importance_analysis (off by default): grouped permutation importance and
+# drop-group ablation. Fits its own plain XGBoost (no search), so it is a fast screen of what a
+# MODEL relies on and not a replacement for the tuned model.
+MODEL_FEATURE_IMPORTANCE_OUTPUT_FOLDER = "data/output/702-model_feature_importance"
+PERMUTATION_REPEATS = 5          # shuffles per feature group
+ABLATION_NOISE_SEEDS = 3         # seeds of the full model; their spread is the noise floor
+NOISE_FLOOR_FACTOR = 2.0         # an effect within this many noise std is flagged "within noise"
+# Defaults except two, both inside the trainer's own search space (XGBOOST_PARAM_DISTRIBUTIONS).
+# A default XGBoost is deterministic whatever the seed, which would make the noise floor of the
+# refits exactly zero; row and column subsampling make the seeds differ.
+FEATURE_ANALYSIS_XGB_PARAMS = {"subsample": 0.8, "colsample_bytree": 0.8}
+# Named sets for questions larger than one group. Columns absent from the data are skipped.
+ABLATION_EXTRA_SETS = {
+    "all_wind": ["wind_dir_sin", "wind_dir_cos", "Wind speed", "Gust speed"],
+    "all_calendar": ["month_sin", "month_cos", "hour_sin", "hour_cos", "day_week_sin",
+                     "day_week_cos", "day_month_sin", "day_month_cos", "trainStopping"],
+}
 # Columns the training run keeps. Empty here on purpose: main.py points
 # RAILWAY_COLUMNS_FILE at config/features.txt when no --columns-file is given, so a plain
 # `python main.py` (the IDE run button) trains on that file. The target (trainDisrupted),

@@ -605,6 +605,8 @@ That brings back **every** training-pipeline stage, not only the models:
 | `504-balance_classes` | After SMOTE-Tomek |
 | `505-scale_weather_features` | The frame the trainers actually saw |
 | `700-shap_correlation_analysis` | Only after `train_all.sh` |
+| `701-explore_training_data` | Only after `train_all.sh` (13 model-free charts and tables describing the data) |
+| `702-model_feature_importance` | Only after `train_all.sh` with `model_feature_importance_analysis` switched on (it is off by default) |
 | `1000-*` … `1004-*` | One per model: the six files listed above |
 
 In this older layout stages 500-505 come from `run_0` alone. `train_array.sh`

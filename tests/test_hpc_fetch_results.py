@@ -20,11 +20,15 @@ SCRATCH = "${SCRATCH}"
 TRAIN_ALL_EXPECTED = [
     f"{SCRATCH}/data/output/50[0-5]-*",
     f"{SCRATCH}/data/output/700-*",
+    f"{SCRATCH}/data/output/701-*",
+    f"{SCRATCH}/data/output/702-*",
     f"{SCRATCH}/data/output/100[0-4]-*",
 ]
 ARRAY_EXPECTED = [
     f"{SCRATCH}/run_0/data/output/50[0-5]-*",
     f"{SCRATCH}/run_0/data/output/700-*",
+    f"{SCRATCH}/run_0/data/output/701-*",
+    f"{SCRATCH}/run_0/data/output/702-*",
     f"{SCRATCH}/run_*/data/output/100[0-4]-*",
 ]
 SCENARIOS_EXPECTED = [

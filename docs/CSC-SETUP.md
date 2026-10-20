@@ -228,7 +228,7 @@ Or all five sequentially in one job:
 sbatch hpc/train_all.sh
 ```
 
-`train_all.sh` also runs `shap_correlation_analysis`; `train_array.sh` skips it,
+`train_all.sh` also runs `shap_correlation_analysis` and `explore_training_data` (and `model_feature_importance_analysis` when it is switched on); `train_array.sh` skips them,
 because running it once per task would waste allocation. `train_all.sh` has no
 checkpointing: a timeout or failure anywhere in its single 12h job loses every
 model trained so far, not just the one in progress. Prefer `train_array.sh`

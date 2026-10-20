@@ -56,6 +56,14 @@ from src.cv_utils import (filled_path, groups_path, load_filled_flags, load_trai
                           mae_baseline, make_cv, make_minutes_scorer, neg_pos_ratio,
                           residual_quantiles, to_minutes)
 from src.day_split import split_days
+from src import exploration_plots as xplots
+from src.data_exploration import (WIND_COLUMN, association_by_year, association_table, bin_codes,
+                                  data_summary, drift_table, monthly_series, profile_by,
+                                  recover_readable_variables, spearman_matrix, variable_names,
+                                  wind_sector_labels, MONTH_NAMES)
+from src.feature_analysis import (drop_group_ablation, feature_groups, fit_xgboost,
+                                  grouped_permutation_importance, make_score_fn,
+                                  protected_columns, spearman_clusters)
 from src.file_utils import (
     save_dataframe_to_parquet,
 )
@@ -103,6 +111,19 @@ from config.const_training import (
     SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER,
     SHAP_CORRELATION_TOP_N_PAIRS,
     SHAP_CORRELATION_TOP_N_FEATURES,
+    DATA_EXPLORATION_OUTPUT_FOLDER,
+    SPEARMAN_CLUSTER_ABS_CORR,
+    EXPLORATION_N_BINS,
+    EXPLORATION_WIND_SECTORS,
+    EXPLORATION_MIN_CELL_COUNT,
+    EXPLORATION_ANNOTATE_MAX,
+    EXPLORATION_MAX_PANELS,
+    MODEL_FEATURE_IMPORTANCE_OUTPUT_FOLDER,
+    PERMUTATION_REPEATS,
+    ABLATION_NOISE_SEEDS,
+    NOISE_FLOOR_FACTOR,
+    ABLATION_EXTRA_SETS,
+    FEATURE_ANALYSIS_XGB_PARAMS,
     MERGED_TRAINING_READY_OUTPUT_FOLDER,
     FCLL_SEQUENCES_OUTPUT_FOLDER,
     FCLL_NET_OUTPUT_FOLDER,
@@ -457,6 +478,74 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ shap_correlation_analysis (disabled)")
+
+        if state_machine.get("explore_training_data", False):
+            try:
+                print(f"    → explore_training_data")
+                # The descriptive charts read stage 502: every row in physical units with its
+                # year, which 503 and 505 (split, scaled, no year) no longer carry.
+                explore_result = self.explore_training_data(
+                    data_dir=os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+                )
+
+                if explore_result and explore_result.get("success", False):
+                    result["steps_executed"].append("explore_training_data")
+                    print(f"      ✓ Successfully explored the training data (no model fitted)")
+                    print(f"      ✓ Rows: {explore_result.get('n_rows', 0):,} | variables: {explore_result.get('n_variables', 0)} | charts: {explore_result.get('n_charts', 0)}")
+                    print(f"      ✓ Suggested non-redundant features: {explore_result.get('suggested_feature_count', 0)}")
+                    print(f"      ✓ Results saved to: {explore_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = (explore_result or {}).get("error", "explore_training_data returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+
+            except Exception as e:
+                result["errors"].append(f"explore_training_data failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ explore_training_data (disabled)")
+
+        if state_machine.get("model_feature_importance_analysis", False):
+            try:
+                print(f"    → model_feature_importance_analysis")
+                # Train/test/hold-out as the trainers see them: the scaled folder, else the
+                # raw split. Never the balanced folder (resampled rows would corrupt an ablation).
+                # The scaled folder also wins when it already exists, so that
+                # `--stages model_feature_importance_analysis` alone, with the scaling stage off,
+                # runs on the outputs of an earlier run instead of looking in 503.
+                _fi_scaled_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+                _fi_data_dir = (
+                    _fi_scaled_dir
+                    if state_machine.get("scale_weather_features", False)
+                    or glob.glob(os.path.join(_fi_scaled_dir, "merged_data_*_train.parquet"))
+                    else os.path.join(self.project_root, SPLIT_DATASET_OUTPUT_FOLDER)
+                )
+                fi_result = self.model_feature_importance_analysis(data_dir=_fi_data_dir)
+
+                if fi_result and fi_result.get("success", False):
+                    result["steps_executed"].append("model_feature_importance_analysis")
+                    print(f"      ✓ Successfully computed model feature importance analysis")
+                    print(f"      ✓ Features analyzed: {fi_result.get('num_features', 0)} in {fi_result.get('num_groups', 0)} groups")
+                    top_group = fi_result.get("top_group")
+                    if top_group:
+                        print(f"      ✓ Most important group on {fi_result.get('primary_split')}: {top_group[0]} (score drop {top_group[1]:.4f})")
+                    print(f"      ✓ Results saved to: {fi_result.get('output_directory', 'N/A')}")
+                    result["success"] = True
+                else:
+                    error_msg = (fi_result or {}).get("error", "model_feature_importance_analysis returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+
+            except Exception as e:
+                result["errors"].append(f"model_feature_importance_analysis failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ model_feature_importance_analysis (disabled)")
 
         if state_machine.get("train_fcll_net", False):
             try:
@@ -3121,6 +3210,418 @@ class TrainingPipeline:
                 "success": False,
                 "error": error_msg
             }
+
+    def explore_training_data(self, data_dir=None):
+        """
+        Diagnostic-only stage 701: charts and tables that describe the data itself. No model.
+
+        Reads the stage 502 file (every row in physical units, with its year) and writes to
+        DATA_EXPLORATION_OUTPUT_FOLDER up to 13 charts (target distribution and drift over
+        time; delay by hour, weekday, month and wind direction; delay against each weather
+        variable; feature distributions; Spearman heatmap and dendrogram; how strongly each
+        variable is tied to the target, per year; which variables look different in the
+        hold-out year), the tables behind them, a summary.json and suggested_features.txt
+        (Spearman clusters on the development years, --columns-file format). Hour, month,
+        weekday, day of month and wind direction are recovered from their sin/cos pairs so
+        the charts use real units. Nothing is dropped or modified; no model is fitted.
+        """
+        label = "explore_training_data"
+        try:
+            print(f"    {label}: Starting data exploration (no model is fitted)...")
+            output_dir = os.path.join(self.project_root, DATA_EXPLORATION_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            if data_dir is None:
+                data_dir = os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
+
+            files = glob.glob(os.path.join(data_dir, "merged_data_*.parquet"))
+            if len(files) != 1:
+                error_msg = (f"Expected exactly one stage 502 file in {data_dir}. Found {len(files)} "
+                             f"(run select_training_cols first)")
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+            target_feature = DEFAULT_TARGET_FEATURE
+            is_classification = target_feature in CLASSIFICATION_PROBLEM
+            if not (is_classification or target_feature in REGRESSION_PROBLEM):
+                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+            problem_type = "classification" if is_classification else "regression"
+
+            df = pd.read_parquet(files[0])
+            if target_feature not in df.columns:
+                error_msg = f"Target feature '{target_feature}' not found in dataset"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+            rows_in_file = len(df)
+            df = df[df[target_feature].notna()].reset_index(drop=True)
+            if df.empty:
+                error_msg = f"Every value of '{target_feature}' is missing"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+            service = {HOLDOUT_YEAR_COLUMN, GROUP_KEY_COLUMN, MONTH_KEY_COLUMN}
+            feature_columns = [c for c in df.columns if c != target_feature and c not in service]
+            readable, meta = recover_readable_variables(df[feature_columns])
+            names = variable_names(meta)
+            if not names:
+                error_msg = "No numeric feature with any variation to describe"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+            y = df[target_feature].astype(float).to_numpy()
+            years = df[HOLDOUT_YEAR_COLUMN] if HOLDOUT_YEAR_COLUMN in df.columns else None
+            hold_year = int(years.max()) if (HOLDOUT_LAST_YEAR and years is not None and years.nunique() > 1) else None
+            hold_mask = (years == hold_year).to_numpy() if hold_year is not None else np.zeros(len(df), dtype=bool)
+            dev_mask = ~hold_mask
+            print(f"    {label}: {len(df):,} rows ({rows_in_file - len(df):,} without a target dropped), "
+                  f"{len(names)} variables, hold-out year: {hold_year if hold_year is not None else 'none'}")
+
+            codes = bin_codes(readable, meta, EXPLORATION_N_BINS, EXPLORATION_WIND_SECTORS)
+            assoc = association_table(readable, meta, codes, y)
+            assoc_by_year = association_by_year(codes, y, years) if (years is not None and years.nunique() > 1) else None
+            drift = drift_table(readable, meta, hold_mask) if hold_year is not None else None
+            numeric_features = df[feature_columns].select_dtypes("number")
+            corr_ordered, _ = spearman_matrix(numeric_features)
+            # The clusters, and the list suggested from them, look at the development years only.
+            clustering = spearman_clusters(numeric_features[dev_mask], protected_columns(feature_groups(numeric_features.columns)),
+                                           SPEARMAN_CLUSTER_ABS_CORR)
+
+            # --- tables ---
+            data_summary(df[feature_columns + [target_feature]]).to_csv(os.path.join(output_dir, "data_summary.csv"), index=False)
+            assoc.to_csv(os.path.join(output_dir, "association_with_target.csv"), index=False)
+            if assoc_by_year is not None:
+                assoc_by_year.to_csv(os.path.join(output_dir, "association_by_year.csv"), index_label="variable")
+            if drift is not None:
+                drift.to_csv(os.path.join(output_dir, "drift_holdout.csv"), index=False)
+            corr_ordered.to_csv(os.path.join(output_dir, "spearman_correlation_matrix.csv"))
+            clustering["clusters"].to_csv(os.path.join(output_dir, "spearman_clusters.csv"), index=False)
+            suggested_path = os.path.join(output_dir, "suggested_features.txt")
+            with open(suggested_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write("# Suggested non-redundant features from stage 701 (Spearman clusters, development years).\n")
+                f.write(f"# One column per cluster of continuous columns with |rho| >= {SPEARMAN_CLUSTER_ABS_CORR};\n")
+                f.write("# sin/cos pairs and one-hot families are kept whole. Pass it with --columns-file.\n")
+                f.write(f"{target_feature}\n")
+                for col in clustering["suggested"]:
+                    f.write(f"{col}\n")
+
+            # --- charts ---
+            charts_written, charts_skipped = [], {}
+
+            def emit(stem, figure, why):
+                if figure is None:
+                    charts_skipped[stem] = why
+                    return
+                self._save_figure_png_and_pdf(figure, os.path.join(output_dir, f"{stem}.png"),
+                                              os.path.join(output_dir, f"{stem}.pdf"))
+                charts_written.append(stem)
+
+            ylabel = target_feature if is_classification else "delay (minutes)"
+            emit("01_target_distribution", xplots.plot_target_distribution(
+                y[dev_mask], y[hold_mask], is_classification, DELAY_THRESHOLD_MINUTES, ylabel), "no data")
+            if MONTH_KEY_COLUMN in df.columns:
+                emit("02_target_over_time", xplots.plot_target_over_time(
+                    monthly_series(df[MONTH_KEY_COLUMN], y, is_classification, DELAY_THRESHOLD_MINUTES),
+                    is_classification, DELAY_THRESHOLD_MINUTES, hold_year, ylabel), "fewer than 3 months")
+            else:
+                charts_skipped["02_target_over_time"] = f"no {MONTH_KEY_COLUMN} column"
+
+            thr = DELAY_THRESHOLD_MINUTES
+            if "hour" in names:
+                prof = profile_by(codes["hour"], y, is_classification, thr)
+                emit("03_delay_by_hour", xplots.plot_profile_line(
+                    prof, [f"{int(k):02d}" for k in prof["key"]], "hour of day (scheduled arrival)", "Delay by hour of day",
+                    "How to read: top = how often trains scheduled in that hour are late (line, with a 95% band) over how many trains "
+                    "there are (grey bars). Bottom = how big the delays are: median, 75th and 90th percentile in minutes.",
+                    is_classification, ylabel, thr), "no hour variable")
+            else:
+                charts_skipped["03_delay_by_hour"] = "no hour variable"
+            if "hour" in names and "weekday" in names:
+                cell = pd.DataFrame({"d": codes["weekday"], "h": codes["hour"], "y": y}).dropna()
+                cell["hit"] = cell["y"] if is_classification else (cell["y"] > thr).astype(float)
+                agg = cell.groupby(["d", "h"])["hit"]
+                share = agg.mean().unstack("h").reindex(index=range(1, 8), columns=range(24))
+                counts = agg.size().unstack("h").reindex(index=range(1, 8), columns=range(24)).fillna(0)
+                emit("04_delay_by_weekday_and_hour", xplots.plot_weekday_hour_heatmap(
+                    share, counts, EXPLORATION_MIN_CELL_COUNT, thr, is_classification), "no hour/weekday")
+            else:
+                charts_skipped["04_delay_by_weekday_and_hour"] = "no hour/weekday variable"
+            if "month" in names:
+                prof = profile_by(codes["month"], y, is_classification, thr)
+                emit("05_delay_by_month", xplots.plot_profile_line(
+                    prof, [MONTH_NAMES[int(k) - 1] for k in prof["key"]], "calendar month", "Delay by month (seasonality)",
+                    "How to read: top = how often trains are late in each calendar month (line, with a 95% band) over the number of "
+                    "trains (grey bars). Bottom = how big the delays are: median, 75th and 90th percentile in minutes.",
+                    is_classification, ylabel, thr), "no month variable")
+            else:
+                charts_skipped["05_delay_by_month"] = "no month variable"
+            if WIND_COLUMN in names:
+                prof = profile_by(codes[WIND_COLUMN], y, is_classification, thr)
+                calm_row = prof[prof["key"] < 0]
+                calm = {"n": float(calm_row["n"].iloc[0]), "share": float(calm_row["share"].iloc[0])} if len(calm_row) else None
+                emit("06_delay_by_wind_direction", xplots.plot_wind_polar(
+                    prof[prof["key"] >= 0], wind_sector_labels(EXPLORATION_WIND_SECTORS), calm, thr, is_classification),
+                     "no sectors")
+            else:
+                charts_skipped["06_delay_by_wind_direction"] = "no wind direction variable"
+
+            continuous = [n for n in names if meta[n]["kind"] == "continuous"]
+            rho = assoc.set_index("variable")["spearman_rho"]
+            panel_names = sorted(continuous, key=lambda n: -abs(rho.get(n, 0) if pd.notna(rho.get(n, np.nan)) else 0))[:EXPLORATION_MAX_PANELS]
+            panels = []
+            for n in panel_names:
+                prof = profile_by(codes[n], y, is_classification, thr)
+                x_mid = readable[n].groupby(codes[n]).median()
+                prof["x"] = prof["key"].map(x_mid)
+                panels.append({"name": n, "x": prof["x"].to_numpy(), "share": prof["share"].to_numpy(),
+                               "low": prof["share_low"].to_numpy(), "high": prof["share_high"].to_numpy(),
+                               "rho": float(rho.get(n, np.nan))})
+            emit("07_delay_vs_weather", xplots.plot_binned_panels(panels, thr, is_classification), "no continuous variable")
+
+            items = []
+            for n in continuous[:EXPLORATION_MAX_PANELS]:
+                col = readable[n]
+                notes = []
+                if (col == -1).mean() >= 0.01:
+                    notes.append(f"-1: {(col == -1).mean():.0%}")
+                if (col == 0).mean() >= 0.30:
+                    notes.append(f"0: {(col == 0).mean():.0%}")
+                items.append({"name": n, "dev": col[dev_mask].to_numpy(), "hold": col[hold_mask].to_numpy(), "notes": notes})
+            emit("08_feature_distributions", xplots.plot_distribution_panels(items), "no continuous variable")
+            emit("09_spearman_heatmap", xplots.plot_spearman_heatmap(corr_ordered, EXPLORATION_ANNOTATE_MAX), "fewer than 2 variables")
+            emit("10_spearman_dendrogram", xplots.plot_dendrogram(clustering, SPEARMAN_CLUSTER_ABS_CORR),
+                 "fewer than 2 continuous variables")
+            emit("11_association_with_target", xplots.plot_association(assoc, ylabel), "no association could be computed")
+            emit("12_association_by_year", xplots.plot_association_by_year(assoc_by_year, hold_year), "fewer than 2 years")
+            emit("13_drift_holdout_vs_development", xplots.plot_drift(drift), "no hold-out year")
+
+            summary = {
+                "source_file": os.path.basename(files[0]), "target_feature": target_feature, "problem_type": problem_type,
+                "model_fitted": False, "rows_in_file": int(rows_in_file), "rows_used": int(len(df)),
+                "rows_dropped_missing_target": int(rows_in_file - len(df)),
+                "years": sorted(int(v) for v in years.unique()) if years is not None else [],
+                "hold_out_year": hold_year, "n_variables": len(names),
+                "variables": {n: meta[n]["kind"] for n in names},
+                "recovered_from_sin_cos": {n: meta[n]["sources"] for n in names if meta[n]["kind"] == "circular"},
+                "constant_columns": meta["__constant__"],
+                "charts_written": charts_written, "charts_skipped": charts_skipped,
+                "top_association_with_target": [
+                    {"variable": r.variable, "eta2": float(r.eta2)} for r in assoc.dropna(subset=["eta2"]).head(5).itertuples()],
+                "top_drift": [{"variable": r.variable, "ks": float(r.ks)} for r in drift.head(5).itertuples()] if drift is not None else [],
+                "spearman_clusters_with_several_members": (
+                    clustering["clusters"].query("cluster_size > 1").groupby("cluster")["feature"].apply(list).tolist()
+                    if len(clustering["clusters"]) else []),
+                "suggested_feature_count": len(clustering["suggested"]),
+                "settings": {"n_bins": EXPLORATION_N_BINS, "wind_sectors": EXPLORATION_WIND_SECTORS,
+                             "spearman_cluster_abs_corr": SPEARMAN_CLUSTER_ABS_CORR,
+                             "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES},
+            }
+            summary_path = os.path.join(output_dir, "summary.json")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2, default=float)
+
+            print(f"    {label}: {len(charts_written)} charts written, {len(charts_skipped)} skipped")
+            return {
+                "success": True,
+                "output_directory": output_dir,
+                "n_rows": int(len(df)),
+                "n_variables": len(names),
+                "n_charts": len(charts_written),
+                "charts": charts_written,
+                "charts_skipped": charts_skipped,
+                "target_feature": target_feature,
+                "problem_type": problem_type,
+                "hold_out_year": hold_year,
+                "suggested_feature_count": len(clustering["suggested"]),
+                "suggested_features_path": suggested_path,
+                "summary_path": summary_path,
+            }
+
+        except Exception as e:
+            error_msg = f"explore_training_data failed: {str(e)}"
+            print(f"    {label}: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": error_msg}
+
+    def model_feature_importance_analysis(self, data_dir=None):
+        """
+        Diagnostic-only stage 702 (off by default): which feature groups a MODEL relies on.
+
+        Fits a plain XGBoost on the train split (defaults plus subsampling, no search; the
+        tuned model does not exist yet at this point of the run) and writes, to
+        MODEL_FEATURE_IMPORTANCE_OUTPUT_FOLDER:
+          * grouped permutation importance on the test and hold-out sets (a sin/cos pair,
+            the weather-scenario one-hots and the wawa groups are shuffled together),
+          * a drop-group ablation (refit without each group and each named set), with a
+            noise floor from refitting the full model with several seeds.
+        The model-free description of the data (distributions, Spearman clusters, drift)
+        is stage 701, explore_training_data. Nothing is dropped or modified here.
+        """
+        label = "model_feature_importance_analysis"
+        try:
+            print(f"    {label}: Starting model-based feature importance analysis...")
+            output_dir = os.path.join(self.project_root, MODEL_FEATURE_IMPORTANCE_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            if data_dir is None:
+                data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+
+            split_files = {}
+            for split in ("train", "test"):
+                files = glob.glob(os.path.join(data_dir, f"merged_data_*_{split}.parquet"))
+                if len(files) != 1:
+                    error_msg = f"Expected exactly one {split} file in {data_dir}. Found {len(files)} {split} files"
+                    print(f"    {label}: {error_msg}")
+                    return {"success": False, "error": error_msg}
+                split_files[split] = files[0]
+
+            target_feature = DEFAULT_TARGET_FEATURE
+            is_classification = target_feature in CLASSIFICATION_PROBLEM
+            if not (is_classification or target_feature in REGRESSION_PROBLEM):
+                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+            problem_type = "classification" if is_classification else "regression"
+
+            train_df = pd.read_parquet(split_files["train"])
+            test_df = pd.read_parquet(split_files["test"])
+            if target_feature not in train_df.columns:
+                error_msg = f"Target feature '{target_feature}' not found in dataset"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+            feature_columns = [col for col in train_df.columns if col != target_feature]
+            if not feature_columns:
+                error_msg = "No feature columns besides the target"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+            X_train, y_train = train_df[feature_columns], train_df[target_feature]
+            evals = {"test": (test_df[feature_columns], test_df[target_feature])}
+            X_holdout, y_holdout = self._load_holdout_set(data_dir, feature_columns, target_feature, label)
+            if X_holdout is not None:
+                evals["holdout"] = (X_holdout, y_holdout)
+            primary = "holdout" if "holdout" in evals else "test"
+            print(f"    {label}: {problem_type} target '{target_feature}', {len(feature_columns)} features, "
+                  f"train {len(X_train):,} rows, scored on {sorted(evals)} (charts use '{primary}')")
+
+            # Same fit as the XGBoost trainer: minutes, or log1p(y + shift) when asked.
+            metric = SCORE_METRIC if is_classification else REGRESSION_SCORE_METRIC
+            y_shift, y_train_fit = None, y_train.to_numpy()
+            if not is_classification and REGRESSION_LOG_TARGET:
+                y_shift = max(0.0, -float(y_train.min())) + 1.0
+                y_train_fit = np.log1p(y_train.to_numpy() + y_shift)
+            scale_pos_weight = neg_pos_ratio(y_train) if is_classification else None
+
+            def fit_fn(X, y_fit, seed):
+                return fit_xgboost(X, y_fit, seed, is_classification=is_classification,
+                                   objective=REGRESSION_OBJECTIVE, n_jobs=SEARCH_N_JOBS,
+                                   params=FEATURE_ANALYSIS_XGB_PARAMS, scale_pos_weight=scale_pos_weight)
+
+            score_fn = make_score_fn(is_classification, metric, y_shift)
+            groups = feature_groups(feature_columns)
+            multi = {name: cols for name, cols in groups.items() if len(cols) > 1}
+            print(f"    {label}: {len(groups)} groups ({len(multi)} multi-column: {sorted(multi)}); metric '{metric}'")
+
+            # --- 1) grouped permutation importance ---
+            print(f"    {label}: Grouped permutation importance ({PERMUTATION_REPEATS} repeats)...")
+            base_model = fit_fn(X_train, y_train_fit, RANDOM_STATE)
+            perm_parts = []
+            for split, (X_eval, y_eval) in evals.items():
+                part = grouped_permutation_importance(
+                    base_model, X_eval, y_eval, groups, score_fn, PERMUTATION_REPEATS,
+                    RANDOM_STATE, NOISE_FLOOR_FACTOR)
+                part.insert(0, "split", split)
+                perm_parts.append(part)
+            perm_df = pd.concat(perm_parts, ignore_index=True)
+            perm_csv = os.path.join(output_dir, "permutation_importance.csv")
+            perm_df.to_csv(perm_csv, index=False)
+
+            # --- 2) drop-group ablation ---
+            print(f"    {label}: Drop-group ablation ({len(groups)} groups + named sets, "
+                  f"{ABLATION_NOISE_SEEDS} seeds for the noise floor)...")
+            ablation_df, baseline, noise = drop_group_ablation(
+                fit_fn, X_train, y_train_fit, evals, groups, ABLATION_EXTRA_SETS, score_fn,
+                ABLATION_NOISE_SEEDS, RANDOM_STATE, NOISE_FLOOR_FACTOR)
+            ablation_csv = os.path.join(output_dir, "ablation.csv")
+            ablation_df.to_csv(ablation_csv, index=False)
+
+            # --- charts ---
+            def bar_chart(names, values, errors, grey, title, xlabel, png, pdf, band=None):
+                fig, ax = plt.subplots(figsize=(10, max(4, len(names) * 0.32)))
+                y_pos = np.arange(len(names))
+                colors = ["lightgrey" if g else "tab:blue" for g in grey]
+                ax.barh(y_pos, values, xerr=errors, color=colors, ecolor="black", capsize=2)
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(names, fontsize=8)
+                ax.invert_yaxis()
+                ax.axvline(0, color="black", linewidth=0.8)
+                if band is not None and not np.isnan(band):
+                    ax.axvspan(-band, band, color="orange", alpha=0.2, label="noise floor")
+                    ax.legend(loc="lower right", fontsize=8)
+                ax.set_xlabel(xlabel)
+                ax.set_title(title)
+                fig.tight_layout()
+                self._save_figure_png_and_pdf(fig, png, pdf)
+
+            unit = "minutes" if (not is_classification and metric in ("mae", "rmse")) else "score"
+            top = perm_df[perm_df["split"] == primary].head(25)
+            perm_png = os.path.join(output_dir, "permutation_importance_holdout.png")
+            perm_pdf = os.path.join(output_dir, "permutation_importance_holdout.pdf")
+            bar_chart(top["group"], top["importance_mean"], top["importance_std"], top["within_noise"],
+                      f"Grouped permutation importance on the {primary} set ({metric}; grey = within noise)",
+                      f"Score drop when the group is shuffled ({unit}; higher = the model uses it)",
+                      perm_png, perm_pdf)
+            abl = ablation_df.sort_values(f"{primary}_change", ascending=False).head(25)
+            abl_png = os.path.join(output_dir, "ablation_holdout.png")
+            abl_pdf = os.path.join(output_dir, "ablation_holdout.pdf")
+            bar_chart(abl["dropped"], abl[f"{primary}_change"], None, abl[f"{primary}_within_noise"],
+                      f"Drop-group ablation on the {primary} set ({metric}; grey = within noise)",
+                      f"Score lost when the group is removed ({unit}; positive = the group helps)",
+                      abl_png, abl_pdf, band=NOISE_FLOOR_FACTOR * noise[primary])
+
+            # --- summary ---
+            ranked = perm_df[perm_df["split"] == primary]
+            summary = {
+                "target_feature": target_feature, "problem_type": problem_type, "metric": metric,
+                "objective": None if is_classification else REGRESSION_OBJECTIVE,
+                "log_target": bool(not is_classification and REGRESSION_LOG_TARGET),
+                "model": "plain XGBoost (defaults + " + json.dumps(FEATURE_ANALYSIS_XGB_PARAMS) + "), no search",
+                "n_features": len(feature_columns), "n_train_rows": int(len(X_train)),
+                "splits_scored": sorted(evals), "primary_split": primary,
+                "permutation_repeats": PERMUTATION_REPEATS, "noise_seeds": ABLATION_NOISE_SEEDS,
+                "noise_floor_factor": NOISE_FLOOR_FACTOR, "baseline_score": baseline, "noise_std": noise,
+                "groups": groups,
+                "top_permutation_groups": [
+                    {"group": r.group, "importance": float(r.importance_mean), "within_noise": bool(r.within_noise)}
+                    for r in ranked.head(5).itertuples()],
+            }
+            summary_path = os.path.join(output_dir, "summary.json")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                json.dump(summary, f, indent=2, default=float)
+
+            print(f"    {label}: Analysis completed successfully!")
+            return {
+                "success": True,
+                "output_directory": output_dir,
+                "num_features": len(feature_columns),
+                "num_groups": len(groups),
+                "target_feature": target_feature,
+                "problem_type": problem_type,
+                "primary_split": primary,
+                "top_group": (ranked.iloc[0]["group"], float(ranked.iloc[0]["importance_mean"])) if len(ranked) else None,
+                "summary_path": summary_path,
+                "permutation_csv": perm_csv,
+                "ablation_csv": ablation_csv,
+                "permutation_png_path": perm_png,
+                "ablation_png_path": abl_png,
+            }
+
+        except Exception as e:
+            error_msg = f"model_feature_importance_analysis failed: {str(e)}"
+            print(f"    {label}: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": error_msg}
 
     def _load_holdout_set(self, scaled_data_dir, feature_columns, target_feature, method_label):
         """
