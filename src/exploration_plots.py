@@ -263,14 +263,18 @@ def plot_spearman_heatmap(corr, annotate_max):
         return None
     side = max(7.0, 0.42 * n + 2)
     fig, ax = plt.subplots(figsize=(side, side * 0.9))
-    im = ax.imshow(corr.to_numpy(), cmap="coolwarm", vmin=-1, vmax=1)
+    # the matrix is symmetric: show only the lower triangle and the diagonal
+    lower = np.ma.masked_array(corr.to_numpy(), mask=np.triu(np.ones((n, n), dtype=bool), k=1))
+    im = ax.imshow(lower, cmap="coolwarm", vmin=-1, vmax=1)
+    for side_spine in ("top", "right"):
+        ax.spines[side_spine].set_visible(False)
     ax.set_xticks(range(n))
     ax.set_xticklabels(corr.columns, rotation=90, fontsize=max(5, 9 - n // 12))
     ax.set_yticks(range(n))
     ax.set_yticklabels(corr.index, fontsize=max(5, 9 - n // 12))
     if n <= annotate_max:
         for i in range(n):
-            for j in range(n):
+            for j in range(i + 1):
                 v = corr.iat[i, j]
                 if not np.isnan(v):
                     ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=6,
@@ -278,7 +282,7 @@ def plot_spearman_heatmap(corr, annotate_max):
     fig.colorbar(im, ax=ax, label="Spearman rho", fraction=0.046)
     ax.set_title("Which variables move together (rank correlation)")
     return _finish(fig, "How to read: red = rise together, blue = move oppositely, white = unrelated. Variables are ordered so "
-                        "that similar ones sit next to each other. Sin/cos columns of one pair are unrelated by construction.")
+                        "that similar ones sit next to each other; only the lower triangle is drawn because the matrix is symmetric. Sin/cos columns of one pair are unrelated by construction.")
 
 
 def plot_dendrogram(clustering, threshold):
