@@ -31,6 +31,7 @@ TRAINING_STATE_MACHINE = {
     "shap_correlation_analysis": True,
     "explore_training_data": True,
     "model_feature_importance_analysis": False,  # model-based and slower; run it on demand
+    "train_ridge_baseline": True,    # numeric targets only; skipped for a classification target
     "train_xgboost_with_randomized_search_cv": True,
     "train_lightgbm_with_randomized_search_cv": True,
     "train_random_forest_with_randomized_search_cv": True,
@@ -152,6 +153,12 @@ REGRESSION_FILTER_TRAIN_ONLY = True
 #            report the metrics on the running trains only.
 REGRESSION_CANCELLED_POLICY = 'drop'
 
+
+# Ridge-regression baseline for a numeric target, run before XGBoost: the simple linear model the
+# tree models are compared with (MAE, and mae_skill against always predicting the train median).
+# Ridge minimises squared error, so it predicts a conditional mean and its MAE can trail the median.
+RIDGE_BASELINE_OUTPUT_FOLDER = "data/output/999-ridge_baseline"
+RIDGE_BASELINE_ALPHAS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]  # regularisation strength, log-spaced
 
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_search"
 LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1001-lightgbm_randomized_search"

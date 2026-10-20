@@ -13,6 +13,7 @@ import sys
 
 # Short model name -> trainer stage key in TRAINING_STATE_MACHINE.
 MODEL_STAGES = {
+    "ridge_baseline": "train_ridge_baseline",
     "xgboost": "train_xgboost_with_randomized_search_cv",
     "lightgbm": "train_lightgbm_with_randomized_search_cv",
     "random_forest": "train_random_forest_with_randomized_search_cv",

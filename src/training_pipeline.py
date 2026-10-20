@@ -30,10 +30,11 @@ if _RESOURCE_TRACKER_FILTER not in os.environ.get("PYTHONWARNINGS", ""):
     os.environ["PYTHONWARNINGS"] = ",".join(
         filter(None, [os.environ.get("PYTHONWARNINGS", ""), _RESOURCE_TRACKER_FILTER])
     )
-from sklearn.model_selection import KFold, train_test_split
-from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import GridSearchCV, KFold, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import RobustScaler, StandardScaler
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.linear_model import LogisticRegression, ElasticNet, BayesianRidge
+from sklearn.linear_model import LogisticRegression, ElasticNet, BayesianRidge, Ridge
 from sklearn.naive_bayes import GaussianNB
 
 import xgboost as xgb
@@ -106,6 +107,8 @@ from config.const_training import (
     NAIVE_BAYES_PARAM_DISTRIBUTIONS,
     BAYESIAN_RIDGE_PARAM_DISTRIBUTIONS,
     XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
+    RIDGE_BASELINE_OUTPUT_FOLDER,
+    RIDGE_BASELINE_ALPHAS,
     REGULARIZED_REGRESSION_OUTPUT_FOLDER,
     MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER,
     SHAP_CORRELATION_ANALYSIS_OUTPUT_FOLDER,
@@ -576,6 +579,55 @@ class TrainingPipeline:
                 return result
         else:
             print(f"    ⊝ train_fcll_net (disabled)")
+
+        if state_machine.get("train_ridge_baseline", False):
+            try:
+                print(f"    → train_ridge_baseline")
+                _use_scaled = state_machine.get("scale_weather_features", False)
+                _use_filtered = (
+                    state_machine.get("filter_delay_outliers", False)
+                    and not state_machine.get("select_training_cols", False)
+                )
+                _data_folder = (
+                    MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER
+                    if _use_scaled
+                    else MERGED_BALANCED_OUTPUT_FOLDER
+                    if state_machine.get("balance_classes", False)
+                    else SPLIT_DATASET_OUTPUT_FOLDER
+                    if state_machine.get("split_dataset", False)
+                    else MERGED_OUTLIER_FILTERED_OUTPUT_FOLDER
+                    if _use_filtered
+                    else MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER
+                )
+                ridge_result = self.train_ridge_baseline(
+                    data_dir=os.path.join(self.project_root, _data_folder)
+                )
+
+                if ridge_result and ridge_result.get("success", False):
+                    if ridge_result.get("skipped", False):
+                        print(f"      ⊝ Skipped: the ridge baseline needs a numeric target "
+                              f"('{ridge_result.get('target_feature', 'N/A')}' is a classification target)")
+                    else:
+                        result["steps_executed"].append("train_ridge_baseline")
+                        result["file_info"]["ridge_baseline_problem_type"] = ridge_result.get("problem_type", "unknown")
+                        print(f"      ✓ Successfully fitted the ridge baseline")
+                        print(f"      ✓ Target feature: {ridge_result.get('target_feature', 'N/A')}")
+                        print(f"      ✓ Test MAE: {ridge_result.get('test_mae', 0):.4f}  RMSE: {ridge_result.get('test_rmse', 0):.4f}  R²: {ridge_result.get('test_r2', 0):.4f}")
+                        print(f"      ✓ MAE skill against the train median: {ridge_result.get('mae_skill', 0):.3f}")
+                        print(f"      ✓ Results saved to: {ridge_result.get('output_directory', 'N/A')}")
+                        result["success"] = True
+                else:
+                    error_msg = (ridge_result or {}).get("error", "train_ridge_baseline returned unsuccessful result")
+                    result["errors"].append(error_msg)
+                    print(f"      ✗ Failed - {error_msg}")
+                    return result
+
+            except Exception as e:
+                result["errors"].append(f"train_ridge_baseline failed: {str(e)}")
+                print(f"      ✗ Failed - {str(e)}")
+                return result
+        else:
+            print(f"    ⊝ train_ridge_baseline (disabled)")
 
         if state_machine.get("train_xgboost_with_randomized_search_cv", False):
             try:
@@ -3734,6 +3786,229 @@ class TrainingPipeline:
         fig.tight_layout()
         fig.savefig(path, dpi=200, bbox_inches='tight')
         plt.close(fig)
+
+    def train_ridge_baseline(self, data_dir=None):
+        """
+        Stage 999, the baseline the tree models are compared with: a ridge regression on the
+        same train / test / hold-out files as XGBoost, numeric targets only.
+
+        Ridge minimises squared error, so it predicts a conditional mean and its MAE can trail
+        the "always the train median" reference on a right-skewed delay; `mae_skill` (the same
+        quantity XGBoost reports, 1 - MAE / MAE of the median) says by how much. The scaler sits
+        inside the pipeline because stage 505 scales only the weather columns. Tuning is a small
+        grid over the alpha, day-grouped CV, scored in minutes. A classification target is
+        skipped with success, not failed: a ridge regression has no label to predict there.
+        """
+        label = "train_ridge_baseline"
+        try:
+            target_feature = DEFAULT_TARGET_FEATURE
+            if target_feature not in REGRESSION_PROBLEM:
+                if target_feature in CLASSIFICATION_PROBLEM:
+                    print(f"    {label}: ⊝ the ridge baseline needs a numeric target; "
+                          f"'{target_feature}' is a classification target")
+                    return {"success": True, "skipped": True, "problem_type": "classification",
+                            "target_feature": target_feature}
+                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+            print(f"    {label}: Starting the ridge baseline for target '{target_feature}'...")
+            output_dir = os.path.join(self.project_root, RIDGE_BASELINE_OUTPUT_FOLDER)
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"    {label}: Output directory: {output_dir}")
+
+            if data_dir is None:
+                data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+            scaled_data_dir = data_dir
+
+            train_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_train.parquet"))
+            test_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_test.parquet"))
+            if len(train_files) != 1 or len(test_files) != 1:
+                error_msg = (f"Expected exactly one train and one test file in {scaled_data_dir}. "
+                             f"Found {len(train_files)} train files and {len(test_files)} test files")
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+            train_file, test_file = train_files[0], test_files[0]
+
+            identifier_match = re.search(r'merged_data_(.+?)_train\.parquet', os.path.basename(train_file))
+            if not identifier_match:
+                error_msg = f"Could not extract identifier from {os.path.basename(train_file)}"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+            file_identifier = identifier_match.group(1)
+
+            train_df = pd.read_parquet(train_file)
+            test_df = pd.read_parquet(test_file)
+            if target_feature not in train_df.columns:
+                error_msg = f"Target feature '{target_feature}' not found in dataset"
+                print(f"    {label}: {error_msg}")
+                return {"success": False, "error": error_msg}
+
+            feature_columns = [col for col in train_df.columns if col != target_feature]
+            X_train, y_train = train_df[feature_columns], train_df[target_feature]
+            X_test, y_test = test_df[feature_columns], test_df[target_feature]
+            X_holdout, y_holdout = self._load_holdout_set(scaled_data_dir, feature_columns, target_feature, label)
+
+            # Rows whose delay was filled in (REGRESSION_CANCELLED_POLICY = 'cap'); None otherwise.
+            test_filled = load_filled_flags(test_file, len(test_df))
+            holdout_filled = None
+            if X_holdout is not None:
+                holdout_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_holdout.parquet"))
+                if len(holdout_files) == 1:
+                    holdout_filled = load_filled_flags(holdout_files[0], len(X_holdout))
+
+            print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
+            print(f"      Features: {len(feature_columns)}")
+
+            groups = load_train_groups(train_file, len(train_df))
+            if groups is not None:
+                print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+            cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
+
+            search = GridSearchCV(
+                estimator=Pipeline([("scale", StandardScaler()), ("ridge", Ridge())]),
+                param_grid={"ridge__alpha": list(RIDGE_BASELINE_ALPHAS)},
+                scoring=make_minutes_scorer(None, REGRESSION_SCORE_METRIC),
+                cv=cv_splitter,
+                n_jobs=SEARCH_N_JOBS,
+                verbose=0,
+            )
+            print(f"      Tuning ridge alpha over {list(RIDGE_BASELINE_ALPHAS)} ({REGRESSION_SCORE_METRIC} in minutes)")
+            search.fit(X_train, y_train, groups=groups)
+            best_model = search.best_estimator_
+            best_alpha = float(search.best_params_["ridge__alpha"])
+            cv_score = float(search.best_score_)
+            alpha_scores = [
+                {"alpha": float(p["ridge__alpha"]), "cv_score": float(s)}
+                for p, s in zip(search.cv_results_["params"], search.cv_results_["mean_test_score"])
+            ]
+
+            # Test split, scored as XGBoost scores it
+            y_pred = best_model.predict(X_test)
+            test_metrics = self._score_predictions(y_test, y_pred, False)
+            baseline = mae_baseline(y_train, y_test, test_metrics['mae'])
+            final_running = None
+            if test_filled is not None and test_filled.any():
+                keep = ~test_filled
+                y_run, p_run = np.asarray(y_test)[keep], np.asarray(y_pred)[keep]
+                final_running = self._score_predictions(y_run, p_run, False)
+                final_running.update(mae_baseline(y_train, y_run, final_running['mae']))
+                final_running['n_rows'] = int(keep.sum())
+                final_running['n_filled_excluded'] = int(test_filled.sum())
+
+            results = {
+                "file_identifier": file_identifier,
+                "problem_type": "regression",
+                "target_feature": target_feature,
+                "model": "ridge",
+                "dataset_info": {
+                    "train_samples": len(X_train),
+                    "test_samples": len(X_test),
+                    "features_count": len(feature_columns),
+                    "train_file": train_file,
+                    "test_file": test_file,
+                },
+                "best_alpha": best_alpha,
+                "tuning_metric": REGRESSION_SCORE_METRIC,
+                "cv_score": cv_score,
+                "alpha_scores": alpha_scores,
+                "final_metrics": {
+                    "test_rmse": float(test_metrics['rmse']),
+                    "test_mae": float(test_metrics['mae']),
+                    "test_wmape": float(test_metrics['wmape']),
+                    "test_r2": float(test_metrics['r2']),
+                    "baseline_mae_train_median": baseline["baseline_mae"],
+                    "mae_skill": baseline["mae_skill"],
+                    "residual_quantiles": residual_quantiles(y_test, y_pred),
+                    "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
+                    "test_bin_precision": float(test_metrics['bin_precision']),
+                    "test_bin_recall": float(test_metrics['bin_recall']),
+                    "test_bin_f1": float(test_metrics['bin_f1']),
+                    "test_bin_accuracy": float(test_metrics['bin_accuracy']),
+                    "test_bin_confusion_matrix": test_metrics['bin_confusion_matrix'],
+                },
+            }
+            if final_running is not None:
+                results["final_metrics_running_trains"] = final_running
+
+            self._save_regression_diagnostics(
+                y_test, y_pred,
+                f'Ridge baseline, test split | Dataset: {file_identifier} | alpha {best_alpha:g}',
+                os.path.join(output_dir, f'ridge_baseline_residuals_{file_identifier}.png'))
+
+            # Out-of-time hold-out, never trained or tuned on
+            if X_holdout is not None:
+                results["holdout_metrics"] = self._evaluate_holdout(
+                    best_model, X_holdout, y_holdout, False, None, label)
+                results["dataset_info"]["holdout_samples"] = len(X_holdout)
+                h_pred = best_model.predict(X_holdout)
+                results["holdout_metrics"].update(
+                    mae_baseline(y_train, y_holdout, results["holdout_metrics"]["mae"]))
+                results["holdout_metrics"]["residual_quantiles"] = residual_quantiles(y_holdout, h_pred)
+                if holdout_filled is not None and holdout_filled.any():
+                    keep = ~holdout_filled
+                    y_run, p_run = np.asarray(y_holdout)[keep], np.asarray(h_pred)[keep]
+                    hold_running = self._score_predictions(y_run, p_run, False)
+                    hold_running.update(mae_baseline(y_train, y_run, hold_running['mae']))
+                    hold_running['n_rows'] = int(keep.sum())
+                    hold_running['n_filled_excluded'] = int(holdout_filled.sum())
+                    results["holdout_metrics_running_trains"] = hold_running
+                self._save_regression_diagnostics(
+                    y_holdout, h_pred,
+                    f'Ridge baseline, hold-out year | Dataset: {file_identifier} | alpha {best_alpha:g}',
+                    os.path.join(output_dir, f'ridge_baseline_residuals_holdout_{file_identifier}.png'))
+
+            # Signed coefficients in standardised units, so their sizes are comparable
+            coefficients = pd.DataFrame({
+                'feature': feature_columns,
+                'coefficient': best_model.named_steps['ridge'].coef_,
+            })
+            coefficients['importance'] = coefficients['coefficient'].abs()
+            coefficients = coefficients.sort_values('importance', ascending=False)
+            coefficients.to_csv(os.path.join(output_dir, f'ridge_baseline_coefficients_{file_identifier}.csv'), index=False)
+            results["coefficients"] = dict(zip(coefficients['feature'], coefficients['coefficient'].astype(float)))
+
+            results_file = os.path.join(output_dir, f"ridge_baseline_{file_identifier}.json")
+            with open(results_file, 'w') as f:
+                json.dump(json.loads(json.dumps(results, default=str)), f, indent=2)
+            joblib.dump(best_model, os.path.join(output_dir, f'ridge_baseline_best_model_{file_identifier}.pkl'))
+            print(f"      Results saved to: {results_file}")
+
+            print(f"      Ridge baseline summary:")
+            print(f"        Best alpha: {best_alpha:g}  CV {REGRESSION_SCORE_METRIC} score: {cv_score:.4f}")
+            print(f"        Test RMSE: {test_metrics['rmse']:.4f}  MAE: {test_metrics['mae']:.4f}  R²: {test_metrics['r2']:.4f}  WMAPE: {test_metrics['wmape']:.2f}%")
+            print(f"        Baseline MAE (always the train median): {baseline['baseline_mae']:.4f} min  MAE skill: {baseline['mae_skill']:.3f}")
+            if final_running is not None:
+                print(f"        Running trains only (n={final_running['n_rows']:,}, {final_running['n_filled_excluded']:,} filled rows excluded): "
+                      f"MAE: {final_running['mae']:.4f}  MAE skill: {final_running['mae_skill']:.3f}")
+            hm = results.get("holdout_metrics")
+            if hm:
+                print(f"      Hold-out (out-of-time, never trained/tuned on): RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  "
+                      f"R²: {hm['r2']:.4f}  MAE skill: {hm['mae_skill']:.3f}")
+            if baseline['mae_skill'] < 0:
+                print("        Note: a negative MAE skill is expected for ridge on a right-skewed delay: it fits "
+                      "the mean (squared error), the median reference minimises MAE.")
+
+            return {
+                "success": True,
+                "models_trained": 1,
+                "problem_type": "regression",
+                "target_feature": target_feature,
+                "cv_score": cv_score,
+                "test_rmse": float(test_metrics['rmse']),
+                "test_mae": float(test_metrics['mae']),
+                "test_r2": float(test_metrics['r2']),
+                "mae_skill": baseline["mae_skill"],
+                "output_directory": output_dir,
+                "results_file": results_file,
+            }
+
+        except Exception as e:
+            error_msg = f"Error in train_ridge_baseline: {str(e)}"
+            print(f"    {label}: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": error_msg}
 
     def train_xgboost_with_randomized_search_cv(self, data_dir=None):
         """
