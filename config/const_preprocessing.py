@@ -1,10 +1,3 @@
-# Value to be considered as a delay (in minutes)
-# Long-distance trains: 5 min
-# Short trains: 2-3 min
-# The single source of this threshold: trainDelayed, trainDisrupted, the balance step, the regression
-# metrics (const_training.DELAY_THRESHOLD_MINUTES) and the FCLL label all read it.
-TRAIN_DELAY_MINUTES = 5
-
 # Pipeline State Machine Configuration
 # Dictionary containing method names in execution order with enable/disable flags
 PREPROCESSING_STATE_MACHINE = {
@@ -33,6 +26,25 @@ PREPROCESSING_STATE_MACHINE = {
     "remove_duplicates": True,
     "save_training_ready_parquet": True
 }
+
+# Value to be considered as a delay (in minutes)
+# Long-distance trains: 5 min
+# Short trains: 2-3 min
+# The single source of this threshold: trainDelayed, trainDisrupted, the balance step, the regression
+# metrics (const_training.DELAY_THRESHOLD_MINUTES) and the FCLL label all read it.
+TRAIN_DELAY_MINUTES = 5
+
+# Target feature to use for prediction
+# 'trainDisrupted' = delayed by more than TRAIN_DELAY_MINUTES OR cancelled. A cancelled train has no
+# delay value, so 'trainDelayed' alone can neither include nor label it. Switch to 'trainDelayed'
+# to train on the pure delay again (cancelled trains stay in the data either way).
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes'
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset',
+# 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled', 'trainDisrupted'
+
+# Target column to use for calculating trainDelayed feature
+TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes'
+# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
 
 # Per-stage intermediate parquet files that are actually written. Every stage used
 # to write one file per month; with filter_by_target_station off a month has about
@@ -108,18 +120,6 @@ TRAINING_READY_OUTPUT_FOLDER = "data/output/101-preprocessed_training_ready"
 # (about 88% missing, in all 96 months); the worst month of any kept column is
 # 0.6% missing. The pass reads only the weather columns: about 15 s, a few MB.
 WEATHER_MISSING_THRESHOLD = 30.0
-
-# Target feature to use for prediction
-# 'trainDisrupted' = delayed by more than TRAIN_DELAY_MINUTES OR cancelled. A cancelled train has no
-# delay value, so 'trainDelayed' alone can neither include nor label it. Switch to 'trainDelayed'
-# to train on the pure delay again (cancelled trains stay in the data either way).
-DEFAULT_TARGET_FEATURE = 'trainDisrupted'
-# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset',
-# 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled', 'trainDisrupted'
-
-# Target column to use for calculating trainDelayed feature
-TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes'
-# Possible values: 'differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset'
 
 # Valid target features for selection
 VALID_TARGET_FEATURES = [
