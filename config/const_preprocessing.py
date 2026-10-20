@@ -144,6 +144,13 @@ TARGET_STATION_CODE = 'OL'  # Example: 'OL', 'HKI', 'ROI', etc.
 # preceding trains sit in the training set.
 GROUP_KEY_COLUMN = "departureDate"
 
+# Train number, carried through filter_columns into the training-ready files as a JOIN KEY.
+# It is a recurring timetable slot, not a unique id: the same number runs on most days, so
+# (TRAIN_ID_COLUMN, GROUP_KEY_COLUMN) identifies one run. It is NOT a feature: stage 502
+# drops it even if a features file lists it, and remove_duplicates ignores it so the row
+# counts do not change.
+TRAIN_ID_COLUMN = "trainNumber"
+
 # Time feature selection configuration
 # True = keep sin/cos features (drop original), False = keep original features (drop sin/cos)
 USE_SIN_COS_APPROACH = True

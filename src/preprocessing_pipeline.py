@@ -21,6 +21,7 @@ from config.const import (
 
 from config.const_preprocessing import (
     GROUP_KEY_COLUMN,
+    TRAIN_ID_COLUMN,
     FOLDER_ADD_TRAIN_DELAYED_FEATURE,
     FOLDER_NULL_OUT_OF_BOUNDS_WEATHER,
     WEATHER_BOUNDS_MAX_NULLED_SHARE,
@@ -2735,6 +2736,12 @@ class PreprocessingPipeline:
                     columns_to_keep.append(GROUP_KEY_COLUMN)
                     logger.info(f"Group key column kept: {GROUP_KEY_COLUMN}")
 
+                # Carry the train number too, as a join key (with the group key it identifies
+                # one run). Not a feature: stage 502 drops it, remove_duplicates ignores it.
+                if TRAIN_ID_COLUMN in df.columns:
+                    columns_to_keep.append(TRAIN_ID_COLUMN)
+                    logger.info(f"Train id column kept: {TRAIN_ID_COLUMN}")
+
                 # With the station filter off, rows come from every station: keep a
                 # numeric station id so they stay distinguishable. It is a feature.
                 if not self._station_filter_enabled() and STATION_ID_COLUMN in df.columns:
@@ -4063,8 +4070,11 @@ class PreprocessingPipeline:
             # Count rows before deduplication
             original_row_count = len(df)
             
-            # Remove duplicate rows
-            df_deduplicated = df.drop_duplicates()
+            # Remove duplicate rows. The train id is a join key, not part of what makes a row a
+            # duplicate: counting it would keep rows of different trains that were collapsed
+            # before it was carried, and change the row count of every month.
+            df_deduplicated = df.drop_duplicates(
+                subset=[c for c in df.columns if c != TRAIN_ID_COLUMN])
             
             # Count how many rows were removed
             removed_duplicates = original_row_count - len(df_deduplicated)

@@ -77,6 +77,7 @@ from config.const import (
 
 from config.const_preprocessing import (
     GROUP_KEY_COLUMN,
+    TRAIN_ID_COLUMN,
     VALID_TARGET_FEATURES,
     TARGET_STATION_CODE,
     LABEL_COLUMNS,
@@ -1507,6 +1508,11 @@ class TrainingPipeline:
         # Same for the monthly-file key: split_dataset imputes with it, then drops it.
         if MONTH_KEY_COLUMN in df.columns and MONTH_KEY_COLUMN not in keep:
             keep.append(MONTH_KEY_COLUMN)
+        # The train number is a join key, never a feature: the trainers use every non-target
+        # column as a feature, so a features file listing it would train on a train id.
+        if TRAIN_ID_COLUMN in keep:
+            print(f"    apply_column_selection: dropping '{TRAIN_ID_COLUMN}' (a join key, not a feature)")
+            keep = [c for c in keep if c != TRAIN_ID_COLUMN]
         # Labels: only the target may stay. The trainers use every non-target column as a
         # feature, so a second label (trainDelayed beside trainDisrupted, cancelled, ...) would
         # hand the model its own answer, whatever a feature catalogue lists. Every target-like

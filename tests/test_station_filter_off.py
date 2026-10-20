@@ -110,7 +110,7 @@ def test_filter_columns_keeps_the_station_id_when_the_filter_is_off(tmp_path):
         out = pipeline.filter_columns(dataframe=_frame(), month_id="2023_01")
     assert STATION_ID_COLUMN in out.columns
     assert "stationShortCode" not in out.columns
-    assert "trainNumber" not in out.columns
+    assert "trainNumber" in out.columns   # a join key, kept whatever the station filter says
 
 
 def test_filter_columns_drops_the_station_id_when_the_filter_is_on(tmp_path):

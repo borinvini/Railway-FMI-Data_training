@@ -169,7 +169,7 @@ def test_filter_columns_keeps_rolling_windows(mock_save, tmp_path):
         "Air temperature (24h mean)": [3.0, 4.0],
         "Snow depth (72h max)": [10.0, 15.0],
         "Precipitation amount (12h cumulative)": [0.5, 0.0],
-        # Columns that must be dropped
+        # stationShortCode must be dropped; trainNumber is kept as a join key (TRAIN_ID_COLUMN)
         "stationShortCode": ["OL", "OL"],
         "trainNumber": [123, 456],
     })
@@ -183,4 +183,4 @@ def test_filter_columns_keeps_rolling_windows(mock_save, tmp_path):
     assert "Snow depth (72h max)" in result.columns, "72h window column must be kept"
     assert "Precipitation amount (12h cumulative)" in result.columns, "12h cumulative must be kept"
     assert "stationShortCode" not in result.columns, "stationShortCode must be dropped"
-    assert "trainNumber" not in result.columns, "trainNumber must be dropped"
+    assert "trainNumber" in result.columns, "trainNumber is kept as a join key (TRAIN_ID_COLUMN)"
