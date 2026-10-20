@@ -1,3 +1,10 @@
+# Value to be considered as a delay (in minutes)
+# Long-distance trains: 5 min
+# Short trains: 2-3 min
+# The single source of this threshold: trainDelayed, trainDisrupted, the balance step, the regression
+# metrics (const_training.DELAY_THRESHOLD_MINUTES) and the FCLL label all read it.
+TRAIN_DELAY_MINUTES = 5
+
 # Pipeline State Machine Configuration
 # Dictionary containing method names in execution order with enable/disable flags
 PREPROCESSING_STATE_MACHINE = {
@@ -353,13 +360,6 @@ DROP_TRAIN_FEATURES = True
 
 # Set to True to drop trainStopping and commercialStop from training
 delay = True
-
-# Value to be considered as a delay (in minutes)
-# Long-distance trains: 5 min
-# Short trains: 2-3 min
-# The single source of this threshold: trainDelayed, trainDisrupted, the balance step, the regression
-# metrics (const_training.DELAY_THRESHOLD_MINUTES) and the FCLL label all read it.
-TRAIN_DELAY_MINUTES = 5
 
 ALL_WEATHER_FEATURES = [
     'Air temperature', 
