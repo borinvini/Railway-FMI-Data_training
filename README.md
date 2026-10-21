@@ -11,7 +11,6 @@ The code runs locally (Windows) and on the CSC Roihu supercomputer.
 ## Related repositories
 
 - [Railway-FMI-Data_fetcher](https://github.com/borinvini/Railway-FMI-Data_fetcher): fetches Digitraffic and FMI data and writes the matched train+weather parquet files this project reads.
-- [Railway-FMI-Data_viewer](https://github.com/borinvini/Railway-FMI-Data_viewer): Streamlit viewer for the fetched data.
 
 ## Data
 
