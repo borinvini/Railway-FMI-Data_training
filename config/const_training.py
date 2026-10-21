@@ -33,11 +33,11 @@ TRAINING_STATE_MACHINE = {
     "model_feature_importance_analysis": False,  # model-based and slower; run it on demand
     "train_ridge_baseline": True,    # numeric targets only; skipped for a classification target
     "train_xgboost_with_randomized_search_cv": True,
-    "train_lightgbm_with_randomized_search_cv": True,
-    "train_random_forest_with_randomized_search_cv": True,
-    "train_logistic_regression_with_randomized_search_cv": True,
-    "train_naive_bayes_with_randomized_search_cv": True,
-    "train_fcll_net": True,
+    "train_lightgbm_with_randomized_search_cv": False,
+    "train_random_forest_with_randomized_search_cv": False,
+    "train_logistic_regression_with_randomized_search_cv": False,
+    "train_naive_bayes_with_randomized_search_cv": False,
+    "train_fcll_net": False,
 }
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merge_data_files"
@@ -164,7 +164,6 @@ RIDGE_BASELINE_ALPHAS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]  # regulari
 # the tree models are compared with. Only C is tuned (one day-grouped grid search); penalty, solver
 # and class_weight='balanced' are fixed.
 LOGISTIC_BASELINE_CS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]  # inverse regularisation strength, log-spaced
-
 
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_search"
 LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1001-lightgbm_randomized_search"
