@@ -32,7 +32,7 @@ PREPROCESSING_STATE_MACHINE = {
 # Short trains: 2-3 min
 # The single source of this threshold: trainDelayed, trainDisrupted, the balance step, the regression
 # metrics (const_training.DELAY_THRESHOLD_MINUTES) and the FCLL label all read it.
-TRAIN_DELAY_MINUTES = 5
+TRAIN_DELAY_MINUTES = 0
 
 # Target feature to use for prediction
 # 'trainDisrupted' = delayed by more than TRAIN_DELAY_MINUTES OR cancelled. A cancelled train has no
