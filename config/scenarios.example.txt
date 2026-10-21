@@ -1,21 +1,28 @@
 # Feature selection per training scenario — one column name per line.
 #
-# Generated from scenarios.txt. Blank lines and # comments are ignored.
-# Names are taken verbatim, so do not quote them or add commas:
-# Air temperature (12h max) is a valid line.
+# Template for config/scenarios.txt (gitignored working copy): copy it there,
+# edit that, then run hpc/push-features.sh config/scenarios.txt to upload it
+# to Roihu. No commit is needed. Derived from scenarios_catalogue.txt.
+# Blank lines and # comments are ignored. Names are taken verbatim, so do
+# not quote them or add commas: Air temperature (12h max) is a valid line.
 #
-# Copy the block of ONE scenario into config/features.txt (gitignored),
-# then run hpc/push-features.sh to upload it to Roihu.
+# This file holds all thirteen scenarios, in catalogue order, so --scenario <n>
+# selects scenario <n>.
 #
-# trainDelayed is the target and must stay: the trainers split it out of
-# the feature matrix by name, so removing it breaks training outright.
+# Careful when editing these comments: a line starting with "# <n> -"
+# is parsed as a scenario banner, so do not write ranges that way.
+#
+# trainDisrupted is the target and must stay: the trainers split it out of
+# the feature matrix by name. trainDelayed and cancelled are dropped at stage 502.
+# trainNumber is a join key (with departureDate it identifies one run), not a feature:
+# stage 502 drops it even though it is listed here.
 
 
 # ======================================================================
-# 1 - ALL FEATURES (OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS + WEATHER SCENARIOS)
-# 129 columns (1 target + 128 features)
+# 1 - ONLY OPERACIONAL FEATURES
+# 10 columns (1 target + 9 features)
 # ======================================================================
-trainDelayed
+trainDisrupted
 trainStopping
 commercialStop
 month_sin
@@ -24,17 +31,779 @@ hour_sin
 hour_cos
 day_week_sin
 day_week_cos
-day_of_month
+trainNumber
+
+# ======================================================================
+# 2 - OPERACIONAL + INSTANT WEATHER 
+# 22 columns (1 target + 21 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
 Air temperature
 Wind speed
 Gust speed
-Wind direction
+wind_dir_sin
+wind_dir_cos
 Relative humidity
 Dew-point temperature
 Precipitation intensity
 Snow depth
 Pressure (msl)
 Horizontal visibility
+Cloud amount
+
+# ======================================================================
+# 3 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 12h
+# 48 columns (1 target + 47 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+Air temperature (12h max)
+Air temperature (12h min)
+Air temperature (12h mean)
+Wind speed (12h max)
+Wind speed (12h min)
+Wind speed (12h mean)
+Relative humidity (12h max)
+Relative humidity (12h min)
+Relative humidity (12h mean)
+Precipitation intensity (12h max)
+Precipitation intensity (12h min)
+Precipitation intensity (12h mean)
+Snow depth (12h max)
+Snow depth (12h min)
+Snow depth (12h mean)
+Pressure (msl) (12h max)
+Pressure (msl) (12h min)
+Pressure (msl) (12h mean)
+Horizontal visibility (12h max)
+Horizontal visibility (12h min)
+Horizontal visibility (12h mean)
+Cloud amount (12h max)
+Cloud amount (12h min)
+Cloud amount (12h mean)
+Precipitation amount (12h mean)
+Precipitation amount (12h cumulative)
+
+# ======================================================================
+# 4 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 24h
+# 48 columns (1 target + 47 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+Air temperature (24h max)
+Air temperature (24h min)
+Air temperature (24h mean)
+Wind speed (24h max)
+Wind speed (24h min)
+Wind speed (24h mean)
+Relative humidity (24h max)
+Relative humidity (24h min)
+Relative humidity (24h mean)
+Precipitation intensity (24h max)
+Precipitation intensity (24h min)
+Precipitation intensity (24h mean)
+Snow depth (24h max)
+Snow depth (24h min)
+Snow depth (24h mean)
+Pressure (msl) (24h max)
+Pressure (msl) (24h min)
+Pressure (msl) (24h mean)
+Horizontal visibility (24h max)
+Horizontal visibility (24h min)
+Horizontal visibility (24h mean)
+Cloud amount (24h max)
+Cloud amount (24h min)
+Cloud amount (24h mean)
+Precipitation amount (24h mean)
+Precipitation amount (24h cumulative)
+
+# ======================================================================
+# 5 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 72h
+# 48 columns (1 target + 47 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+Air temperature (72h max)
+Air temperature (72h min)
+Air temperature (72h mean)
+Wind speed (72h max)
+Wind speed (72h min)
+Wind speed (72h mean)
+Relative humidity (72h max)
+Relative humidity (72h min)
+Relative humidity (72h mean)
+Precipitation intensity (72h max)
+Precipitation intensity (72h min)
+Precipitation intensity (72h mean)
+Snow depth (72h max)
+Snow depth (72h min)
+Snow depth (72h mean)
+Pressure (msl) (72h max)
+Pressure (msl) (72h min)
+Pressure (msl) (72h mean)
+Horizontal visibility (72h max)
+Horizontal visibility (72h min)
+Horizontal visibility (72h mean)
+Cloud amount (72h max)
+Cloud amount (72h min)
+Cloud amount (72h mean)
+Precipitation amount (72h mean)
+Precipitation amount (72h cumulative)
+
+# ======================================================================
+# 6 - OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS
+# 100 columns (1 target + 99 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+Air temperature (12h max)
+Air temperature (12h min)
+Air temperature (12h mean)
+Air temperature (24h max)
+Air temperature (24h min)
+Air temperature (24h mean)
+Air temperature (72h max)
+Air temperature (72h min)
+Air temperature (72h mean)
+Wind speed (12h max)
+Wind speed (12h min)
+Wind speed (12h mean)
+Wind speed (24h max)
+Wind speed (24h min)
+Wind speed (24h mean)
+Wind speed (72h max)
+Wind speed (72h min)
+Wind speed (72h mean)
+Relative humidity (12h max)
+Relative humidity (12h min)
+Relative humidity (12h mean)
+Relative humidity (24h max)
+Relative humidity (24h min)
+Relative humidity (24h mean)
+Relative humidity (72h max)
+Relative humidity (72h min)
+Relative humidity (72h mean)
+Precipitation intensity (12h max)
+Precipitation intensity (12h min)
+Precipitation intensity (12h mean)
+Precipitation intensity (24h max)
+Precipitation intensity (24h min)
+Precipitation intensity (24h mean)
+Precipitation intensity (72h max)
+Precipitation intensity (72h min)
+Precipitation intensity (72h mean)
+Snow depth (12h max)
+Snow depth (12h min)
+Snow depth (12h mean)
+Snow depth (24h max)
+Snow depth (24h min)
+Snow depth (24h mean)
+Snow depth (72h max)
+Snow depth (72h min)
+Snow depth (72h mean)
+Pressure (msl) (12h max)
+Pressure (msl) (12h min)
+Pressure (msl) (12h mean)
+Pressure (msl) (24h max)
+Pressure (msl) (24h min)
+Pressure (msl) (24h mean)
+Pressure (msl) (72h max)
+Pressure (msl) (72h min)
+Pressure (msl) (72h mean)
+Horizontal visibility (12h max)
+Horizontal visibility (12h min)
+Horizontal visibility (12h mean)
+Horizontal visibility (24h max)
+Horizontal visibility (24h min)
+Horizontal visibility (24h mean)
+Horizontal visibility (72h max)
+Horizontal visibility (72h min)
+Horizontal visibility (72h mean)
+Cloud amount (12h max)
+Cloud amount (12h min)
+Cloud amount (12h mean)
+Cloud amount (24h max)
+Cloud amount (24h min)
+Cloud amount (24h mean)
+Cloud amount (72h max)
+Cloud amount (72h min)
+Cloud amount (72h mean)
+Precipitation amount (12h mean)
+Precipitation amount (12h cumulative)
+Precipitation amount (24h mean)
+Precipitation amount (24h cumulative)
+Precipitation amount (72h mean)
+Precipitation amount (72h cumulative)
+
+# ======================================================================
+# 7 - OPERACIONAL + ALL ROLLING WINDOWS
+# 88 columns (1 target + 87 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature (12h max)
+Air temperature (12h min)
+Air temperature (12h mean)
+Air temperature (24h max)
+Air temperature (24h min)
+Air temperature (24h mean)
+Air temperature (72h max)
+Air temperature (72h min)
+Air temperature (72h mean)
+Wind speed (12h max)
+Wind speed (12h min)
+Wind speed (12h mean)
+Wind speed (24h max)
+Wind speed (24h min)
+Wind speed (24h mean)
+Wind speed (72h max)
+Wind speed (72h min)
+Wind speed (72h mean)
+Relative humidity (12h max)
+Relative humidity (12h min)
+Relative humidity (12h mean)
+Relative humidity (24h max)
+Relative humidity (24h min)
+Relative humidity (24h mean)
+Relative humidity (72h max)
+Relative humidity (72h min)
+Relative humidity (72h mean)
+Precipitation intensity (12h max)
+Precipitation intensity (12h min)
+Precipitation intensity (12h mean)
+Precipitation intensity (24h max)
+Precipitation intensity (24h min)
+Precipitation intensity (24h mean)
+Precipitation intensity (72h max)
+Precipitation intensity (72h min)
+Precipitation intensity (72h mean)
+Snow depth (12h max)
+Snow depth (12h min)
+Snow depth (12h mean)
+Snow depth (24h max)
+Snow depth (24h min)
+Snow depth (24h mean)
+Snow depth (72h max)
+Snow depth (72h min)
+Snow depth (72h mean)
+Pressure (msl) (12h max)
+Pressure (msl) (12h min)
+Pressure (msl) (12h mean)
+Pressure (msl) (24h max)
+Pressure (msl) (24h min)
+Pressure (msl) (24h mean)
+Pressure (msl) (72h max)
+Pressure (msl) (72h min)
+Pressure (msl) (72h mean)
+Horizontal visibility (12h max)
+Horizontal visibility (12h min)
+Horizontal visibility (12h mean)
+Horizontal visibility (24h max)
+Horizontal visibility (24h min)
+Horizontal visibility (24h mean)
+Horizontal visibility (72h max)
+Horizontal visibility (72h min)
+Horizontal visibility (72h mean)
+Cloud amount (12h max)
+Cloud amount (12h min)
+Cloud amount (12h mean)
+Cloud amount (24h max)
+Cloud amount (24h min)
+Cloud amount (24h mean)
+Cloud amount (72h max)
+Cloud amount (72h min)
+Cloud amount (72h mean)
+Precipitation amount (12h mean)
+Precipitation amount (12h cumulative)
+Precipitation amount (24h mean)
+Precipitation amount (24h cumulative)
+Precipitation amount (72h mean)
+Precipitation amount (72h cumulative)
+
+# ======================================================================
+# 8 - OPERACIONAL + INSTANT WEATHER + WAWA CODES
+# 36 columns (1 target + 35 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+wawa_group_clear
+wawa_group_haze
+wawa_group_mist
+wawa_group_fog
+wawa_group_precip_unspec
+wawa_group_drizzle
+wawa_group_rain
+wawa_group_freezing
+wawa_group_sleet
+wawa_group_snow
+wawa_group_ice_particles
+wawa_group_rain_shower
+wawa_group_snow_shower
+wawa_group_hail
+
+# ======================================================================
+# 9 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 12h + WAWA CODES
+# 62 columns (1 target + 61 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+wawa_group_clear
+wawa_group_haze
+wawa_group_mist
+wawa_group_fog
+wawa_group_precip_unspec
+wawa_group_drizzle
+wawa_group_rain
+wawa_group_freezing
+wawa_group_sleet
+wawa_group_snow
+wawa_group_ice_particles
+wawa_group_rain_shower
+wawa_group_snow_shower
+wawa_group_hail
+Air temperature (12h max)
+Air temperature (12h min)
+Air temperature (12h mean)
+Wind speed (12h max)
+Wind speed (12h min)
+Wind speed (12h mean)
+Relative humidity (12h max)
+Relative humidity (12h min)
+Relative humidity (12h mean)
+Precipitation intensity (12h max)
+Precipitation intensity (12h min)
+Precipitation intensity (12h mean)
+Snow depth (12h max)
+Snow depth (12h min)
+Snow depth (12h mean)
+Pressure (msl) (12h max)
+Pressure (msl) (12h min)
+Pressure (msl) (12h mean)
+Horizontal visibility (12h max)
+Horizontal visibility (12h min)
+Horizontal visibility (12h mean)
+Cloud amount (12h max)
+Cloud amount (12h min)
+Cloud amount (12h mean)
+Precipitation amount (12h mean)
+Precipitation amount (12h cumulative)
+
+# ======================================================================
+# 10 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 24h + WAWA CODES
+# 62 columns (1 target + 61 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+wawa_group_clear
+wawa_group_haze
+wawa_group_mist
+wawa_group_fog
+wawa_group_precip_unspec
+wawa_group_drizzle
+wawa_group_rain
+wawa_group_freezing
+wawa_group_sleet
+wawa_group_snow
+wawa_group_ice_particles
+wawa_group_rain_shower
+wawa_group_snow_shower
+wawa_group_hail
+Air temperature (24h max)
+Air temperature (24h min)
+Air temperature (24h mean)
+Wind speed (24h max)
+Wind speed (24h min)
+Wind speed (24h mean)
+Relative humidity (24h max)
+Relative humidity (24h min)
+Relative humidity (24h mean)
+Precipitation intensity (24h max)
+Precipitation intensity (24h min)
+Precipitation intensity (24h mean)
+Snow depth (24h max)
+Snow depth (24h min)
+Snow depth (24h mean)
+Pressure (msl) (24h max)
+Pressure (msl) (24h min)
+Pressure (msl) (24h mean)
+Horizontal visibility (24h max)
+Horizontal visibility (24h min)
+Horizontal visibility (24h mean)
+Cloud amount (24h max)
+Cloud amount (24h min)
+Cloud amount (24h mean)
+Precipitation amount (24h mean)
+Precipitation amount (24h cumulative)
+
+# ======================================================================
+# 11 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 72h + WAWA CODES
+# 62 columns (1 target + 61 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+wawa_group_clear
+wawa_group_haze
+wawa_group_mist
+wawa_group_fog
+wawa_group_precip_unspec
+wawa_group_drizzle
+wawa_group_rain
+wawa_group_freezing
+wawa_group_sleet
+wawa_group_snow
+wawa_group_ice_particles
+wawa_group_rain_shower
+wawa_group_snow_shower
+wawa_group_hail
+Air temperature (72h max)
+Air temperature (72h min)
+Air temperature (72h mean)
+Wind speed (72h max)
+Wind speed (72h min)
+Wind speed (72h mean)
+Relative humidity (72h max)
+Relative humidity (72h min)
+Relative humidity (72h mean)
+Precipitation intensity (72h max)
+Precipitation intensity (72h min)
+Precipitation intensity (72h mean)
+Snow depth (72h max)
+Snow depth (72h min)
+Snow depth (72h mean)
+Pressure (msl) (72h max)
+Pressure (msl) (72h min)
+Pressure (msl) (72h mean)
+Horizontal visibility (72h max)
+Horizontal visibility (72h min)
+Horizontal visibility (72h mean)
+Cloud amount (72h max)
+Cloud amount (72h min)
+Cloud amount (72h mean)
+Precipitation amount (72h mean)
+Precipitation amount (72h cumulative)
+
+# ======================================================================
+# 12 - OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS + WAWA CODES
+# 114 columns (1 target + 113 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
+wawa_group_clear
+wawa_group_haze
+wawa_group_mist
+wawa_group_fog
+wawa_group_precip_unspec
+wawa_group_drizzle
+wawa_group_rain
+wawa_group_freezing
+wawa_group_sleet
+wawa_group_snow
+wawa_group_ice_particles
+wawa_group_rain_shower
+wawa_group_snow_shower
+wawa_group_hail
+Air temperature (12h max)
+Air temperature (12h min)
+Air temperature (12h mean)
+Air temperature (24h max)
+Air temperature (24h min)
+Air temperature (24h mean)
+Air temperature (72h max)
+Air temperature (72h min)
+Air temperature (72h mean)
+Wind speed (12h max)
+Wind speed (12h min)
+Wind speed (12h mean)
+Wind speed (24h max)
+Wind speed (24h min)
+Wind speed (24h mean)
+Wind speed (72h max)
+Wind speed (72h min)
+Wind speed (72h mean)
+Relative humidity (12h max)
+Relative humidity (12h min)
+Relative humidity (12h mean)
+Relative humidity (24h max)
+Relative humidity (24h min)
+Relative humidity (24h mean)
+Relative humidity (72h max)
+Relative humidity (72h min)
+Relative humidity (72h mean)
+Precipitation intensity (12h max)
+Precipitation intensity (12h min)
+Precipitation intensity (12h mean)
+Precipitation intensity (24h max)
+Precipitation intensity (24h min)
+Precipitation intensity (24h mean)
+Precipitation intensity (72h max)
+Precipitation intensity (72h min)
+Precipitation intensity (72h mean)
+Snow depth (12h max)
+Snow depth (12h min)
+Snow depth (12h mean)
+Snow depth (24h max)
+Snow depth (24h min)
+Snow depth (24h mean)
+Snow depth (72h max)
+Snow depth (72h min)
+Snow depth (72h mean)
+Pressure (msl) (12h max)
+Pressure (msl) (12h min)
+Pressure (msl) (12h mean)
+Pressure (msl) (24h max)
+Pressure (msl) (24h min)
+Pressure (msl) (24h mean)
+Pressure (msl) (72h max)
+Pressure (msl) (72h min)
+Pressure (msl) (72h mean)
+Horizontal visibility (12h max)
+Horizontal visibility (12h min)
+Horizontal visibility (12h mean)
+Horizontal visibility (24h max)
+Horizontal visibility (24h min)
+Horizontal visibility (24h mean)
+Horizontal visibility (72h max)
+Horizontal visibility (72h min)
+Horizontal visibility (72h mean)
+Cloud amount (12h max)
+Cloud amount (12h min)
+Cloud amount (12h mean)
+Cloud amount (24h max)
+Cloud amount (24h min)
+Cloud amount (24h mean)
+Cloud amount (72h max)
+Cloud amount (72h min)
+Cloud amount (72h mean)
+Precipitation amount (12h mean)
+Precipitation amount (12h cumulative)
+Precipitation amount (24h mean)
+Precipitation amount (24h cumulative)
+Precipitation amount (72h mean)
+Precipitation amount (72h cumulative)
+
+# ======================================================================
+# 13 - ALL FEATURES (OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS + WEATHER SCENARIOS)
+# 140 columns (1 target + 139 features)
+# ======================================================================
+trainDisrupted
+trainStopping
+commercialStop
+month_sin
+month_cos
+hour_sin
+hour_cos
+day_week_sin
+day_week_cos
+trainNumber
+Air temperature
+Wind speed
+Gust speed
+wind_dir_sin
+wind_dir_cos
+Relative humidity
+Dew-point temperature
+Precipitation intensity
+Snow depth
+Pressure (msl)
+Horizontal visibility
+Cloud amount
 weather_scenario_Normal_Clear
 weather_scenario_Blizzard
 weather_scenario_Heavy_Snow
@@ -138,6 +907,15 @@ Horizontal visibility (24h mean)
 Horizontal visibility (72h max)
 Horizontal visibility (72h min)
 Horizontal visibility (72h mean)
+Cloud amount (12h max)
+Cloud amount (12h min)
+Cloud amount (12h mean)
+Cloud amount (24h max)
+Cloud amount (24h min)
+Cloud amount (24h mean)
+Cloud amount (72h max)
+Cloud amount (72h min)
+Cloud amount (72h mean)
 Precipitation amount (12h mean)
 Precipitation amount (12h cumulative)
 Precipitation amount (24h mean)
@@ -145,371 +923,3 @@ Precipitation amount (24h cumulative)
 Precipitation amount (72h mean)
 Precipitation amount (72h cumulative)
 
-
-# ======================================================================
-# 2 - ONLY OPERACIONAL FEATURES
-# 10 columns (1 target + 9 features)
-# ======================================================================
-trainDelayed
-trainStopping
-commercialStop
-month_sin
-month_cos
-hour_sin
-hour_cos
-day_week_sin
-day_week_cos
-day_of_month
-
-
-# ======================================================================
-# 3 - OPERACIONAL + INSTANT WEATHER
-# 20 columns (1 target + 19 features)
-# ======================================================================
-trainDelayed
-trainStopping
-commercialStop
-month_sin
-month_cos
-hour_sin
-hour_cos
-day_week_sin
-day_week_cos
-day_of_month
-Air temperature
-Wind speed
-Gust speed
-Wind direction
-Relative humidity
-Dew-point temperature
-Precipitation intensity
-Snow depth
-Pressure (msl)
-Horizontal visibility
-
-
-# ======================================================================
-# 4 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 12h
-# 43 columns (1 target + 42 features)
-# ======================================================================
-trainDelayed
-trainStopping
-commercialStop
-month_sin
-month_cos
-hour_sin
-hour_cos
-day_week_sin
-day_week_cos
-day_of_month
-Air temperature
-Wind speed
-Gust speed
-Wind direction
-Relative humidity
-Dew-point temperature
-Precipitation intensity
-Snow depth
-Pressure (msl)
-Horizontal visibility
-Air temperature (12h max)
-Air temperature (12h min)
-Air temperature (12h mean)
-Wind speed (12h max)
-Wind speed (12h min)
-Wind speed (12h mean)
-Relative humidity (12h max)
-Relative humidity (12h min)
-Relative humidity (12h mean)
-Precipitation intensity (12h max)
-Precipitation intensity (12h min)
-Precipitation intensity (12h mean)
-Snow depth (12h max)
-Snow depth (12h min)
-Snow depth (12h mean)
-Pressure (msl) (12h max)
-Pressure (msl) (12h min)
-Pressure (msl) (12h mean)
-Horizontal visibility (12h max)
-Horizontal visibility (12h min)
-Horizontal visibility (12h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-
-
-# ======================================================================
-# 5 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 24h
-# 43 columns (1 target + 42 features)
-# ======================================================================
-trainDelayed
-trainStopping
-commercialStop
-month_sin
-month_cos
-hour_sin
-hour_cos
-day_week_sin
-day_week_cos
-day_of_month
-Air temperature
-Wind speed
-Gust speed
-Wind direction
-Relative humidity
-Dew-point temperature
-Precipitation intensity
-Snow depth
-Pressure (msl)
-Horizontal visibility
-Air temperature (24h max)
-Air temperature (24h min)
-Air temperature (24h mean)
-Wind speed (24h max)
-Wind speed (24h min)
-Wind speed (24h mean)
-Relative humidity (24h max)
-Relative humidity (24h min)
-Relative humidity (24h mean)
-Precipitation intensity (24h max)
-Precipitation intensity (24h min)
-Precipitation intensity (24h mean)
-Snow depth (24h max)
-Snow depth (24h min)
-Snow depth (24h mean)
-Pressure (msl) (24h max)
-Pressure (msl) (24h min)
-Pressure (msl) (24h mean)
-Horizontal visibility (24h max)
-Horizontal visibility (24h min)
-Horizontal visibility (24h mean)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-
-
-# ======================================================================
-# 6 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 72h
-# 43 columns (1 target + 42 features)
-# ======================================================================
-trainDelayed
-trainStopping
-commercialStop
-month_sin
-month_cos
-hour_sin
-hour_cos
-day_week_sin
-day_week_cos
-day_of_month
-Air temperature
-Wind speed
-Gust speed
-Wind direction
-Relative humidity
-Dew-point temperature
-Precipitation intensity
-Snow depth
-Pressure (msl)
-Horizontal visibility
-Air temperature (72h max)
-Air temperature (72h min)
-Air temperature (72h mean)
-Wind speed (72h max)
-Wind speed (72h min)
-Wind speed (72h mean)
-Relative humidity (72h max)
-Relative humidity (72h min)
-Relative humidity (72h mean)
-Precipitation intensity (72h max)
-Precipitation intensity (72h min)
-Precipitation intensity (72h mean)
-Snow depth (72h max)
-Snow depth (72h min)
-Snow depth (72h mean)
-Pressure (msl) (72h max)
-Pressure (msl) (72h min)
-Pressure (msl) (72h mean)
-Horizontal visibility (72h max)
-Horizontal visibility (72h min)
-Horizontal visibility (72h mean)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
-
-
-# ======================================================================
-# 7 - OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS
-# 89 columns (1 target + 88 features)
-# ======================================================================
-trainDelayed
-trainStopping
-commercialStop
-month_sin
-month_cos
-hour_sin
-hour_cos
-day_week_sin
-day_week_cos
-day_of_month
-Air temperature
-Wind speed
-Gust speed
-Wind direction
-Relative humidity
-Dew-point temperature
-Precipitation intensity
-Snow depth
-Pressure (msl)
-Horizontal visibility
-Air temperature (12h max)
-Air temperature (12h min)
-Air temperature (12h mean)
-Air temperature (24h max)
-Air temperature (24h min)
-Air temperature (24h mean)
-Air temperature (72h max)
-Air temperature (72h min)
-Air temperature (72h mean)
-Wind speed (12h max)
-Wind speed (12h min)
-Wind speed (12h mean)
-Wind speed (24h max)
-Wind speed (24h min)
-Wind speed (24h mean)
-Wind speed (72h max)
-Wind speed (72h min)
-Wind speed (72h mean)
-Relative humidity (12h max)
-Relative humidity (12h min)
-Relative humidity (12h mean)
-Relative humidity (24h max)
-Relative humidity (24h min)
-Relative humidity (24h mean)
-Relative humidity (72h max)
-Relative humidity (72h min)
-Relative humidity (72h mean)
-Precipitation intensity (12h max)
-Precipitation intensity (12h min)
-Precipitation intensity (12h mean)
-Precipitation intensity (24h max)
-Precipitation intensity (24h min)
-Precipitation intensity (24h mean)
-Precipitation intensity (72h max)
-Precipitation intensity (72h min)
-Precipitation intensity (72h mean)
-Snow depth (12h max)
-Snow depth (12h min)
-Snow depth (12h mean)
-Snow depth (24h max)
-Snow depth (24h min)
-Snow depth (24h mean)
-Snow depth (72h max)
-Snow depth (72h min)
-Snow depth (72h mean)
-Pressure (msl) (12h max)
-Pressure (msl) (12h min)
-Pressure (msl) (12h mean)
-Pressure (msl) (24h max)
-Pressure (msl) (24h min)
-Pressure (msl) (24h mean)
-Pressure (msl) (72h max)
-Pressure (msl) (72h min)
-Pressure (msl) (72h mean)
-Horizontal visibility (12h max)
-Horizontal visibility (12h min)
-Horizontal visibility (12h mean)
-Horizontal visibility (24h max)
-Horizontal visibility (24h min)
-Horizontal visibility (24h mean)
-Horizontal visibility (72h max)
-Horizontal visibility (72h min)
-Horizontal visibility (72h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
-
-
-# ======================================================================
-# 8 - OPERACIONAL + ALL ROLLING WINDOWS
-# 79 columns (1 target + 78 features)
-# ======================================================================
-trainDelayed
-trainStopping
-commercialStop
-month_sin
-month_cos
-hour_sin
-hour_cos
-day_week_sin
-day_week_cos
-day_of_month
-Air temperature (12h max)
-Air temperature (12h min)
-Air temperature (12h mean)
-Air temperature (24h max)
-Air temperature (24h min)
-Air temperature (24h mean)
-Air temperature (72h max)
-Air temperature (72h min)
-Air temperature (72h mean)
-Wind speed (12h max)
-Wind speed (12h min)
-Wind speed (12h mean)
-Wind speed (24h max)
-Wind speed (24h min)
-Wind speed (24h mean)
-Wind speed (72h max)
-Wind speed (72h min)
-Wind speed (72h mean)
-Relative humidity (12h max)
-Relative humidity (12h min)
-Relative humidity (12h mean)
-Relative humidity (24h max)
-Relative humidity (24h min)
-Relative humidity (24h mean)
-Relative humidity (72h max)
-Relative humidity (72h min)
-Relative humidity (72h mean)
-Precipitation intensity (12h max)
-Precipitation intensity (12h min)
-Precipitation intensity (12h mean)
-Precipitation intensity (24h max)
-Precipitation intensity (24h min)
-Precipitation intensity (24h mean)
-Precipitation intensity (72h max)
-Precipitation intensity (72h min)
-Precipitation intensity (72h mean)
-Snow depth (12h max)
-Snow depth (12h min)
-Snow depth (12h mean)
-Snow depth (24h max)
-Snow depth (24h min)
-Snow depth (24h mean)
-Snow depth (72h max)
-Snow depth (72h min)
-Snow depth (72h mean)
-Pressure (msl) (12h max)
-Pressure (msl) (12h min)
-Pressure (msl) (12h mean)
-Pressure (msl) (24h max)
-Pressure (msl) (24h min)
-Pressure (msl) (24h mean)
-Pressure (msl) (72h max)
-Pressure (msl) (72h min)
-Pressure (msl) (72h mean)
-Horizontal visibility (12h max)
-Horizontal visibility (12h min)
-Horizontal visibility (12h mean)
-Horizontal visibility (24h max)
-Horizontal visibility (24h min)
-Horizontal visibility (24h mean)
-Horizontal visibility (72h max)
-Horizontal visibility (72h min)
-Horizontal visibility (72h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
