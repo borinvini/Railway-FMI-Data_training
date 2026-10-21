@@ -1855,7 +1855,6 @@ class TrainingPipeline:
 
         data_dir = data_dir or os.path.join(self.project_root, FCLL_SEQUENCES_OUTPUT_FOLDER)
         output_dir = os.path.join(self.project_root, FCLL_NET_OUTPUT_FOLDER)
-        os.makedirs(output_dir, exist_ok=True)
         try:
             data = load_shards(data_dir)
         except FileNotFoundError as exc:
@@ -1866,6 +1865,8 @@ class TrainingPipeline:
         except ValueError as exc:
             return {"success": False, "error": str(exc)}
 
+        # Created only now, so a run that fails before training leaves no empty folder.
+        os.makedirs(output_dir, exist_ok=True)
         torch.save(result["model"].state_dict(), os.path.join(output_dir, "fcll_net.pt"))
         with open(os.path.join(output_dir, "metrics.json"), "w", encoding="utf-8") as fh:
             json.dump(result["metrics"], fh, indent=2)
