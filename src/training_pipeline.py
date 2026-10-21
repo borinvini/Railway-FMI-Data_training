@@ -3741,6 +3741,29 @@ class TrainingPipeline:
             metrics['bin_confusion_matrix'] = confusion_matrix(y_true_binary, y_pred_binary).tolist()
         return metrics
 
+    @staticmethod
+    def _probability_metrics(model, X, y):
+        """Ranking metrics from predicted probabilities, with their no-skill references.
+
+        ROC-AUC alone flatters a rare target: false alarms are divided by the huge pool of
+        normal trains, so they look small. PR-AUC (average precision) divides real alarms by
+        all alarms; its no-skill value is the positive rate, reported next to it together
+        with the F1 of "every train is disrupted" (2p / (1 + p)). One definition for every
+        trainer, for test and hold-out alike. A model without predict_proba returns {}.
+        """
+        if not hasattr(model, 'predict_proba'):
+            return {}
+        y = np.asarray(y)
+        proba = model.predict_proba(X)[:, 1]
+        two_classes = len(np.unique(y)) > 1
+        p = float(np.mean(y.astype(float)))
+        return {
+            'auc': float(roc_auc_score(y, proba)) if two_classes else 0.0,
+            'pr_auc': float(average_precision_score(y, proba)) if two_classes else 0.0,
+            'positive_rate': p,
+            'f1_always_positive': (2 * p / (1 + p)) if p > 0 else 0.0,
+        }
+
     def _evaluate_holdout(self, model, X_holdout, y_holdout, is_classification, y_shift, method_label):
         """
         Score the already-trained best_model on the out-of-time hold-out — no fit(),
@@ -3754,9 +3777,8 @@ class TrainingPipeline:
 
         metrics = self._score_predictions(y_holdout, y_pred, is_classification)
 
-        if is_classification and hasattr(model, 'predict_proba'):
-            y_pred_proba = model.predict_proba(X_holdout)[:, 1]
-            metrics['auc'] = roc_auc_score(y_holdout, y_pred_proba) if len(np.unique(y_holdout)) > 1 else 0.0
+        if is_classification:
+            metrics.update(self._probability_metrics(model, X_holdout, y_holdout))
 
         # Not printed here — the caller prints a formatted "Hold-out Summary" block
         # (mirroring "Training Summary") once these metrics are in hand.
@@ -4204,6 +4226,8 @@ class TrainingPipeline:
             # Initialize tracking lists
             iteration_results = []
             test_f1_scores = []
+            test_auc_scores = []
+            test_pr_auc_scores = []
             cv_scores = []
             test_accuracy_scores = []
             test_precision_scores = []
@@ -4264,8 +4288,11 @@ class TrainingPipeline:
                     test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
+                    test_prob = self._probability_metrics(current_best_model, X_test, y_test)
+                    test_auc_scores.append(test_prob.get('auc', 0.0))
+                    test_pr_auc_scores.append(test_prob.get('pr_auc', 0.0))
 
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}, AUC = {test_auc_scores[-1]:.4f}, PR-AUC = {test_pr_auc_scores[-1]:.4f}")
 
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -4326,6 +4353,8 @@ class TrainingPipeline:
                     'test_precision': test_precision_scores[-1] if is_classification else None,
                     'test_recall': test_recall_scores[-1] if is_classification else None,
                     'test_confusion_matrix': test_confusion_matrix if is_classification else None,
+                    'test_auc': test_auc_scores[-1] if is_classification else None,
+                    'test_pr_auc': test_pr_auc_scores[-1] if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_r2': test_r2_scores[-1] if not is_classification else None,
@@ -4354,8 +4383,10 @@ class TrainingPipeline:
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
                     final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                    final_prob = self._probability_metrics(best_model, X_test, y_test)
                 else:
                     final_test_auc = 0.0
+                    final_prob = {}
 
             else:  # regression
                 final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
@@ -4539,6 +4570,9 @@ class TrainingPipeline:
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
                         "test_auc": float(final_test_auc),
+                        "test_pr_auc": float(final_prob.get('pr_auc', 0.0)),
+                        "positive_rate_test": float(final_prob.get('positive_rate', 0.0)),
+                        "f1_always_positive": float(final_prob.get('f1_always_positive', 0.0)),
                         "confusion_matrix": final_confusion_matrix
                     }
                 else:
@@ -4568,6 +4602,8 @@ class TrainingPipeline:
                         "accuracy_values": [float(x) for x in test_accuracy_scores],
                         "precision_values": [float(x) for x in test_precision_scores],
                         "recall_values": [float(x) for x in test_recall_scores],
+                        "auc_values": [float(x) for x in test_auc_scores],
+                        "pr_auc_values": [float(x) for x in test_pr_auc_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_f1": float(max(test_f1_scores)),
                         "best_accuracy": float(max(test_accuracy_scores)),
@@ -4576,7 +4612,11 @@ class TrainingPipeline:
                         "average_f1": float(np.mean(test_f1_scores)),
                         "average_accuracy": float(np.mean(test_accuracy_scores)),
                         "average_precision": float(np.mean(test_precision_scores)),
-                        "average_recall": float(np.mean(test_recall_scores))
+                        "average_recall": float(np.mean(test_recall_scores)),
+                        "best_auc": float(max(test_auc_scores)),
+                        "best_pr_auc": float(max(test_pr_auc_scores)),
+                        "average_auc": float(np.mean(test_auc_scores)),
+                        "average_pr_auc": float(np.mean(test_pr_auc_scores))
                     }
                 else:
                     results["iteration_metrics_summary"] = {
@@ -4635,11 +4675,15 @@ class TrainingPipeline:
                             h_f1 = [float(h['f1']) for h in valid_holdout]
                             h_prec = [float(h['precision']) for h in valid_holdout]
                             h_rec = [float(h['recall']) for h in valid_holdout]
+                            h_auc = [float(h.get('auc', 0.0)) for h in valid_holdout]
+                            h_pr_auc = [float(h.get('pr_auc', 0.0)) for h in valid_holdout]
                             results["holdout_iteration_summary"] = {
                                 "accuracy_values": h_acc,
                                 "f1_values": h_f1,
                                 "precision_values": h_prec,
                                 "recall_values": h_rec,
+                                "auc_values": h_auc,
+                                "pr_auc_values": h_pr_auc,
                                 "best_accuracy": float(max(h_acc)),
                                 "best_f1": float(max(h_f1)),
                                 "best_precision": float(max(h_prec)),
@@ -4647,7 +4691,11 @@ class TrainingPipeline:
                                 "average_accuracy": float(np.mean(h_acc)),
                                 "average_f1": float(np.mean(h_f1)),
                                 "average_precision": float(np.mean(h_prec)),
-                                "average_recall": float(np.mean(h_rec))
+                                "average_recall": float(np.mean(h_rec)),
+                                "best_auc": float(max(h_auc)),
+                                "best_pr_auc": float(max(h_pr_auc)),
+                                "average_auc": float(np.mean(h_auc)),
+                                "average_pr_auc": float(np.mean(h_pr_auc))
                             }
                         else:
                             h_rmse = [float(h['rmse']) for h in valid_holdout]
@@ -4701,7 +4749,7 @@ class TrainingPipeline:
             print(f"        Best CV Score: {best_cv_score:.4f}")
             print(f"        {'F1' if is_classification else 'RMSE'} Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
             if is_classification:
-                print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
+                print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}  PR-AUC: {final_prob.get('pr_auc', 0.0):.4f}")
             if not is_classification:
                 print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                 print(f"        Baseline MAE (always the train median): {final_baseline['baseline_mae']:.4f} min  MAE skill: {final_baseline['mae_skill']:.3f}")
@@ -4717,7 +4765,7 @@ class TrainingPipeline:
                 hm = results["holdout_metrics"]
                 print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
                 if is_classification:
-                    print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                    print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}  PR-AUC: {hm.get('pr_auc', 0):.4f}")
                 else:
                     print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
                     print(f"        Baseline MAE (always the train median): {hm['baseline_mae']:.4f} min  MAE skill: {hm['mae_skill']:.3f}")
@@ -4941,6 +4989,8 @@ class TrainingPipeline:
             # Initialize tracking lists
             iteration_results = []
             test_f1_scores = []
+            test_auc_scores = []
+            test_pr_auc_scores = []
             cv_scores = []
             test_accuracy_scores = []
             test_precision_scores = []
@@ -5000,8 +5050,11 @@ class TrainingPipeline:
                     test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
+                    test_prob = self._probability_metrics(current_best_model, X_test, y_test)
+                    test_auc_scores.append(test_prob.get('auc', 0.0))
+                    test_pr_auc_scores.append(test_prob.get('pr_auc', 0.0))
 
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}, AUC = {test_auc_scores[-1]:.4f}, PR-AUC = {test_pr_auc_scores[-1]:.4f}")
 
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -5061,6 +5114,8 @@ class TrainingPipeline:
                     'test_precision': test_precision_scores[-1] if is_classification else None,
                     'test_recall': test_recall_scores[-1] if is_classification else None,
                     'test_confusion_matrix': test_confusion_matrix if is_classification else None,
+                    'test_auc': test_auc_scores[-1] if is_classification else None,
+                    'test_pr_auc': test_pr_auc_scores[-1] if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
@@ -5088,8 +5143,10 @@ class TrainingPipeline:
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
                     final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                    final_prob = self._probability_metrics(best_model, X_test, y_test)
                 else:
                     final_test_auc = 0.0
+                    final_prob = {}
 
             else:  # regression
                 final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
@@ -5236,6 +5293,9 @@ class TrainingPipeline:
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
                         "test_auc": float(final_test_auc),
+                        "test_pr_auc": float(final_prob.get('pr_auc', 0.0)),
+                        "positive_rate_test": float(final_prob.get('positive_rate', 0.0)),
+                        "f1_always_positive": float(final_prob.get('f1_always_positive', 0.0)),
                         "confusion_matrix": final_confusion_matrix
                     }
                 else:
@@ -5259,6 +5319,8 @@ class TrainingPipeline:
                         "accuracy_values": [float(x) for x in test_accuracy_scores],
                         "precision_values": [float(x) for x in test_precision_scores],
                         "recall_values": [float(x) for x in test_recall_scores],
+                        "auc_values": [float(x) for x in test_auc_scores],
+                        "pr_auc_values": [float(x) for x in test_pr_auc_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_f1": float(max(test_f1_scores)),
                         "best_accuracy": float(max(test_accuracy_scores)),
@@ -5267,7 +5329,11 @@ class TrainingPipeline:
                         "average_f1": float(np.mean(test_f1_scores)),
                         "average_accuracy": float(np.mean(test_accuracy_scores)),
                         "average_precision": float(np.mean(test_precision_scores)),
-                        "average_recall": float(np.mean(test_recall_scores))
+                        "average_recall": float(np.mean(test_recall_scores)),
+                        "best_auc": float(max(test_auc_scores)),
+                        "best_pr_auc": float(max(test_pr_auc_scores)),
+                        "average_auc": float(np.mean(test_auc_scores)),
+                        "average_pr_auc": float(np.mean(test_pr_auc_scores))
                     }
                 else:
                     results["iteration_metrics_summary"] = {
@@ -5305,11 +5371,15 @@ class TrainingPipeline:
                             h_f1 = [float(h['f1']) for h in valid_holdout]
                             h_prec = [float(h['precision']) for h in valid_holdout]
                             h_rec = [float(h['recall']) for h in valid_holdout]
+                            h_auc = [float(h.get('auc', 0.0)) for h in valid_holdout]
+                            h_pr_auc = [float(h.get('pr_auc', 0.0)) for h in valid_holdout]
                             results["holdout_iteration_summary"] = {
                                 "accuracy_values": h_acc,
                                 "f1_values": h_f1,
                                 "precision_values": h_prec,
                                 "recall_values": h_rec,
+                                "auc_values": h_auc,
+                                "pr_auc_values": h_pr_auc,
                                 "best_accuracy": float(max(h_acc)),
                                 "best_f1": float(max(h_f1)),
                                 "best_precision": float(max(h_prec)),
@@ -5317,7 +5387,11 @@ class TrainingPipeline:
                                 "average_accuracy": float(np.mean(h_acc)),
                                 "average_f1": float(np.mean(h_f1)),
                                 "average_precision": float(np.mean(h_prec)),
-                                "average_recall": float(np.mean(h_rec))
+                                "average_recall": float(np.mean(h_rec)),
+                                "best_auc": float(max(h_auc)),
+                                "best_pr_auc": float(max(h_pr_auc)),
+                                "average_auc": float(np.mean(h_auc)),
+                                "average_pr_auc": float(np.mean(h_pr_auc))
                             }
                         else:
                             h_rmse = [float(h['rmse']) for h in valid_holdout]
@@ -5365,7 +5439,7 @@ class TrainingPipeline:
                 print(f"        Best CV Score: {best_cv_score:.4f}")
                 print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
                 if is_classification:
-                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
+                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}  PR-AUC: {final_prob.get('pr_auc', 0.0):.4f}")
                 if not is_classification:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
@@ -5375,7 +5449,7 @@ class TrainingPipeline:
                     hm = results["holdout_metrics"]
                     print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
                     if is_classification:
-                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}  PR-AUC: {hm.get('pr_auc', 0):.4f}")
                     else:
                         print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
                         print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
@@ -5594,6 +5668,8 @@ class TrainingPipeline:
             # Initialize tracking lists
             iteration_results = []
             test_f1_scores = []
+            test_auc_scores = []
+            test_pr_auc_scores = []
             cv_scores = []
             test_accuracy_scores = []
             test_precision_scores = []
@@ -5653,8 +5729,11 @@ class TrainingPipeline:
                     test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
+                    test_prob = self._probability_metrics(current_best_model, X_test, y_test)
+                    test_auc_scores.append(test_prob.get('auc', 0.0))
+                    test_pr_auc_scores.append(test_prob.get('pr_auc', 0.0))
 
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}, AUC = {test_auc_scores[-1]:.4f}, PR-AUC = {test_pr_auc_scores[-1]:.4f}")
 
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -5714,6 +5793,8 @@ class TrainingPipeline:
                     'test_precision': test_precision_scores[-1] if is_classification else None,
                     'test_recall': test_recall_scores[-1] if is_classification else None,
                     'test_confusion_matrix': test_confusion_matrix if is_classification else None,
+                    'test_auc': test_auc_scores[-1] if is_classification else None,
+                    'test_pr_auc': test_pr_auc_scores[-1] if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
@@ -5741,8 +5822,10 @@ class TrainingPipeline:
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
                     final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                    final_prob = self._probability_metrics(best_model, X_test, y_test)
                 else:
                     final_test_auc = 0.0
+                    final_prob = {}
 
             else:  # regression
                 final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
@@ -5889,6 +5972,9 @@ class TrainingPipeline:
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
                         "test_auc": float(final_test_auc),
+                        "test_pr_auc": float(final_prob.get('pr_auc', 0.0)),
+                        "positive_rate_test": float(final_prob.get('positive_rate', 0.0)),
+                        "f1_always_positive": float(final_prob.get('f1_always_positive', 0.0)),
                         "confusion_matrix": final_confusion_matrix
                     }
                 else:
@@ -5912,6 +5998,8 @@ class TrainingPipeline:
                         "accuracy_values": [float(x) for x in test_accuracy_scores],
                         "precision_values": [float(x) for x in test_precision_scores],
                         "recall_values": [float(x) for x in test_recall_scores],
+                        "auc_values": [float(x) for x in test_auc_scores],
+                        "pr_auc_values": [float(x) for x in test_pr_auc_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_f1": float(max(test_f1_scores)),
                         "best_accuracy": float(max(test_accuracy_scores)),
@@ -5920,7 +6008,11 @@ class TrainingPipeline:
                         "average_f1": float(np.mean(test_f1_scores)),
                         "average_accuracy": float(np.mean(test_accuracy_scores)),
                         "average_precision": float(np.mean(test_precision_scores)),
-                        "average_recall": float(np.mean(test_recall_scores))
+                        "average_recall": float(np.mean(test_recall_scores)),
+                        "best_auc": float(max(test_auc_scores)),
+                        "best_pr_auc": float(max(test_pr_auc_scores)),
+                        "average_auc": float(np.mean(test_auc_scores)),
+                        "average_pr_auc": float(np.mean(test_pr_auc_scores))
                     }
                 else:
                     results["iteration_metrics_summary"] = {
@@ -5958,11 +6050,15 @@ class TrainingPipeline:
                             h_f1 = [float(h['f1']) for h in valid_holdout]
                             h_prec = [float(h['precision']) for h in valid_holdout]
                             h_rec = [float(h['recall']) for h in valid_holdout]
+                            h_auc = [float(h.get('auc', 0.0)) for h in valid_holdout]
+                            h_pr_auc = [float(h.get('pr_auc', 0.0)) for h in valid_holdout]
                             results["holdout_iteration_summary"] = {
                                 "accuracy_values": h_acc,
                                 "f1_values": h_f1,
                                 "precision_values": h_prec,
                                 "recall_values": h_rec,
+                                "auc_values": h_auc,
+                                "pr_auc_values": h_pr_auc,
                                 "best_accuracy": float(max(h_acc)),
                                 "best_f1": float(max(h_f1)),
                                 "best_precision": float(max(h_prec)),
@@ -5970,7 +6066,11 @@ class TrainingPipeline:
                                 "average_accuracy": float(np.mean(h_acc)),
                                 "average_f1": float(np.mean(h_f1)),
                                 "average_precision": float(np.mean(h_prec)),
-                                "average_recall": float(np.mean(h_rec))
+                                "average_recall": float(np.mean(h_rec)),
+                                "best_auc": float(max(h_auc)),
+                                "best_pr_auc": float(max(h_pr_auc)),
+                                "average_auc": float(np.mean(h_auc)),
+                                "average_pr_auc": float(np.mean(h_pr_auc))
                             }
                         else:
                             h_rmse = [float(h['rmse']) for h in valid_holdout]
@@ -6018,7 +6118,7 @@ class TrainingPipeline:
                 print(f"        Best CV Score: {best_cv_score:.4f}")
                 print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
                 if is_classification:
-                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
+                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}  PR-AUC: {final_prob.get('pr_auc', 0.0):.4f}")
                 if not is_classification:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
@@ -6028,7 +6128,7 @@ class TrainingPipeline:
                     hm = results["holdout_metrics"]
                     print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
                     if is_classification:
-                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}  PR-AUC: {hm.get('pr_auc', 0):.4f}")
                     else:
                         print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
                         print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
@@ -6225,18 +6325,9 @@ class TrainingPipeline:
                                search.cv_results_["std_test_score"])
         ]
 
-        def _reference(y):
-            # F1 of predicting "disrupted" for every train: what the baseline has to beat.
-            p = float(np.mean(np.asarray(y).astype(float)))
-            return {"positive_rate": p, "f1_always_positive": (2 * p / (1 + p)) if p > 0 else 0.0}
-
         def _score(model, X, y):
             metrics = self._score_predictions(y, model.predict(X), True)
-            proba = model.predict_proba(X)[:, 1]
-            two_classes = len(np.unique(y)) > 1
-            metrics['auc'] = roc_auc_score(y, proba) if two_classes else 0.0
-            metrics['pr_auc'] = average_precision_score(y, proba) if two_classes else 0.0
-            metrics.update(_reference(y))
+            metrics.update(self._probability_metrics(model, X, y))
             return metrics
 
         test_metrics = _score(best_model, X_test, y_test)
@@ -6855,6 +6946,8 @@ class TrainingPipeline:
             # Initialize tracking lists
             iteration_results = []
             test_f1_scores = []
+            test_auc_scores = []
+            test_pr_auc_scores = []
             cv_scores = []
             test_accuracy_scores = []
             test_precision_scores = []
@@ -6914,8 +7007,11 @@ class TrainingPipeline:
                     test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
                     test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
+                    test_prob = self._probability_metrics(current_best_model, X_test, y_test)
+                    test_auc_scores.append(test_prob.get('auc', 0.0))
+                    test_pr_auc_scores.append(test_prob.get('pr_auc', 0.0))
 
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
+                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}, AUC = {test_auc_scores[-1]:.4f}, PR-AUC = {test_pr_auc_scores[-1]:.4f}")
 
                 else:
                     test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -6975,6 +7071,8 @@ class TrainingPipeline:
                     'test_precision': test_precision_scores[-1] if is_classification else None,
                     'test_recall': test_recall_scores[-1] if is_classification else None,
                     'test_confusion_matrix': test_confusion_matrix if is_classification else None,
+                    'test_auc': test_auc_scores[-1] if is_classification else None,
+                    'test_pr_auc': test_pr_auc_scores[-1] if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
@@ -7002,8 +7100,10 @@ class TrainingPipeline:
                 if hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
                     final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
+                    final_prob = self._probability_metrics(best_model, X_test, y_test)
                 else:
                     final_test_auc = 0.0
+                    final_prob = {}
 
             else:  # regression
                 final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
@@ -7164,6 +7264,9 @@ class TrainingPipeline:
                         "test_precision": float(final_test_precision),
                         "test_recall": float(final_test_recall),
                         "test_auc": float(final_test_auc),
+                        "test_pr_auc": float(final_prob.get('pr_auc', 0.0)),
+                        "positive_rate_test": float(final_prob.get('positive_rate', 0.0)),
+                        "f1_always_positive": float(final_prob.get('f1_always_positive', 0.0)),
                         "confusion_matrix": final_confusion_matrix
                     }
                 else:
@@ -7187,6 +7290,8 @@ class TrainingPipeline:
                         "accuracy_values": [float(x) for x in test_accuracy_scores],
                         "precision_values": [float(x) for x in test_precision_scores],
                         "recall_values": [float(x) for x in test_recall_scores],
+                        "auc_values": [float(x) for x in test_auc_scores],
+                        "pr_auc_values": [float(x) for x in test_pr_auc_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_f1": float(max(test_f1_scores)),
                         "best_accuracy": float(max(test_accuracy_scores)),
@@ -7195,7 +7300,11 @@ class TrainingPipeline:
                         "average_f1": float(np.mean(test_f1_scores)),
                         "average_accuracy": float(np.mean(test_accuracy_scores)),
                         "average_precision": float(np.mean(test_precision_scores)),
-                        "average_recall": float(np.mean(test_recall_scores))
+                        "average_recall": float(np.mean(test_recall_scores)),
+                        "best_auc": float(max(test_auc_scores)),
+                        "best_pr_auc": float(max(test_pr_auc_scores)),
+                        "average_auc": float(np.mean(test_auc_scores)),
+                        "average_pr_auc": float(np.mean(test_pr_auc_scores))
                     }
                 else:
                     results["iteration_metrics_summary"] = {
@@ -7233,11 +7342,15 @@ class TrainingPipeline:
                             h_f1 = [float(h['f1']) for h in valid_holdout]
                             h_prec = [float(h['precision']) for h in valid_holdout]
                             h_rec = [float(h['recall']) for h in valid_holdout]
+                            h_auc = [float(h.get('auc', 0.0)) for h in valid_holdout]
+                            h_pr_auc = [float(h.get('pr_auc', 0.0)) for h in valid_holdout]
                             results["holdout_iteration_summary"] = {
                                 "accuracy_values": h_acc,
                                 "f1_values": h_f1,
                                 "precision_values": h_prec,
                                 "recall_values": h_rec,
+                                "auc_values": h_auc,
+                                "pr_auc_values": h_pr_auc,
                                 "best_accuracy": float(max(h_acc)),
                                 "best_f1": float(max(h_f1)),
                                 "best_precision": float(max(h_prec)),
@@ -7245,7 +7358,11 @@ class TrainingPipeline:
                                 "average_accuracy": float(np.mean(h_acc)),
                                 "average_f1": float(np.mean(h_f1)),
                                 "average_precision": float(np.mean(h_prec)),
-                                "average_recall": float(np.mean(h_rec))
+                                "average_recall": float(np.mean(h_rec)),
+                                "best_auc": float(max(h_auc)),
+                                "best_pr_auc": float(max(h_pr_auc)),
+                                "average_auc": float(np.mean(h_auc)),
+                                "average_pr_auc": float(np.mean(h_pr_auc))
                             }
                         else:
                             h_rmse = [float(h['rmse']) for h in valid_holdout]
@@ -7293,7 +7410,7 @@ class TrainingPipeline:
                 print(f"        Best CV Score: {best_cv_score:.4f}")
                 print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
                 if is_classification:
-                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
+                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}  PR-AUC: {final_prob.get('pr_auc', 0.0):.4f}")
                 if not is_classification:
                     print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
                     print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
@@ -7303,7 +7420,7 @@ class TrainingPipeline:
                     hm = results["holdout_metrics"]
                     print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
                     if is_classification:
-                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
+                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}  PR-AUC: {hm.get('pr_auc', 0):.4f}")
                     else:
                         print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
                         print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
