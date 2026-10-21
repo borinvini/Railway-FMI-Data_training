@@ -1,7 +1,7 @@
 # Pipeline State Machine Configuration
 # Dictionary containing method names in execution order with enable/disable flags
 PREPROCESSING_STATE_MACHINE = {
-    "filter_by_target_station": True,
+    "filter_by_target_station": False,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "null_out_of_bounds_weather": True,
@@ -38,7 +38,7 @@ TRAIN_DELAY_MINUTES = 5
 # 'trainDisrupted' = delayed by more than TRAIN_DELAY_MINUTES OR cancelled. A cancelled train has no
 # delay value, so 'trainDelayed' alone can neither include nor label it. Switch to 'trainDelayed'
 # to train on the pure delay again (cancelled trains stay in the data either way).
-DEFAULT_TARGET_FEATURE = 'differenceInMinutes'
+DEFAULT_TARGET_FEATURE = 'trainDisrupted'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset',
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled', 'trainDisrupted'
 
