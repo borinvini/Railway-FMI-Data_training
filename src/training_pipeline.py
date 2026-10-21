@@ -46,7 +46,7 @@ from imblearn.under_sampling import TomekLinks
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import (
     accuracy_score, mean_absolute_error, mean_squared_error, precision_score, recall_score, roc_auc_score,
-    f1_score, r2_score, confusion_matrix
+    f1_score, r2_score, confusion_matrix, average_precision_score
 )
 
 import matplotlib
@@ -102,7 +102,7 @@ from config.const_training import (
     RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     RANDOM_FOREST_PARAM_DISTRIBUTIONS,
     RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION,
-    LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS,
+    LOGISTIC_BASELINE_CS,
     ELASTICNET_PARAM_DISTRIBUTIONS,
     NAIVE_BAYES_OUTPUT_FOLDER,
     NAIVE_BAYES_PARAM_DISTRIBUTIONS,
@@ -6078,670 +6078,613 @@ class TrainingPipeline:
                 "error": error_msg
             }
 
+    def _load_logistic_stage_inputs(self, data_dir, label):
+        """
+        Locate the single 505 train/test file pair for stage 1003 and read both.
+        Returns (inputs, None) on success or (None, error_result) on failure.
+        """
+        output_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"    {label}: Output directory: {output_dir}")
+
+        scaled_data_dir = data_dir or os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
+        train_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_train.parquet"))
+        test_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_test.parquet"))
+        if len(train_files) != 1 or len(test_files) != 1:
+            error_msg = (f"Expected exactly one train and one test file in {scaled_data_dir}. "
+                         f"Found {len(train_files)} train files and {len(test_files)} test files")
+            print(f"    {label}: {error_msg}")
+            return None, {"success": False, "error": error_msg}
+        train_file, test_file = train_files[0], test_files[0]
+
+        identifier_match = re.search(r'merged_data_(.+?)_train\.parquet', os.path.basename(train_file))
+        if not identifier_match:
+            error_msg = f"Could not extract identifier from {os.path.basename(train_file)}"
+            print(f"    {label}: {error_msg}")
+            return None, {"success": False, "error": error_msg}
+        file_identifier = identifier_match.group(1)
+        print(f"    {label}: Processing dataset: {file_identifier}")
+
+        target_feature = DEFAULT_TARGET_FEATURE
+        train_df = pd.read_parquet(train_file)
+        test_df = pd.read_parquet(test_file)
+        if target_feature not in train_df.columns:
+            error_msg = f"Target feature '{target_feature}' not found in dataset"
+            print(f"    {label}: {error_msg}")
+            return None, {"success": False, "error": error_msg}
+
+        return {
+            "output_dir": output_dir,
+            "scaled_data_dir": scaled_data_dir,
+            "train_file": train_file,
+            "test_file": test_file,
+            "file_identifier": file_identifier,
+            "target_feature": target_feature,
+            "train_df": train_df,
+            "test_df": test_df,
+        }, None
+
     def train_logistic_regression_with_randomized_search_cv(self, data_dir=None):
         """
-        Logistic Regression training method that tests different iteration counts and plots performance curve.
+        Stage 1003. Classification target: the simple linear baseline the tree models are
+        compared with (`_train_logistic_baseline_classifier`). Numeric target: ElasticNet
+        (`_train_elasticnet_regression`), since LogisticRegression has no regression form.
 
-        Uses LogisticRegression for classification and ElasticNet (regularized linear
-        regression) for regression, since sklearn's LogisticRegression has no direct
-        regression counterpart.
-
-        This method:
-        1. Tests RANDOM_SEARCH_ITERATIONS from 10 to 100 (step=10)
-        2. Tracks test F1 binary scores for each iteration count
-        3. Plots test_f1_binary vs n_iter curve
-        4. Saves the best model and performance metrics
+        The name predates the baseline: the classification path no longer runs a randomized
+        search or the iteration loop, so --search-iterations does not affect it.
         """
-
+        label = "train_logistic_regression_with_randomized_search_cv"
         try:
-            print(f"    train_logistic_regression_with_randomized_search_cv: Starting Logistic Regression training with iteration analysis...")
-
-            # Create output directory
-            output_dir = os.path.join(self.project_root, REGULARIZED_REGRESSION_OUTPUT_FOLDER)
-            os.makedirs(output_dir, exist_ok=True)
-
-            print(f"    train_logistic_regression_with_randomized_search_cv: Output directory: {output_dir}")
-
-            if data_dir is None:
-                data_dir = os.path.join(self.project_root, MERGED_SCALED_TRAINING_READY_OUTPUT_FOLDER)
-            scaled_data_dir = data_dir
-
-            # Find training and test files in the specified location
-            train_pattern = os.path.join(scaled_data_dir, "merged_data_*_train.parquet")
-            test_pattern = os.path.join(scaled_data_dir, "merged_data_*_test.parquet")
-
-            train_files = glob.glob(train_pattern)
-            test_files = glob.glob(test_pattern)
-
-            if not train_files or not test_files:
-                error_msg = f"Training or test files not found in {scaled_data_dir}. Train files: {len(train_files)}, Test files: {len(test_files)}"
-                print(f"    train_logistic_regression_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-
-            # Check if we have exactly one train/test file pair
-            if len(train_files) != 1 or len(test_files) != 1:
-                error_msg = f"Expected exactly one train and one test file. Found {len(train_files)} train files and {len(test_files)} test files"
-                print(f"    train_logistic_regression_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-
-            train_file = train_files[0]
-            test_file = test_files[0]
-
-            # Extract identifier from filename
-            train_filename = os.path.basename(train_file)
-            identifier_match = re.search(r'merged_data_(.+?)_train\.parquet', train_filename)
-            if not identifier_match:
-                error_msg = f"Could not extract identifier from {train_filename}"
-                print(f"    train_logistic_regression_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-
-            file_identifier = identifier_match.group(1)
-            print(f"    train_logistic_regression_with_randomized_search_cv: Processing dataset: {file_identifier}")
-
-            # Determine problem type based on target feature
             target_feature = DEFAULT_TARGET_FEATURE
-            is_classification = target_feature in CLASSIFICATION_PROBLEM
-            is_regression = target_feature in REGRESSION_PROBLEM
-
-            if not (is_classification or is_regression):
-                error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
-                print(f"    train_logistic_regression_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-
-            problem_type = "classification" if is_classification else "regression"
-            print(f"    train_logistic_regression_with_randomized_search_cv: Detected {problem_type} problem for target '{target_feature}'")
-
-            # Load training and test data
-            print(f"      Loading training data from {train_file}")
-            train_df = pd.read_parquet(train_file)
-
-            print(f"      Loading test data from {test_file}")
-            test_df = pd.read_parquet(test_file)
-
-            # Check if target feature exists
-            if target_feature not in train_df.columns:
-                error_msg = f"Target feature '{target_feature}' not found in dataset"
-                print(f"    train_logistic_regression_with_randomized_search_cv: {error_msg}")
-                return {
-                    "success": False,
-                    "error": error_msg
-                }
-
-            # Prepare features and target
-            feature_columns = [col for col in train_df.columns if col != target_feature]
-
-            X_train = train_df[feature_columns]
-            y_train = train_df[target_feature]
-            X_test = test_df[feature_columns]
-            y_test = test_df[target_feature]
-
-            # Out-of-time hold-out (optional) — never trained/tuned on, scored later
-            X_holdout, y_holdout = self._load_holdout_set(
-                scaled_data_dir, feature_columns, target_feature, "train_logistic_regression_with_randomized_search_cv"
-            )
-
-            print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
-            print(f"      Features: {len(feature_columns)}")
-
-            # Calculate sample weights if applicable
-            sample_weights = None
-            if WEIGHT_DELAY_COLUMN in train_df.columns:
-                print(f"      Calculating sample weights using '{WEIGHT_DELAY_COLUMN}'...")
-                weights = train_df[WEIGHT_DELAY_COLUMN].values
-
-                if is_classification:
-                    weights = np.clip(weights, 1, MAX_SAMPLE_WEIGHT_CLASSIFICATION)
-                else:
-                    weights = np.clip(weights, 1, MAX_SAMPLE_WEIGHT_REGRESSION)
-
-                sample_weights = weights
-                print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
-
-            # Day-grouped CV: rows of one operating day never sit in both the fitting and
-            # the validation fold (see src/cv_utils.py). None without a sidecar file.
-            groups = load_train_groups(train_file, len(train_df))
-            if groups is not None:
-                print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
-
-            # Set up cross-validation strategy
-            y_train_log = None  # assigned in regression branch below
-            y_shift = 0.0       # assigned in regression branch below
-            if is_classification:
-                cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
-                base_model = LogisticRegression(
-                    solver='saga',        # only solver supporting l1/l2/elasticnet — enables the full penalty search
-                    max_iter=5000,        # avoid ConvergenceWarning spam; not searched
-                    random_state=RANDOM_STATE,
-                    n_jobs=MODEL_N_JOBS,
-                    class_weight='balanced',  # instead of SMOTE
-                )
-                param_distributions = LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS
-                scoring_metric = SCORE_METRIC
-            else:
-                cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
-                base_model = ElasticNet(
-                    max_iter=5000,        # coordinate descent headroom; not searched
-                    random_state=RANDOM_STATE,
-                    # NOTE: ElasticNet does not support parallel job specification (raises TypeError)
-                )
-                param_distributions = ELASTICNET_PARAM_DISTRIBUTIONS
-                scoring_metric = 'neg_mean_absolute_error'
-                # Shift target so all values are positive, then log-transform to compress
-                # the extreme right tail (max 963 min) that deflates R² artificially.
-                y_shift = max(0.0, -float(y_train.min())) + 1.0
-                y_train_log = np.log1p(y_train + y_shift)
-                print(f"      Log-transform target: shift={y_shift:.2f}, "
-                      f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
-                      f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
-
-            # Define iteration range: 10 to 100 (step=10)
-            iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
-            print(f"      Testing iteration values: {iteration_values}")
-
-            # Initialize tracking lists
-            iteration_results = []
-            test_f1_scores = []
-            cv_scores = []
-            test_accuracy_scores = []
-            test_precision_scores = []
-            test_recall_scores = []
-            test_mae_scores = []
-            test_wmape_scores = []
-            test_bin_precision_scores = []
-            test_bin_recall_scores = []
-            test_bin_f1_scores = []
-            test_bin_accuracy_scores = []
-            holdout_metrics_per_iteration = []
-
-            best_model = None
-            best_cv_score = -np.inf
-            best_iteration = None
-
-            # Train models with different iteration counts
-            print(f"      Starting training with different iteration counts...")
-
-            # Each run is an independent random draw — not cumulative. The curve shows
-            # search-budget sensitivity, not convergence toward a global optimum.
-            for i, n_iter in enumerate(iteration_values):
-                print(f"      Progress: {i+1}/{len(iteration_values)} - Testing {n_iter} iterations...")
-
-                # Create RandomizedSearchCV with current iteration count
-                randomized_search = RandomizedSearchCV(
-                    estimator=base_model,
-                    param_distributions=param_distributions,
-                    n_iter=n_iter,
-                    scoring=scoring_metric,
-                    cv=cv_splitter,
-                    random_state=RANDOM_STATE,
-                    n_jobs=SEARCH_N_JOBS,
-                    verbose=0
-                )
-
-                # Fit with sample weights if available; use log-transformed y for regression
-                y_fit = y_train_log if not is_classification else y_train
-                if sample_weights is not None:
-                    randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
-                else:
-                    randomized_search.fit(X_train, y_fit, groups=groups)
-
-                # Get best model for current iteration count
-                current_best_model = randomized_search.best_estimator_
-                current_cv_score = randomized_search.best_score_
-
-                # Make predictions on test set; inverse-transform for regression
-                y_pred = current_best_model.predict(X_test)
-                if not is_classification:
-                    y_pred = np.expm1(y_pred) - y_shift
-
-                # Calculate test metrics
-                if is_classification:
-                    test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                    test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
-
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, Test F1 = {test_f1:.4f}, Test Accuracy = {test_accuracy:.4f}, Precision = {test_precision:.4f}, Recall = {test_recall:.4f}")
-
-                else:
-                    test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-                    test_mae = mean_absolute_error(y_test, y_pred)
-                    test_r2 = r2_score(y_test, y_pred)
-                    denom = np.sum(np.abs(y_test))
-                    test_wmape = (np.sum(np.abs(y_test - y_pred)) / denom * 100) if denom > 0 else 0.0
-
-                    y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
-                    y_pred_binary = (y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
-                    test_bin_precision = precision_score(y_test_binary, y_pred_binary, zero_division=0)
-                    test_bin_recall    = recall_score(y_test_binary, y_pred_binary, zero_division=0)
-                    test_bin_f1        = f1_score(y_test_binary, y_pred_binary, zero_division=0)
-                    test_bin_accuracy  = accuracy_score(y_test_binary, y_pred_binary)
-                    test_bin_confusion_matrix = confusion_matrix(y_test_binary, y_pred_binary).tolist()
-
-                    print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
-
-                # Score this iteration's model on the out-of-time hold-out too (tracking only —
-                # model selection below stays keyed on CV score, never on hold-out performance).
-                current_holdout_metrics = None
-                if X_holdout is not None:
-                    current_holdout_metrics = self._evaluate_holdout(
-                        current_best_model, X_holdout, y_holdout, is_classification, y_shift,
-                        "train_logistic_regression_with_randomized_search_cv"
-                    )
-                holdout_metrics_per_iteration.append(current_holdout_metrics)
-
-                # Select best model on CV score (not on test set) to avoid test-set overfitting
-                if current_cv_score > best_cv_score:
-                    best_cv_score = current_cv_score
-                    best_model = current_best_model
-                    best_iteration = n_iter
-
-                if is_classification:
-                    test_f1_scores.append(test_f1)
-                    test_accuracy_scores.append(test_accuracy)
-                    test_precision_scores.append(test_precision)
-                    test_recall_scores.append(test_recall)
-                else:
-                    test_f1_scores.append(test_rmse)
-                    test_mae_scores.append(test_mae)
-                    test_wmape_scores.append(test_wmape)
-                    test_bin_precision_scores.append(test_bin_precision)
-                    test_bin_recall_scores.append(test_bin_recall)
-                    test_bin_f1_scores.append(test_bin_f1)
-                    test_bin_accuracy_scores.append(test_bin_accuracy)
-
-                cv_scores.append(current_cv_score)
-
-                # Store detailed results
-                iteration_results.append({
-                    'n_iter': n_iter,
-                    'cv_score': current_cv_score,
-                    'test_metric': test_f1_scores[-1],
-                    'test_accuracy': test_accuracy_scores[-1] if is_classification else None,
-                    'test_precision': test_precision_scores[-1] if is_classification else None,
-                    'test_recall': test_recall_scores[-1] if is_classification else None,
-                    'test_confusion_matrix': test_confusion_matrix if is_classification else None,
-                    'test_mae': test_mae_scores[-1] if not is_classification else None,
-                    'test_wmape': test_wmape_scores[-1] if not is_classification else None,
-                    'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
-                    'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
-                    'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
-                    'test_bin_accuracy': test_bin_accuracy_scores[-1] if not is_classification else None,
-                    'test_bin_confusion_matrix': test_bin_confusion_matrix if not is_classification else None,
-                    'holdout_metrics': current_holdout_metrics,
-                    'best_params': randomized_search.best_params_
-                })
-
-            # Calculate final metrics once on the best model found across all iterations
-            print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
-            final_y_pred = best_model.predict(X_test)
-            if not is_classification:
-                final_y_pred = np.expm1(final_y_pred) - y_shift
-
-            if is_classification:
-                final_test_accuracy = accuracy_score(y_test, final_y_pred)
-                final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
-
-                if hasattr(best_model, 'predict_proba'):
-                    final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
-                    final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
-                else:
-                    final_test_auc = 0.0
-
-            else:  # regression
-                final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
-                final_test_mae = mean_absolute_error(y_test, final_y_pred)
-                final_test_r2 = r2_score(y_test, final_y_pred)
-                denom = np.sum(np.abs(y_test))
-                final_test_wmape = (np.sum(np.abs(y_test - final_y_pred)) / denom * 100) if denom > 0 else 0.0
-
-                y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
-                final_y_pred_binary = (final_y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
-                final_bin_precision = precision_score(y_test_binary, final_y_pred_binary, zero_division=0)
-                final_bin_recall    = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
-                final_bin_f1        = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
-                final_bin_accuracy  = accuracy_score(y_test_binary, final_y_pred_binary)
-                final_bin_confusion_matrix = confusion_matrix(y_test_binary, final_y_pred_binary).tolist()
-
-            # Create performance curve plot
-            print(f"      Creating performance curve plot...")
-
-            fig, ax1 = plt.subplots(figsize=(14, 8))
-
-            color1 = 'tab:blue'
-            ax1.set_xlabel('Number of RandomizedSearch Iterations', fontsize=13)
-            ax1.set_ylabel(f'Test {"F1 Binary Score" if is_classification else "RMSE"}', color=color1, fontsize=13)
-            line1 = ax1.plot(iteration_values, test_f1_scores, 'o-', color=color1, linewidth=3, markersize=8,
-                            label=f'Test {"F1 Binary" if is_classification else "RMSE"}')
-            ax1.tick_params(axis='y', labelcolor=color1)
-            ax1.grid(True, alpha=0.3)
-
-            ax2 = ax1.twinx()
-            color2 = 'tab:green'
-            ax2.set_ylabel('Cross-Validation Score', color=color2, fontsize=13)
-            line2 = ax2.plot(iteration_values, cv_scores, 's-', color=color2, linewidth=3, markersize=8,
-                            label='CV Score')
-            ax2.tick_params(axis='y', labelcolor=color2)
-
-            if best_iteration:
-                best_idx = iteration_values.index(best_iteration)
-
-                ax1.plot(best_iteration, test_f1_scores[best_idx], 'o', color='red', markersize=15,
-                        markerfacecolor='red', markeredgecolor='darkred', markeredgewidth=2)
-
-                ax2.plot(best_iteration, cv_scores[best_idx], 's', color='red', markersize=15,
-                        markerfacecolor='red', markeredgecolor='darkred', markeredgewidth=2)
-
-                ax1.annotate(f'Best at {best_iteration} iterations\nTest Score: {test_f1_scores[best_idx]:.4f}\nCV Score: {cv_scores[best_idx]:.4f}',
-                            xy=(best_iteration, test_f1_scores[best_idx]),
-                            xytext=(20, 30), textcoords='offset points',
-                            bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.8, edgecolor='orange'),
-                            arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.2', color='red'),
-                            fontsize=11, fontweight='bold')
-
-            plt.title(f'Logistic Regression Performance vs RandomizedSearch Iterations\nDataset: {file_identifier}',
-                    fontsize=16, fontweight='bold', pad=20)
-
-            lines1, labels1 = ax1.get_legend_handles_labels()
-            lines2, labels2 = ax2.get_legend_handles_labels()
-            ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', bbox_to_anchor=(0.02, 0.98),
-                    fontsize=12, framealpha=0.9)
-
-            plt.tight_layout()
-            plot_filename = os.path.join(output_dir, f'logistic_regression_iteration_analysis_{file_identifier}.png')
-            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
-            plt.close()
-            print(f"      Performance curve saved to: {plot_filename}")
-
-            # CREATE AND SAVE FEATURE IMPORTANCE PLOT
-            results = {}
-            if best_model is not None:
-                print(f"      Creating feature importance plot...")
-
-                # Linear models: use coefficients instead of tree-based importance scores.
-                # Binary LogisticRegression.coef_ has shape (1, n_features); ElasticNet.coef_
-                # has shape (n_features,) for a single-target regression.
-                coef = best_model.coef_[0] if is_classification else best_model.coef_
-                feature_importance = np.abs(coef)   # magnitude drives sorting + bar length
-                feature_names = feature_columns
-
-                importance_df = pd.DataFrame({
-                    'feature': feature_names,
-                    'importance': feature_importance,  # |coef|, used for sort + plot
-                    'coefficient': coef,                # signed — preserves direction of effect
-                }).sort_values('importance', ascending=True)
-
-                plt.figure(figsize=(12, max(8, len(feature_names) * 0.4)))
-
-                bars = plt.barh(range(len(importance_df)), importance_df['importance'])
-
-                plt.yticks(range(len(importance_df)), importance_df['feature'])
-                plt.xlabel('Coefficient Magnitude', fontsize=12)
-                plt.title(f'Logistic Regression Coefficient Magnitude - Best Model ({problem_type.title()})\n'
-                        f'Dataset: {file_identifier} | Best Iteration: {best_iteration}', fontsize=14)
-
-                for i, (bar, importance) in enumerate(zip(bars, importance_df['importance'])):
-                    plt.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height()/2,
-                            f'{importance:.3f}',
-                            ha='left', va='center', fontsize=10)
-
-                normalized_importance = (importance_df['importance'] - importance_df['importance'].min()) / \
-                                    (importance_df['importance'].max() - importance_df['importance'].min() + 1e-8)
-
-                colors = plt.cm.RdYlGn(normalized_importance)
-                for bar, color in zip(bars, colors):
-                    bar.set_color(color)
-
-                plt.grid(axis='x', alpha=0.3)
-                plt.tight_layout()
-
-                importance_plot_filename = os.path.join(output_dir, f'logistic_regression_feature_importance_{file_identifier}.png')
-                plt.savefig(importance_plot_filename, dpi=300, bbox_inches='tight')
-                print(f"      Feature importance plot saved to: {importance_plot_filename}")
-                plt.close()
-
-                importance_csv_filename = os.path.join(output_dir, f'logistic_regression_feature_importance_{file_identifier}.csv')
-                importance_df.sort_values('importance', ascending=False).to_csv(importance_csv_filename, index=False)
-                print(f"      Feature importance data saved to: {importance_csv_filename}")
-
-                # Save confusion matrix plot for the best model
-                cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
-                cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
-                cm_title = f'Logistic Regression Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
-                cm_plot_filename = os.path.join(output_dir, f'logistic_regression_confusion_matrix_{file_identifier}.png')
-                self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
-                print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
-
-                # Create comprehensive results dictionary
-                results = {
-                    "file_identifier": file_identifier,
-                    "problem_type": problem_type,
-                    "target_feature": target_feature,
-                    "dataset_info": {
-                        "train_samples": len(X_train),
-                        "test_samples": len(X_test),
-                        "features_count": len(feature_columns),
-                        "train_file": train_file,
-                        "test_file": test_file
-                    },
-                    "best_iteration": best_iteration,
-                    "iteration_analysis": iteration_results,
-                    "best_model_params": best_model.get_params() if best_model else None,
-                    "feature_importance": dict(zip(feature_columns, np.abs(coef))) if best_model else None
-                }
-
-                # Add problem-specific metrics
-                if is_classification:
-                    results["final_metrics"] = {
-                        "test_accuracy": float(final_test_accuracy),
-                        "test_f1": float(final_test_f1),
-                        "test_precision": float(final_test_precision),
-                        "test_recall": float(final_test_recall),
-                        "test_auc": float(final_test_auc),
-                        "confusion_matrix": final_confusion_matrix
-                    }
-                else:
-                    results["final_metrics"] = {
-                        "test_rmse": float(final_test_rmse),
-                        "test_mae": float(final_test_mae),
-                        "test_wmape": float(final_test_wmape),
-                        "test_r2": float(final_test_r2),
-                        "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
-                        "test_bin_precision": float(final_bin_precision),
-                        "test_bin_recall": float(final_bin_recall),
-                        "test_bin_f1": float(final_bin_f1),
-                        "test_bin_accuracy": float(final_bin_accuracy),
-                        "test_bin_confusion_matrix": final_bin_confusion_matrix
-                    }
-
-                # Add iteration-wise metrics summary
-                if is_classification:
-                    results["iteration_metrics_summary"] = {
-                        "f1_values": [float(x) for x in test_f1_scores],
-                        "accuracy_values": [float(x) for x in test_accuracy_scores],
-                        "precision_values": [float(x) for x in test_precision_scores],
-                        "recall_values": [float(x) for x in test_recall_scores],
-                        "cv_scores": [float(x) for x in cv_scores],
-                        "best_f1": float(max(test_f1_scores)),
-                        "best_accuracy": float(max(test_accuracy_scores)),
-                        "best_precision": float(max(test_precision_scores)),
-                        "best_recall": float(max(test_recall_scores)),
-                        "average_f1": float(np.mean(test_f1_scores)),
-                        "average_accuracy": float(np.mean(test_accuracy_scores)),
-                        "average_precision": float(np.mean(test_precision_scores)),
-                        "average_recall": float(np.mean(test_recall_scores))
-                    }
-                else:
-                    results["iteration_metrics_summary"] = {
-                        "rmse_values": [float(x) for x in test_f1_scores],
-                        "mae_values": [float(x) for x in test_mae_scores],
-                        "wmape_values": [float(x) for x in test_wmape_scores],
-                        "cv_scores": [float(x) for x in cv_scores],
-                        "best_rmse": float(min(test_f1_scores)),
-                        "best_mae": float(min(test_mae_scores)),
-                        "best_wmape": float(min(test_wmape_scores)),
-                        "average_rmse": float(np.mean(test_f1_scores)),
-                        "average_mae": float(np.mean(test_mae_scores)),
-                        "average_wmape": float(np.mean(test_wmape_scores)),
-                        "bin_f1_values": [float(x) for x in test_bin_f1_scores],
-                        "bin_accuracy_values": [float(x) for x in test_bin_accuracy_scores],
-                        "bin_precision_values": [float(x) for x in test_bin_precision_scores],
-                        "bin_recall_values": [float(x) for x in test_bin_recall_scores]
-                    }
-
-                # Add out-of-time hold-out metrics (never trained/tuned on) if available
-                if X_holdout is not None:
-                    results["holdout_metrics"] = self._evaluate_holdout(
-                        best_model, X_holdout, y_holdout, is_classification, y_shift,
-                        "train_logistic_regression_with_randomized_search_cv"
-                    )
-                    results["dataset_info"]["holdout_samples"] = len(X_holdout)
-
-                    # Per-iteration hold-out metrics plus a summary mirroring
-                    # iteration_metrics_summary above.
-                    results["holdout_iteration_analysis"] = holdout_metrics_per_iteration
-                    valid_holdout = [h for h in holdout_metrics_per_iteration if h is not None]
-                    if valid_holdout:
-                        if is_classification:
-                            h_acc = [float(h['accuracy']) for h in valid_holdout]
-                            h_f1 = [float(h['f1']) for h in valid_holdout]
-                            h_prec = [float(h['precision']) for h in valid_holdout]
-                            h_rec = [float(h['recall']) for h in valid_holdout]
-                            results["holdout_iteration_summary"] = {
-                                "accuracy_values": h_acc,
-                                "f1_values": h_f1,
-                                "precision_values": h_prec,
-                                "recall_values": h_rec,
-                                "best_accuracy": float(max(h_acc)),
-                                "best_f1": float(max(h_f1)),
-                                "best_precision": float(max(h_prec)),
-                                "best_recall": float(max(h_rec)),
-                                "average_accuracy": float(np.mean(h_acc)),
-                                "average_f1": float(np.mean(h_f1)),
-                                "average_precision": float(np.mean(h_prec)),
-                                "average_recall": float(np.mean(h_rec))
-                            }
-                        else:
-                            h_rmse = [float(h['rmse']) for h in valid_holdout]
-                            h_mae = [float(h['mae']) for h in valid_holdout]
-                            h_wmape = [float(h['wmape']) for h in valid_holdout]
-                            h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
-                            h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
-                            h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
-                            h_bin_acc = [float(h['bin_accuracy']) for h in valid_holdout]
-                            results["holdout_iteration_summary"] = {
-                                "rmse_values": h_rmse,
-                                "mae_values": h_mae,
-                                "wmape_values": h_wmape,
-                                "best_rmse": float(min(h_rmse)),
-                                "best_mae": float(min(h_mae)),
-                                "best_wmape": float(min(h_wmape)),
-                                "average_rmse": float(np.mean(h_rmse)),
-                                "average_mae": float(np.mean(h_mae)),
-                                "average_wmape": float(np.mean(h_wmape)),
-                                "bin_f1_values": h_bin_f1,
-                                "bin_precision_values": h_bin_prec,
-                                "bin_recall_values": h_bin_rec,
-                                "bin_accuracy_values": h_bin_acc
-                            }
-
-                results_file = os.path.join(output_dir, f"logistic_regression_iteration_analysis_{file_identifier}.json")
-                with open(results_file, 'w') as f:
-                    results_str = json.loads(json.dumps(results, default=str))
-                    json.dump(results_str, f, indent=2)
-
-                print(f"      Results saved to: {results_file}")
-
-                # Save the best model
-                model_filename = os.path.join(output_dir, f'logistic_regression_best_model_{file_identifier}.pkl')
-                joblib.dump(best_model, model_filename)
-                print(f"      Best model saved to: {model_filename}")
-
-                # Find the index of the best iteration in the results list
-                best_iteration_idx = iteration_values.index(best_iteration) if best_iteration else 0
-
-                # Print summary
-                print(f"      Training Summary:")
-                print(f"        Problem Type: {problem_type}")
-                print(f"        Best Iteration Count: {best_iteration}")
-                print(f"        Best CV Score: {best_cv_score:.4f}")
-                print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
-                if is_classification:
-                    print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}")
-                if not is_classification:
-                    print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
-                    print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                    print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
-
-                if results.get("holdout_metrics"):
-                    hm = results["holdout_metrics"]
-                    print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
-                    if is_classification:
-                        print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}")
-                    else:
-                        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
-                        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
-
-                if is_classification:
-                    return {
-                        "success": True,
-                        "models_trained": 1,
-                        "problem_type": problem_type,
-                        "target_feature": target_feature,
-                        "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
-                        "test_f1": float(final_test_f1),
-                        "output_directory": output_dir,
-                        "results_file": results_file
-                    }
-                else:
-                    return {
-                        "success": True,
-                        "models_trained": 1,
-                        "problem_type": problem_type,
-                        "target_feature": target_feature,
-                        "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
-                        "test_rmse": float(final_test_rmse),
-                        "test_mae": float(final_test_mae),
-                        "test_wmape": float(final_test_wmape),
-                        "test_r2": float(final_test_r2),
-                        "test_bin_precision": float(final_bin_precision),
-                        "test_bin_recall": float(final_bin_recall),
-                        "test_bin_f1": float(final_bin_f1),
-                        "test_bin_accuracy": float(final_bin_accuracy),
-                        "output_directory": output_dir,
-                        "results_file": results_file
-                    }
-            else:
-                return {
-                    "success": False,
-                    "error": "No model was trained — all iterations failed to produce a best estimator"
-                }
-
+            if target_feature in CLASSIFICATION_PROBLEM:
+                return self._train_logistic_baseline_classifier(data_dir)
+            if target_feature in REGRESSION_PROBLEM:
+                return self._train_elasticnet_regression(data_dir)
+            error_msg = f"Target feature '{target_feature}' not recognized as classification or regression problem"
+            print(f"    {label}: {error_msg}")
+            return {"success": False, "error": error_msg}
         except Exception as e:
-            error_msg = f"Error in train_logistic_regression_with_randomized_search_cv: {str(e)}"
-            print(f"    train_logistic_regression_with_randomized_search_cv: {error_msg}")
+            error_msg = f"Error in {label}: {str(e)}"
+            print(f"    {label}: {error_msg}")
             import traceback
             traceback.print_exc()
+            return {"success": False, "error": error_msg}
+
+    def _train_logistic_baseline_classifier(self, data_dir=None):
+        """
+        L2 logistic regression as the classification baseline.
+
+        StandardScaler + LogisticRegression(l2, lbfgs, class_weight='balanced'); the only
+        thing tuned is C, by one day-grouped GridSearchCV scored with SCORE_METRIC. It is
+        deliberately not a search over penalties and class weights: that made the baseline
+        a competitor (and overrode 'balanced'), and ~2,750 saga fits ran past the 8 h limit.
+        The scaler sits inside the pipeline because stage 505 scales only the weather columns,
+        so the penalty and the coefficient chart would otherwise compare unequal scales.
+        Reports PR-AUC and the F1 of "every train is disrupted" next to the usual metrics.
+        """
+        label = "train_logistic_regression_with_randomized_search_cv"
+        print(f"    {label}: Starting the L2 logistic baseline...")
+        inputs, error = self._load_logistic_stage_inputs(data_dir, label)
+        if error:
+            return error
+
+        output_dir = inputs["output_dir"]
+        scaled_data_dir = inputs["scaled_data_dir"]
+        train_file, test_file = inputs["train_file"], inputs["test_file"]
+        file_identifier = inputs["file_identifier"]
+        target_feature = inputs["target_feature"]
+        train_df, test_df = inputs["train_df"], inputs["test_df"]
+
+        feature_columns = [col for col in train_df.columns if col != target_feature]
+        X_train, y_train = train_df[feature_columns], train_df[target_feature]
+        X_test, y_test = test_df[feature_columns], test_df[target_feature]
+        X_holdout, y_holdout = self._load_holdout_set(scaled_data_dir, feature_columns, target_feature, label)
+        print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
+        print(f"      Features: {len(feature_columns)}")
+
+        fit_kwargs = {}
+        if WEIGHT_DELAY_COLUMN in train_df.columns:
+            weights = np.clip(train_df[WEIGHT_DELAY_COLUMN].values, 1, MAX_SAMPLE_WEIGHT_CLASSIFICATION)
+            fit_kwargs["logreg__sample_weight"] = weights
+            print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
+
+        # Rows of one operating day never sit in both the fitting and the validation fold.
+        groups = load_train_groups(train_file, len(train_df))
+        if groups is not None:
+            print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+        cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
+
+        search = GridSearchCV(
+            estimator=Pipeline([
+                ("scale", StandardScaler()),
+                ("logreg", LogisticRegression(
+                    penalty='l2',
+                    solver='lbfgs',
+                    max_iter=5000,
+                    random_state=RANDOM_STATE,
+                    n_jobs=MODEL_N_JOBS,
+                    class_weight='balanced',  # instead of SMOTE; fixed, not searched
+                )),
+            ]),
+            param_grid={"logreg__C": list(LOGISTIC_BASELINE_CS)},
+            scoring=SCORE_METRIC,
+            cv=cv_splitter,
+            n_jobs=SEARCH_N_JOBS,
+            verbose=0,
+        )
+        print(f"      Tuning C over {list(LOGISTIC_BASELINE_CS)} ({SCORE_METRIC}, day-grouped CV)")
+        search.fit(X_train, y_train, groups=groups, **fit_kwargs)
+        best_model = search.best_estimator_
+        best_c = float(search.best_params_["logreg__C"])
+        cv_score = float(search.best_score_)
+        c_scores = [
+            {"C": float(p["logreg__C"]), "cv_score": float(m), "cv_score_std": float(s)}
+            for p, m, s in zip(search.cv_results_["params"],
+                               search.cv_results_["mean_test_score"],
+                               search.cv_results_["std_test_score"])
+        ]
+
+        def _reference(y):
+            # F1 of predicting "disrupted" for every train: what the baseline has to beat.
+            p = float(np.mean(np.asarray(y).astype(float)))
+            return {"positive_rate": p, "f1_always_positive": (2 * p / (1 + p)) if p > 0 else 0.0}
+
+        def _score(model, X, y):
+            metrics = self._score_predictions(y, model.predict(X), True)
+            proba = model.predict_proba(X)[:, 1]
+            two_classes = len(np.unique(y)) > 1
+            metrics['auc'] = roc_auc_score(y, proba) if two_classes else 0.0
+            metrics['pr_auc'] = average_precision_score(y, proba) if two_classes else 0.0
+            metrics.update(_reference(y))
+            return metrics
+
+        test_metrics = _score(best_model, X_test, y_test)
+        holdout_metrics = _score(best_model, X_holdout, y_holdout) if X_holdout is not None else None
+
+        coef = best_model.named_steps["logreg"].coef_[0]
+        importance_df = pd.DataFrame({
+            'feature': feature_columns,
+            'importance': np.abs(coef),
+            'coefficient': coef,   # signed, on standardised features
+        })
+
+        # --- plots and tables -----------------------------------------------------
+        c_values = [row["C"] for row in c_scores]
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.errorbar(c_values, [row["cv_score"] for row in c_scores],
+                    yerr=[row["cv_score_std"] for row in c_scores], fmt='o-', capsize=4)
+        ax.axvline(best_c, color='red', linestyle='--', label=f'best C = {best_c:g}')
+        ax.set_xscale('log')
+        ax.set_xlabel('C (inverse regularisation strength)')
+        ax.set_ylabel(f'CV {SCORE_METRIC} (mean ± std over day-grouped folds)')
+        ax.set_title(f'Logistic baseline: CV score by C\nDataset: {file_identifier}')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'logistic_regression_cv_by_C_{file_identifier}.png'),
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+
+        plot_df = importance_df.sort_values('importance', ascending=True)
+        plt.figure(figsize=(12, max(8, len(plot_df) * 0.4)))
+        plt.barh(plot_df['feature'], plot_df['coefficient'],
+                 color=np.where(plot_df['coefficient'] >= 0, 'tab:red', 'tab:blue'))
+        plt.axvline(0, color='black', linewidth=0.8)
+        plt.xlabel('Coefficient on standardised feature (red: raises P(disrupted), blue: lowers it)', fontsize=12)
+        plt.title(f'Logistic baseline coefficients (Classification)\nDataset: {file_identifier} | C = {best_c:g}',
+                  fontsize=14)
+        plt.grid(axis='x', alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'logistic_regression_feature_importance_{file_identifier}.png'),
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+        importance_df.sort_values('importance', ascending=False).to_csv(
+            os.path.join(output_dir, f'logistic_regression_feature_importance_{file_identifier}.csv'), index=False)
+
+        self._save_confusion_matrix_plot(
+            test_metrics['confusion_matrix'], [str(c) for c in sorted(np.unique(y_test))],
+            f'Logistic Baseline Confusion Matrix (Classification)\nDataset: {file_identifier} | C = {best_c:g}',
+            os.path.join(output_dir, f'logistic_regression_confusion_matrix_{file_identifier}.png'))
+
+        results = {
+            "file_identifier": file_identifier,
+            "problem_type": "classification",
+            "target_feature": target_feature,
+            "model": "logistic_regression_l2",
+            "dataset_info": {
+                "train_samples": len(X_train),
+                "test_samples": len(X_test),
+                "features_count": len(feature_columns),
+                "train_file": train_file,
+                "test_file": test_file,
+            },
+            "best_C": best_c,
+            "tuning_metric": SCORE_METRIC,
+            "cv_score": cv_score,
+            "C_scores": c_scores,
+            "best_model_params": best_model.get_params(),
+            "feature_importance": dict(zip(feature_columns, np.abs(coef))),
+            "final_metrics": {
+                "test_accuracy": float(test_metrics['accuracy']),
+                "test_f1": float(test_metrics['f1']),
+                "test_precision": float(test_metrics['precision']),
+                "test_recall": float(test_metrics['recall']),
+                "test_auc": float(test_metrics['auc']),
+                "test_pr_auc": float(test_metrics['pr_auc']),
+                "positive_rate_test": test_metrics['positive_rate'],
+                "f1_always_positive": test_metrics['f1_always_positive'],
+                "confusion_matrix": test_metrics['confusion_matrix'],
+            },
+        }
+        if holdout_metrics is not None:
+            results["holdout_metrics"] = holdout_metrics
+            results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+        results_file = os.path.join(output_dir, f"logistic_regression_iteration_analysis_{file_identifier}.json")
+        with open(results_file, 'w') as f:
+            json.dump(json.loads(json.dumps(results, default=str)), f, indent=2)
+        joblib.dump(best_model, os.path.join(output_dir, f'logistic_regression_best_model_{file_identifier}.pkl'))
+        print(f"      Results saved to: {results_file}")
+
+        print(f"      Training Summary:")
+        print(f"        Best C: {best_c:g}   Best CV {SCORE_METRIC}: {cv_score:.4f}")
+        print(f"        Test    Accuracy: {test_metrics['accuracy']:.4f}  F1: {test_metrics['f1']:.4f}  "
+              f"Precision: {test_metrics['precision']:.4f}  Recall: {test_metrics['recall']:.4f}  "
+              f"AUC: {test_metrics['auc']:.4f}  PR-AUC: {test_metrics['pr_auc']:.4f}")
+        print(f"        Always-disrupted F1: {test_metrics['f1_always_positive']:.4f} "
+              f"(positive rate {test_metrics['positive_rate']:.4f})")
+        if holdout_metrics is not None:
+            print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
+            print(f"        Accuracy: {holdout_metrics['accuracy']:.4f}  F1: {holdout_metrics['f1']:.4f}  "
+                  f"Precision: {holdout_metrics['precision']:.4f}  Recall: {holdout_metrics['recall']:.4f}  "
+                  f"AUC: {holdout_metrics['auc']:.4f}  PR-AUC: {holdout_metrics['pr_auc']:.4f}")
+
+        return {
+            "success": True,
+            "models_trained": 1,
+            "problem_type": "classification",
+            "target_feature": target_feature,
+            "cv_score": cv_score,
+            "test_f1": float(test_metrics['f1']),
+            "output_directory": output_dir,
+            "results_file": results_file,
+        }
+
+    def _train_elasticnet_regression(self, data_dir=None):
+        """
+        Numeric-target counterpart of stage 1003: ElasticNet on log1p(delay + shift), with the
+        search-budget sweep (RANDOM_SEARCH_ITERATIONS 10..N, step 10). Each run is an independent
+        random draw, so the curve shows search-budget sensitivity, not convergence.
+        """
+        label = "train_logistic_regression_with_randomized_search_cv"
+        print(f"    {label}: Starting ElasticNet regression with iteration analysis...")
+        inputs, error = self._load_logistic_stage_inputs(data_dir, label)
+        if error:
+            return error
+
+        output_dir = inputs["output_dir"]
+        scaled_data_dir = inputs["scaled_data_dir"]
+        train_file, test_file = inputs["train_file"], inputs["test_file"]
+        file_identifier = inputs["file_identifier"]
+        target_feature = inputs["target_feature"]
+        train_df, test_df = inputs["train_df"], inputs["test_df"]
+
+        feature_columns = [col for col in train_df.columns if col != target_feature]
+        X_train, y_train = train_df[feature_columns], train_df[target_feature]
+        X_test, y_test = test_df[feature_columns], test_df[target_feature]
+        # Out-of-time hold-out (optional): never trained or tuned on, scored later
+        X_holdout, y_holdout = self._load_holdout_set(scaled_data_dir, feature_columns, target_feature, label)
+        print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
+        print(f"      Features: {len(feature_columns)}")
+
+        sample_weights = None
+        if WEIGHT_DELAY_COLUMN in train_df.columns:
+            sample_weights = np.clip(train_df[WEIGHT_DELAY_COLUMN].values, 1, MAX_SAMPLE_WEIGHT_REGRESSION)
+            print(f"      Sample weights - Min: {sample_weights.min():.2f}, Max: {sample_weights.max():.2f}, "
+                  f"Mean: {sample_weights.mean():.2f}")
+
+        groups = load_train_groups(train_file, len(train_df))
+        if groups is not None:
+            print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
+        cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
+
+        base_model = ElasticNet(
+            max_iter=5000,        # coordinate descent headroom; not searched
+            random_state=RANDOM_STATE,
+            # NOTE: ElasticNet does not support parallel job specification (raises TypeError)
+        )
+        # Shift the target so all values are positive, then log-transform to compress the
+        # extreme right tail (max 963 min) that deflates R2 artificially.
+        y_shift = max(0.0, -float(y_train.min())) + 1.0
+        y_train_log = np.log1p(y_train + y_shift)
+        print(f"      Log-transform target: shift={y_shift:.2f}, "
+              f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
+              f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
+
+        iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
+        print(f"      Testing iteration values: {iteration_values}")
+
+        iteration_results = []
+        rmse_scores, mae_scores, wmape_scores, cv_scores = [], [], [], []
+        bin_precision_scores, bin_recall_scores, bin_f1_scores, bin_accuracy_scores = [], [], [], []
+        holdout_metrics_per_iteration = []
+        best_model, best_cv_score, best_iteration = None, -np.inf, None
+
+        for i, n_iter in enumerate(iteration_values):
+            print(f"      Progress: {i+1}/{len(iteration_values)} - Testing {n_iter} iterations...")
+            randomized_search = RandomizedSearchCV(
+                estimator=base_model,
+                param_distributions=ELASTICNET_PARAM_DISTRIBUTIONS,
+                n_iter=n_iter,
+                scoring='neg_mean_absolute_error',
+                cv=cv_splitter,
+                random_state=RANDOM_STATE,
+                n_jobs=SEARCH_N_JOBS,
+                verbose=0
+            )
+            if sample_weights is not None:
+                randomized_search.fit(X_train, y_train_log, groups=groups, sample_weight=sample_weights)
+            else:
+                randomized_search.fit(X_train, y_train_log, groups=groups)
+
+            current_best_model = randomized_search.best_estimator_
+            current_cv_score = randomized_search.best_score_
+
+            y_pred = np.expm1(current_best_model.predict(X_test)) - y_shift
+            test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+            test_mae = mean_absolute_error(y_test, y_pred)
+            test_r2 = r2_score(y_test, y_pred)
+            denom = np.sum(np.abs(y_test))
+            test_wmape = (np.sum(np.abs(y_test - y_pred)) / denom * 100) if denom > 0 else 0.0
+
+            y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
+            y_pred_binary = (y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
+            test_bin_precision = precision_score(y_test_binary, y_pred_binary, zero_division=0)
+            test_bin_recall = recall_score(y_test_binary, y_pred_binary, zero_division=0)
+            test_bin_f1 = f1_score(y_test_binary, y_pred_binary, zero_division=0)
+            test_bin_accuracy = accuracy_score(y_test_binary, y_pred_binary)
+            test_bin_confusion_matrix = confusion_matrix(y_test_binary, y_pred_binary).tolist()
+
+            print(f"        Iteration {n_iter}: CV Score = {current_cv_score:.4f}, RMSE = {test_rmse:.4f}, "
+                  f"R² = {test_r2:.4f}, MAE = {test_mae:.4f}, WMAPE = {test_wmape:.2f}%, "
+                  f"Bin F1 = {test_bin_f1:.4f}, Bin Acc = {test_bin_accuracy:.4f}")
+
+            # Tracking only: model selection below stays keyed on the CV score, never on hold-out.
+            current_holdout_metrics = None
+            if X_holdout is not None:
+                current_holdout_metrics = self._evaluate_holdout(
+                    current_best_model, X_holdout, y_holdout, False, y_shift, label
+                )
+            holdout_metrics_per_iteration.append(current_holdout_metrics)
+
+            # Select on CV score (not on the test set) to avoid test-set overfitting
+            if current_cv_score > best_cv_score:
+                best_cv_score = current_cv_score
+                best_model = current_best_model
+                best_iteration = n_iter
+
+            rmse_scores.append(test_rmse)
+            mae_scores.append(test_mae)
+            wmape_scores.append(test_wmape)
+            bin_precision_scores.append(test_bin_precision)
+            bin_recall_scores.append(test_bin_recall)
+            bin_f1_scores.append(test_bin_f1)
+            bin_accuracy_scores.append(test_bin_accuracy)
+            cv_scores.append(current_cv_score)
+
+            iteration_results.append({
+                'n_iter': n_iter,
+                'cv_score': current_cv_score,
+                'test_metric': test_rmse,
+                'test_mae': test_mae,
+                'test_wmape': test_wmape,
+                'test_bin_f1': test_bin_f1,
+                'test_bin_precision': test_bin_precision,
+                'test_bin_recall': test_bin_recall,
+                'test_bin_accuracy': test_bin_accuracy,
+                'test_bin_confusion_matrix': test_bin_confusion_matrix,
+                'holdout_metrics': current_holdout_metrics,
+                'best_params': randomized_search.best_params_
+            })
+
+        if best_model is None:
             return {
                 "success": False,
-                "error": error_msg
+                "error": "No model was trained — all iterations failed to produce a best estimator"
             }
+
+        # Final metrics once, on the best model across all iterations
+        print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
+        final_y_pred = np.expm1(best_model.predict(X_test)) - y_shift
+        final_test_rmse = np.sqrt(mean_squared_error(y_test, final_y_pred))
+        final_test_mae = mean_absolute_error(y_test, final_y_pred)
+        final_test_r2 = r2_score(y_test, final_y_pred)
+        denom = np.sum(np.abs(y_test))
+        final_test_wmape = (np.sum(np.abs(y_test - final_y_pred)) / denom * 100) if denom > 0 else 0.0
+
+        y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
+        final_y_pred_binary = (final_y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
+        final_bin_precision = precision_score(y_test_binary, final_y_pred_binary, zero_division=0)
+        final_bin_recall = recall_score(y_test_binary, final_y_pred_binary, zero_division=0)
+        final_bin_f1 = f1_score(y_test_binary, final_y_pred_binary, zero_division=0)
+        final_bin_accuracy = accuracy_score(y_test_binary, final_y_pred_binary)
+        final_bin_confusion_matrix = confusion_matrix(y_test_binary, final_y_pred_binary).tolist()
+
+        # Performance curve
+        fig, ax1 = plt.subplots(figsize=(14, 8))
+        ax1.set_xlabel('Number of RandomizedSearch Iterations', fontsize=13)
+        ax1.set_ylabel('Test RMSE', color='tab:blue', fontsize=13)
+        ax1.plot(iteration_values, rmse_scores, 'o-', color='tab:blue', linewidth=3, markersize=8, label='Test RMSE')
+        ax1.tick_params(axis='y', labelcolor='tab:blue')
+        ax1.grid(True, alpha=0.3)
+        ax2 = ax1.twinx()
+        ax2.set_ylabel('Cross-Validation Score', color='tab:green', fontsize=13)
+        ax2.plot(iteration_values, cv_scores, 's-', color='tab:green', linewidth=3, markersize=8, label='CV Score')
+        ax2.tick_params(axis='y', labelcolor='tab:green')
+        best_idx = iteration_values.index(best_iteration)
+        ax1.plot(best_iteration, rmse_scores[best_idx], 'o', color='red', markersize=15,
+                 markerfacecolor='red', markeredgecolor='darkred', markeredgewidth=2)
+        ax2.plot(best_iteration, cv_scores[best_idx], 's', color='red', markersize=15,
+                 markerfacecolor='red', markeredgecolor='darkred', markeredgewidth=2)
+        ax1.annotate(f'Best at {best_iteration} iterations\nTest Score: {rmse_scores[best_idx]:.4f}\n'
+                     f'CV Score: {cv_scores[best_idx]:.4f}',
+                     xy=(best_iteration, rmse_scores[best_idx]), xytext=(20, 30), textcoords='offset points',
+                     bbox=dict(boxstyle='round,pad=0.5', facecolor='yellow', alpha=0.8, edgecolor='orange'),
+                     arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.2', color='red'),
+                     fontsize=11, fontweight='bold')
+        plt.title(f'ElasticNet Performance vs RandomizedSearch Iterations\nDataset: {file_identifier}',
+                  fontsize=16, fontweight='bold', pad=20)
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left', bbox_to_anchor=(0.02, 0.98),
+                   fontsize=12, framealpha=0.9)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'logistic_regression_iteration_analysis_{file_identifier}.png'),
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Coefficient magnitudes (signed coefficient kept in the CSV)
+        coef = best_model.coef_
+        importance_df = pd.DataFrame({
+            'feature': feature_columns,
+            'importance': np.abs(coef),
+            'coefficient': coef,
+        }).sort_values('importance', ascending=True)
+        plt.figure(figsize=(12, max(8, len(feature_columns) * 0.4)))
+        bars = plt.barh(range(len(importance_df)), importance_df['importance'])
+        plt.yticks(range(len(importance_df)), importance_df['feature'])
+        plt.xlabel('Coefficient Magnitude', fontsize=12)
+        plt.title(f'ElasticNet Coefficient Magnitude - Best Model (Regression)\n'
+                  f'Dataset: {file_identifier} | Best Iteration: {best_iteration}', fontsize=14)
+        for bar, importance in zip(bars, importance_df['importance']):
+            plt.text(bar.get_width() + 0.001, bar.get_y() + bar.get_height() / 2, f'{importance:.3f}',
+                     ha='left', va='center', fontsize=10)
+        normalized = (importance_df['importance'] - importance_df['importance'].min()) / \
+                     (importance_df['importance'].max() - importance_df['importance'].min() + 1e-8)
+        for bar, color in zip(bars, plt.cm.RdYlGn(normalized)):
+            bar.set_color(color)
+        plt.grid(axis='x', alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'logistic_regression_feature_importance_{file_identifier}.png'),
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+        importance_df.sort_values('importance', ascending=False).to_csv(
+            os.path.join(output_dir, f'logistic_regression_feature_importance_{file_identifier}.csv'), index=False)
+
+        self._save_confusion_matrix_plot(
+            final_bin_confusion_matrix, ['On-time', 'Delayed'],
+            f'ElasticNet Confusion Matrix - Best Model (Regression)\n'
+            f'Dataset: {file_identifier} | Best Iteration: {best_iteration}',
+            os.path.join(output_dir, f'logistic_regression_confusion_matrix_{file_identifier}.png'))
+
+        results = {
+            "file_identifier": file_identifier,
+            "problem_type": "regression",
+            "target_feature": target_feature,
+            "dataset_info": {
+                "train_samples": len(X_train),
+                "test_samples": len(X_test),
+                "features_count": len(feature_columns),
+                "train_file": train_file,
+                "test_file": test_file
+            },
+            "best_iteration": best_iteration,
+            "iteration_analysis": iteration_results,
+            "best_model_params": best_model.get_params(),
+            "feature_importance": dict(zip(feature_columns, np.abs(coef))),
+            "final_metrics": {
+                "test_rmse": float(final_test_rmse),
+                "test_mae": float(final_test_mae),
+                "test_wmape": float(final_test_wmape),
+                "test_r2": float(final_test_r2),
+                "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
+                "test_bin_precision": float(final_bin_precision),
+                "test_bin_recall": float(final_bin_recall),
+                "test_bin_f1": float(final_bin_f1),
+                "test_bin_accuracy": float(final_bin_accuracy),
+                "test_bin_confusion_matrix": final_bin_confusion_matrix
+            },
+            "iteration_metrics_summary": {
+                "rmse_values": [float(x) for x in rmse_scores],
+                "mae_values": [float(x) for x in mae_scores],
+                "wmape_values": [float(x) for x in wmape_scores],
+                "cv_scores": [float(x) for x in cv_scores],
+                "best_rmse": float(min(rmse_scores)),
+                "best_mae": float(min(mae_scores)),
+                "best_wmape": float(min(wmape_scores)),
+                "average_rmse": float(np.mean(rmse_scores)),
+                "average_mae": float(np.mean(mae_scores)),
+                "average_wmape": float(np.mean(wmape_scores)),
+                "bin_f1_values": [float(x) for x in bin_f1_scores],
+                "bin_accuracy_values": [float(x) for x in bin_accuracy_scores],
+                "bin_precision_values": [float(x) for x in bin_precision_scores],
+                "bin_recall_values": [float(x) for x in bin_recall_scores]
+            },
+        }
+
+        if X_holdout is not None:
+            results["holdout_metrics"] = self._evaluate_holdout(
+                best_model, X_holdout, y_holdout, False, y_shift, label
+            )
+            results["dataset_info"]["holdout_samples"] = len(X_holdout)
+            results["holdout_iteration_analysis"] = holdout_metrics_per_iteration
+            valid_holdout = [h for h in holdout_metrics_per_iteration if h is not None]
+            if valid_holdout:
+                h_rmse = [float(h['rmse']) for h in valid_holdout]
+                h_mae = [float(h['mae']) for h in valid_holdout]
+                h_wmape = [float(h['wmape']) for h in valid_holdout]
+                results["holdout_iteration_summary"] = {
+                    "rmse_values": h_rmse,
+                    "mae_values": h_mae,
+                    "wmape_values": h_wmape,
+                    "best_rmse": float(min(h_rmse)),
+                    "best_mae": float(min(h_mae)),
+                    "best_wmape": float(min(h_wmape)),
+                    "average_rmse": float(np.mean(h_rmse)),
+                    "average_mae": float(np.mean(h_mae)),
+                    "average_wmape": float(np.mean(h_wmape)),
+                    "bin_f1_values": [float(h['bin_f1']) for h in valid_holdout],
+                    "bin_precision_values": [float(h['bin_precision']) for h in valid_holdout],
+                    "bin_recall_values": [float(h['bin_recall']) for h in valid_holdout],
+                    "bin_accuracy_values": [float(h['bin_accuracy']) for h in valid_holdout]
+                }
+
+        results_file = os.path.join(output_dir, f"logistic_regression_iteration_analysis_{file_identifier}.json")
+        with open(results_file, 'w') as f:
+            json.dump(json.loads(json.dumps(results, default=str)), f, indent=2)
+        joblib.dump(best_model, os.path.join(output_dir, f'logistic_regression_best_model_{file_identifier}.pkl'))
+        print(f"      Results saved to: {results_file}")
+
+        print(f"      Training Summary:")
+        print(f"        Best Iteration Count: {best_iteration}   Best CV Score: {best_cv_score:.4f}")
+        print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  "
+              f"WMAPE: {final_test_wmape:.2f}%")
+        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+        print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  "
+              f"F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+        hm = results.get("holdout_metrics")
+        if hm:
+            print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
+            print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+
+        best_iteration_idx = iteration_values.index(best_iteration)
+        return {
+            "success": True,
+            "models_trained": 1,
+            "problem_type": "regression",
+            "target_feature": target_feature,
+            "cv_score": float(iteration_results[best_iteration_idx]["cv_score"]),
+            "test_rmse": float(final_test_rmse),
+            "test_mae": float(final_test_mae),
+            "test_wmape": float(final_test_wmape),
+            "test_r2": float(final_test_r2),
+            "test_bin_precision": float(final_bin_precision),
+            "test_bin_recall": float(final_bin_recall),
+            "test_bin_f1": float(final_bin_f1),
+            "test_bin_accuracy": float(final_bin_accuracy),
+            "output_directory": output_dir,
+            "results_file": results_file
+        }
 
     def train_naive_bayes_with_randomized_search_cv(self, data_dir=None):
         """

@@ -175,7 +175,7 @@ def test_neg_pos_ratio():
 # --- the trainers ------------------------------------------------------------
 
 class _SearchSpy:
-    """Stands in for RandomizedSearchCV: records what it was given, then stops."""
+    """Stands in for RandomizedSearchCV / GridSearchCV: records what it was given, then stops."""
     seen = {}
 
     def __init__(self, **kwargs):
@@ -198,7 +198,7 @@ TRAINERS = [
     ("train_xgboost_with_randomized_search_cv", "scale_pos_weight"),
     ("train_lightgbm_with_randomized_search_cv", "scale_pos_weight"),
     ("train_random_forest_with_randomized_search_cv", "class_weight"),
-    ("train_logistic_regression_with_randomized_search_cv", "class_weight"),
+    ("train_logistic_regression_with_randomized_search_cv", "logreg__class_weight"),
     ("train_naive_bayes_with_randomized_search_cv", None),
 ]
 
@@ -209,7 +209,9 @@ def test_trainers_tune_with_day_grouped_cv_and_class_weights(tmp_path, method, w
     train = pd.read_parquet(folder / "merged_data_x_train.parquet")
     pipeline = _pipeline(tmp_path)
 
-    with patch("src.training_pipeline.RandomizedSearchCV", _SearchSpy):
+    # The logistic baseline tunes C with one GridSearchCV; the others use RandomizedSearchCV.
+    search_cls = "GridSearchCV" if weighting == "logreg__class_weight" else "RandomizedSearchCV"
+    with patch(f"src.training_pipeline.{search_cls}", _SearchSpy):
         getattr(pipeline, method)(data_dir=str(folder))
 
     seen = _SearchSpy.seen
@@ -226,6 +228,8 @@ def test_trainers_tune_with_day_grouped_cv_and_class_weights(tmp_path, method, w
         assert params["scale_pos_weight"] == pytest.approx(expected)
     elif weighting == "class_weight":
         assert params["class_weight"] == "balanced"
+    elif weighting == "logreg__class_weight":
+        assert params["logreg__class_weight"] == "balanced"
 
 
 def test_the_tabular_pipeline_does_not_resample():

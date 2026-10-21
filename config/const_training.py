@@ -160,6 +160,12 @@ REGRESSION_CANCELLED_POLICY = 'drop'
 RIDGE_BASELINE_OUTPUT_FOLDER = "data/output/999-ridge_baseline"
 RIDGE_BASELINE_ALPHAS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]  # regularisation strength, log-spaced
 
+# L2 logistic-regression baseline for a classification target (stage 1003): the simple linear model
+# the tree models are compared with. Only C is tuned (one day-grouped grid search); penalty, solver
+# and class_weight='balanced' are fixed.
+LOGISTIC_BASELINE_CS = [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]  # inverse regularisation strength, log-spaced
+
+
 XGBOOST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1000-xgboost_randomized_search"
 LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1001-lightgbm_randomized_search"
 RANDOM_FOREST_RANDOMIZED_SEARCH_OUTPUT_FOLDER = "data/output/1002-random_forest_randomized_search"
@@ -260,28 +266,6 @@ RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION = {
     'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'ccp_alpha': [0.0, 0.001, 0.01, 0.05]
 }
-
-# Parameter distributions for Logistic Regression (classification branch).
-# solver='saga' is fixed in the constructor (NOT searched) because it is the only
-# solver supporting l1 / l2 / elasticnet penalties — this guarantees every sampled
-# penalty is valid, so no invalid solver/penalty pair can ever be drawn.
-# A list of two dicts (not one flat dict) so l1_ratio is only ever sampled alongside
-# penalty='elasticnet' — sklearn's LogisticRegression emits a UserWarning (not an
-# error) whenever l1_ratio is set with penalty='l1'/'l2', and RandomizedSearchCV
-# supports a list of param-distribution dicts, sampling one dict per draw.
-LOGISTIC_REGRESSION_PARAM_DISTRIBUTIONS = [
-    {
-        'penalty': ['l1', 'l2'],
-        'C': [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],   # inverse reg strength, log-spaced
-        'class_weight': ['balanced', {False: 1, True: 5}, {False: 1, True: 10}, None],
-    },
-    {
-        'penalty': ['elasticnet'],
-        'C': [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],   # inverse reg strength, log-spaced
-        'l1_ratio': [0.0, 0.25, 0.5, 0.75, 1.0],
-        'class_weight': ['balanced', {False: 1, True: 5}, {False: 1, True: 10}, None],
-    },
-]
 
 # Parameter distributions for ElasticNet (regression branch — the "regularized
 # regression" pairing implied by REGULARIZED_REGRESSION_OUTPUT_FOLDER).
