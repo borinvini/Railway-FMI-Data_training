@@ -13,7 +13,6 @@
 # python main.py --dump-columns lists everything available.
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -92,12 +91,6 @@ Cloud amount (24h mean)
 Cloud amount (72h max)
 Cloud amount (72h min)
 Cloud amount (72h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
 
 # wawa — WMO 4680 present-weather groups, one-hot. Mutually exclusive: exactly
 # one is 1 per row. Instant observation only; there are no rolling variants,

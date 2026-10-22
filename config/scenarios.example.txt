@@ -20,11 +20,10 @@
 
 # ======================================================================
 # 1 - ONLY OPERACIONAL FEATURES
-# 10 columns (1 target + 9 features)
+# 9 columns (1 target + 8 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -35,11 +34,10 @@ trainNumber
 
 # ======================================================================
 # 2 - OPERACIONAL + INSTANT WEATHER 
-# 22 columns (1 target + 21 features)
+# 21 columns (1 target + 20 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -62,11 +60,10 @@ Cloud amount
 
 # ======================================================================
 # 3 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 12h
-# 48 columns (1 target + 47 features)
+# 45 columns (1 target + 44 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -110,16 +107,13 @@ Horizontal visibility (12h mean)
 Cloud amount (12h max)
 Cloud amount (12h min)
 Cloud amount (12h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
 
 # ======================================================================
 # 4 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 24h
-# 48 columns (1 target + 47 features)
+# 45 columns (1 target + 44 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -163,16 +157,13 @@ Horizontal visibility (24h mean)
 Cloud amount (24h max)
 Cloud amount (24h min)
 Cloud amount (24h mean)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
 
 # ======================================================================
 # 5 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 72h
-# 48 columns (1 target + 47 features)
+# 45 columns (1 target + 44 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -216,16 +207,13 @@ Horizontal visibility (72h mean)
 Cloud amount (72h max)
 Cloud amount (72h min)
 Cloud amount (72h mean)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
 
 # ======================================================================
 # 6 - OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS
-# 100 columns (1 target + 99 features)
+# 93 columns (1 target + 92 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -317,20 +305,13 @@ Cloud amount (24h mean)
 Cloud amount (72h max)
 Cloud amount (72h min)
 Cloud amount (72h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
 
 # ======================================================================
 # 7 - OPERACIONAL + ALL ROLLING WINDOWS
-# 88 columns (1 target + 87 features)
+# 81 columns (1 target + 80 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -410,20 +391,13 @@ Cloud amount (24h mean)
 Cloud amount (72h max)
 Cloud amount (72h min)
 Cloud amount (72h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
 
 # ======================================================================
 # 8 - OPERACIONAL + INSTANT WEATHER + WAWA CODES
-# 36 columns (1 target + 35 features)
+# 35 columns (1 target + 34 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -460,11 +434,10 @@ wawa_group_hail
 
 # ======================================================================
 # 9 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 12h + WAWA CODES
-# 62 columns (1 target + 61 features)
+# 59 columns (1 target + 58 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -522,16 +495,13 @@ Horizontal visibility (12h mean)
 Cloud amount (12h max)
 Cloud amount (12h min)
 Cloud amount (12h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
 
 # ======================================================================
 # 10 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 24h + WAWA CODES
-# 62 columns (1 target + 61 features)
+# 59 columns (1 target + 58 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -589,16 +559,13 @@ Horizontal visibility (24h mean)
 Cloud amount (24h max)
 Cloud amount (24h min)
 Cloud amount (24h mean)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
 
 # ======================================================================
 # 11 - OPERACIONAL + INSTANT WEATHER + ROLLING WINDOWS 72h + WAWA CODES
-# 62 columns (1 target + 61 features)
+# 59 columns (1 target + 58 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -656,16 +623,13 @@ Horizontal visibility (72h mean)
 Cloud amount (72h max)
 Cloud amount (72h min)
 Cloud amount (72h mean)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
 
 # ======================================================================
 # 12 - OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS + WAWA CODES
-# 114 columns (1 target + 113 features)
+# 107 columns (1 target + 106 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -771,20 +735,13 @@ Cloud amount (24h mean)
 Cloud amount (72h max)
 Cloud amount (72h min)
 Cloud amount (72h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
 
 # ======================================================================
 # 13 - ALL FEATURES (OPERACIONAL + INSTANT WEATHER + ALL ROLLING WINDOWS + WEATHER SCENARIOS)
-# 140 columns (1 target + 139 features)
+# 133 columns (1 target + 132 features)
 # ======================================================================
 trainDisrupted
 trainStopping
-commercialStop
 month_sin
 month_cos
 hour_sin
@@ -916,10 +873,4 @@ Cloud amount (24h mean)
 Cloud amount (72h max)
 Cloud amount (72h min)
 Cloud amount (72h mean)
-Precipitation amount (12h mean)
-Precipitation amount (12h cumulative)
-Precipitation amount (24h mean)
-Precipitation amount (24h cumulative)
-Precipitation amount (72h mean)
-Precipitation amount (72h cumulative)
 
