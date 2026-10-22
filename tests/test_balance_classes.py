@@ -25,8 +25,19 @@ import numpy as np
 import pandas as pd
 import os
 
+import pytest
+
 from src.training_pipeline import TrainingPipeline
-from config.const_preprocessing import TRAIN_DELAY_MINUTES
+
+# The fixtures put punctual delays in -4..5 and late ones in 6..60, so they are built around a
+# 5-minute threshold, whatever TRAIN_DELAY_MINUTES is set to in the config (0 for the Oulu run).
+TRAIN_DELAY_MINUTES = 5
+
+
+@pytest.fixture(autouse=True)
+def _five_minute_threshold():
+    with patch("src.training_pipeline.TRAIN_DELAY_MINUTES", TRAIN_DELAY_MINUTES):
+        yield
 
 
 def _make_pipeline(tmp_path):

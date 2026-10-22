@@ -18,12 +18,25 @@ import pandas as pd
 import pytest
 
 from config.const_preprocessing import (CATEGORIAL_TARGET_FEATURES, CLASSIFICATION_PROBLEM,
-                                        DEFAULT_TARGET_FEATURE, LABEL_COLUMNS, TRAIN_DELAY_MINUTES,
+                                        DEFAULT_TARGET_FEATURE, LABEL_COLUMNS,
+                                        TRAIN_DELAY_MINUTES as CONFIG_TRAIN_DELAY_MINUTES,
                                         VALID_TARGET_FEATURES)
 from src.preprocessing_pipeline import PreprocessingPipeline
 from src.training_pipeline import TrainingPipeline
 
 SAVE = "src.preprocessing_pipeline.save_dataframe_to_parquet"
+
+# The sample delays below (10, 2, 3, 9, 20, ...) are chosen around a 5-minute threshold, whatever
+# TRAIN_DELAY_MINUTES is set to in the config (0 for the Oulu run). Only the test that checks the
+# config constant itself reads CONFIG_TRAIN_DELAY_MINUTES.
+TRAIN_DELAY_MINUTES = 5
+
+
+@pytest.fixture(autouse=True)
+def _five_minute_threshold():
+    with patch("src.preprocessing_pipeline.TRAIN_DELAY_MINUTES", TRAIN_DELAY_MINUTES), \
+            patch("src.training_pipeline.TRAIN_DELAY_MINUTES", TRAIN_DELAY_MINUTES):
+        yield
 
 
 @contextmanager
@@ -67,7 +80,7 @@ def test_the_label_is_a_registered_classification_target():
 
 def test_the_delay_threshold_has_one_source():
     from config.const_training import DELAY_THRESHOLD_MINUTES
-    assert DELAY_THRESHOLD_MINUTES == TRAIN_DELAY_MINUTES
+    assert DELAY_THRESHOLD_MINUTES == CONFIG_TRAIN_DELAY_MINUTES
 
 
 # --- stage 4: the label -----------------------------------------------------------------------

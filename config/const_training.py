@@ -33,11 +33,11 @@ TRAINING_STATE_MACHINE = {
     "model_feature_importance_analysis": False,  # model-based and slower; run it on demand
     "train_ridge_baseline": True,    # numeric targets only; skipped for a classification target
     "train_xgboost_with_randomized_search_cv": True,
-    "train_lightgbm_with_randomized_search_cv": False,
-    "train_random_forest_with_randomized_search_cv": False,
-    "train_logistic_regression_with_randomized_search_cv": False,
-    "train_naive_bayes_with_randomized_search_cv": False,
-    "train_fcll_net": False,
+    "train_lightgbm_with_randomized_search_cv": True,
+    "train_random_forest_with_randomized_search_cv": True,
+    "train_logistic_regression_with_randomized_search_cv": True,
+    "train_naive_bayes_with_randomized_search_cv": True,
+    "train_fcll_net": True,
 }
 
 MERGED_TRAINING_READY_OUTPUT_FOLDER = "data/output/500-merge_data_files"
@@ -335,8 +335,14 @@ LIGHTGBM_PARAM_DISTRIBUTIONS = {
 # - If imbalanced binary: Use 'roc_auc' or 'balanced_accuracy'
 # - If balanced binary: Use 'accuracy' or 'f1'
 # - If very rare events: Use 'average_precision'
+#
+# 'roc_auc' tunes every classifier (XGBoost, LightGBM, Random Forest, Logistic Regression). Not 'f1':
+# the label is "late by more than TRAIN_DELAY_MINUTES or cancelled", and with a threshold of 0 about
+# 73% of the Oulu trains are positive. F1 of the positive class then rewards predicting "disrupted"
+# for almost everything, so the search picks the model that gets closest to that. ROC-AUC does not
+# depend on the decision threshold or on the base rate.
 # ===================================================================================================================
-SCORE_METRIC = 'f1'
+SCORE_METRIC = 'roc_auc'
 
 # Metric the numeric target (differenceInMinutes) is tuned on, XGBoost only so far.
 # All are computed in minutes (the model is fitted on log1p of the delay):
