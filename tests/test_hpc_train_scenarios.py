@@ -9,6 +9,7 @@ The array size itself is not pinned here. It is chosen at submit time by
 hpc/submit-scenarios.sh (see tests/test_hpc_submit_scenarios.py); the header
 value is only a fallback for a bare sbatch.
 """
+import os
 import re
 import shutil
 import subprocess
@@ -271,3 +272,35 @@ def test_the_existing_array_script_still_covers_one_model_per_task():
     assert 'COLUMNS_FILE="${COLUMNS_FILE:-config/features.txt}"' in body
     assert "models.sh" in body
     assert "MODELS=(" not in body
+
+
+@pytest.mark.parametrize("subset,should_warn", [
+    ("1", False),
+    ("0", True),
+    ("", True),
+])
+def test_a_deliberate_model_subset_does_not_trigger_the_undersized_array_warning(subset, should_warn):
+    """hpc/submit-scenarios.sh --models builds 52 task ids on purpose (13 scenarios x 4
+    of the 6 models) and exports RAILWAY_ARRAY_SUBSET=1. The array is then smaller than
+    78 and the guard, which only knows the count, would claim scenarios 9-13 were lost."""
+    block = SCRIPT[
+        SCRIPT.index('if [ "${SLURM_ARRAY_TASK_ID}" -eq "${SLURM_ARRAY_TASK_MIN:-0}" ]'):
+        SCRIPT.index('SLUG="$(printf')
+    ]
+    preamble = "\n".join([
+        "SLURM_ARRAY_TASK_ID=0",
+        "SLURM_ARRAY_TASK_MIN=0",
+        "SLURM_ARRAY_TASK_COUNT=52",
+        f"EXPECTED={13 * len(MODELS) - 1}",
+        "N_SCENARIOS=13",
+        "COLUMNS_FILE=config/scenarios.txt",
+        f"MODELS=({' '.join(MODELS)})",
+        "",
+    ])
+    env = dict(os.environ)
+    env.pop("RAILWAY_ARRAY_SUBSET", None)
+    if subset:
+        env["RAILWAY_ARRAY_SUBSET"] = subset
+    result = subprocess.run([BASH, "-c", preamble + block], capture_output=True, text=True, env=env)
+    assert result.returncode == 0
+    assert ("WARNING" in result.stderr) is should_warn, result.stderr

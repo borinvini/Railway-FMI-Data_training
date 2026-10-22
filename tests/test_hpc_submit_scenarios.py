@@ -227,3 +227,99 @@ def test_the_model_list_comes_from_the_shared_file():
     body = SCRIPT_PATH.read_text(encoding="utf-8")
     assert "models.sh" in body
     assert "MODELS=(" not in body, "the wrapper must source, not redefine, MODELS"
+
+
+# --- --models: some of the models of the grid ---------------------------------------------------
+
+FOUR = ["xgboost", "lightgbm", "random_forest", "logistic_regression"]
+
+
+def _ids_to_spec(ids):
+    """Compress consecutive task ids the way Slurm writes them: [0,1,2,3,6,7] -> '0-3,6-7'."""
+    ids = sorted(ids)
+    parts, start, prev = [], ids[0], ids[0]
+    for i in ids[1:] + [None]:
+        if i is not None and i == prev + 1:
+            prev = i
+            continue
+        parts.append(str(start) if start == prev else f"{start}-{prev}")
+        if i is not None:
+            start = prev = i
+    return ",".join(parts)
+
+
+def _subset_array(scenarios, models):
+    ids = [(s - 1) * len(MODELS) + MODELS.index(m) for s in scenarios for m in models]
+    return "--array=" + _ids_to_spec(ids)
+
+
+def test_four_models_over_the_whole_catalogue_leave_gaps_for_the_other_two():
+    """Task id = (scenario - 1) * len(MODELS) + model index, because train_scenarios.sh
+    decodes it that way. Four of six models are therefore 0-3, 6-9, ... — not 0-51, which
+    would run naive_bayes, fcll_net and the wrong scenarios."""
+    result = _run("--dry-run", "--models", ",".join(FOUR))
+    assert result.returncode == 0, result.stderr
+    assert "--array=0-3,6-9,12-15,18-21,24-27,30-33,36-39,42-45,48-51,54-57,60-63,66-69,72-75" in result.stdout
+    assert _subset_array(range(1, 14), FOUR) in result.stdout
+    assert "13 scenarios x 4 models" in result.stdout
+    assert "52 tasks" in result.stdout
+
+
+@pytest.mark.parametrize("scenarios,models,expected", [
+    ("2-3", ["xgboost", "logistic_regression"], "--array=6,9,12,15"),
+    ("13", ["random_forest"], "--array=74"),
+    ("1", ["xgboost", "lightgbm", "random_forest"], "--array=0-2"),
+    ("4-5", ["lightgbm", "random_forest"], "--array=19-20,25-26"),
+])
+def test_a_model_subset_of_a_scenario_range_maps_to_the_matching_ids(scenarios, models, expected):
+    result = _run("--dry-run", "--scenarios", scenarios, "--models", ",".join(models))
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout, result.stdout
+
+
+def test_the_order_and_repeats_of_the_model_names_do_not_matter():
+    a = _run("--dry-run", "--models", "logistic_regression,xgboost,xgboost,lightgbm,random_forest")
+    b = _run("--dry-run", "--models=xgboost,lightgbm,random_forest,logistic_regression")
+    assert a.returncode == 0 and b.returncode == 0, (a.stderr, b.stderr)
+    assert _subset_array(range(1, 14), FOUR) in a.stdout
+    assert _subset_array(range(1, 14), FOUR) in b.stdout
+
+
+def test_every_model_given_by_name_is_the_same_array_as_no_flag():
+    result = _run("--dry-run", "--models", ",".join(MODELS))
+    assert result.returncode == 0, result.stderr
+    assert _array() in result.stdout, result.stdout
+
+
+def test_an_unknown_model_is_refused_and_the_valid_names_are_listed():
+    result = _run("--dry-run", "--models", "xgboost,catboost")
+    assert result.returncode == 2
+    assert "catboost" in result.stderr
+    for name in MODELS:
+        assert name in result.stderr, result.stderr
+
+
+def test_a_missing_model_value_is_refused():
+    result = _run("--dry-run", "--models")
+    assert result.returncode == 2
+
+
+def test_a_model_subset_tells_the_tasks_it_is_deliberate(tmp_path):
+    """Without this every first task prints 'scenarios 9-13 will NOT be trained', a
+    false alarm that teaches the reader to ignore the real one (run 581402)."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    seen = tmp_path / "subset.env"
+    stub = bindir / "sbatch"
+    stub.write_text(
+        f'#!/bin/bash\necho "${{RAILWAY_ARRAY_SUBSET:-unset}}" > "{seen.as_posix()}"\n'
+        'echo "Submitted batch job 999999"\n', encoding="utf-8")
+    stub.chmod(0o755)
+
+    result = _run("--models", ",".join(FOUR), stub_sbatch=bindir)
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text(encoding="utf-8").strip() == "1"
+
+    result = _run(stub_sbatch=bindir)  # the full grid is not a subset
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text(encoding="utf-8").strip() == "unset"

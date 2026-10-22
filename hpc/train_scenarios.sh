@@ -40,8 +40,9 @@
 #
 # Task id decomposes scenario-major, so one scenario's models are contiguous and
 # cancelling a tail range loses whole scenarios rather than fragments of many:
-#   scenario = id / 5 + 1     0-4 -> s01, 5-9 -> s02, ... 60-64 -> s13
-#   model    = MODELS[id % 5]
+#   scenario = id / ${#MODELS[@]} + 1     with the 6 models of hpc/models.sh:
+#                                         0-5 -> s01, 6-11 -> s02, ... 72-77 -> s13
+#   model    = MODELS[id % ${#MODELS[@]}]
 #
 # Each task re-runs the shared preparation stages (merge, filter, select, split,
 # balance, scale) in its own data root. Stages 502-505 genuinely differ per
@@ -137,7 +138,11 @@ fi
 # one cell with `sbatch --array=17` is a documented workflow above, and it
 # submits an array of one that would trip any hard check. Slurm sets
 # SLURM_ARRAY_TASK_COUNT to the number of tasks in THIS submission.
-if [ "${SLURM_ARRAY_TASK_ID}" -eq "${SLURM_ARRAY_TASK_MIN:-0}" ]    && [ "${SLURM_ARRAY_TASK_COUNT:-0}" -lt $((EXPECTED + 1)) ]    && [ "${SLURM_ARRAY_TASK_MIN:-0}" -eq 0 ]; then
+#
+# Silent when hpc/submit-scenarios.sh --models set RAILWAY_ARRAY_SUBSET=1: a grid
+# of some of the models is smaller than scenarios x models on purpose, and the
+# wrapper computed the exact id list itself.
+if [ "${SLURM_ARRAY_TASK_ID}" -eq "${SLURM_ARRAY_TASK_MIN:-0}" ]    && [ "${SLURM_ARRAY_TASK_COUNT:-0}" -lt $((EXPECTED + 1)) ]    && [ "${SLURM_ARRAY_TASK_MIN:-0}" -eq 0 ]    && [ "${RAILWAY_ARRAY_SUBSET:-0}" != "1" ]; then
     echo "WARNING: this array holds ${SLURM_ARRAY_TASK_COUNT} tasks, but" >&2
     echo "         ${COLUMNS_FILE} needs $((EXPECTED + 1))"          "(${N_SCENARIOS} scenarios x ${#MODELS[@]} models)." >&2
     echo "         Scenarios $((SLURM_ARRAY_TASK_COUNT / ${#MODELS[@]} + 1))-${N_SCENARIOS}"          "will NOT be trained by this job." >&2

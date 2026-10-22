@@ -5,6 +5,7 @@
 #   hpc/submit-scenarios.sh                    # every scenario, every model
 #   hpc/submit-scenarios.sh --scenarios 9-13   # just those five scenarios
 #   hpc/submit-scenarios.sh --scenarios 9      # just that one
+#   hpc/submit-scenarios.sh --models xgboost,lightgbm   # only those models of the grid
 #   hpc/submit-scenarios.sh --dry-run          # print the sbatch line, submit nothing
 #
 # Any other argument is passed through to sbatch, so a one-off override needs no
@@ -39,10 +40,11 @@ source "${REPO_ROOT}/hpc/models.sh"
 N_MODELS="${#MODELS[@]}"
 
 usage() {
-    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+    sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 SCENARIO_SPEC=""
+MODEL_SPEC=""
 DRY_RUN=0
 SBATCH_ARGS=()
 while [ $# -gt 0 ]; do
@@ -54,6 +56,15 @@ while [ $# -gt 0 ]; do
             ;;
         --scenarios=*)
             SCENARIO_SPEC="${1#*=}"
+            shift
+            ;;
+        --models)
+            [ $# -ge 2 ] || { echo "ERROR: --models needs a value." >&2; exit 2; }
+            MODEL_SPEC="${2}"
+            shift 2
+            ;;
+        --models=*)
+            MODEL_SPEC="${1#*=}"
             shift
             ;;
         --dry-run)
@@ -137,8 +148,70 @@ fi
 FIRST_TASK=$(( (FIRST_SCENARIO - 1) * N_MODELS ))
 LAST_TASK=$(( LAST_SCENARIO * N_MODELS - 1 ))
 N_TASKS=$(( LAST_TASK - FIRST_TASK + 1 ))
+ARRAY_SPEC="${FIRST_TASK}-${LAST_TASK}"
 
-if [ "${FIRST_SCENARIO}" -eq 1 ] && [ "${LAST_SCENARIO}" -eq "${N_SCENARIOS}" ]; then
+# --models narrows the grid to some of the models in hpc/models.sh. The task id is
+# still (scenario - 1) * N_MODELS + model index, because train_scenarios.sh decodes
+# it that way, so a subset is a list of ids with gaps, e.g. 0-3,6-9,12-15 for the
+# first four of six models.
+SUBSET_ENV=()
+if [ -n "${MODEL_SPEC}" ]; then
+    IFS=',' read -r -a WANTED <<< "${MODEL_SPEC}"
+    INDICES=()
+    for name in "${WANTED[@]}"; do
+        found=-1
+        for i in "${!MODELS[@]}"; do
+            if [ "${MODELS[$i]}" = "${name}" ]; then found="${i}"; fi
+        done
+        if [ "${found}" -lt 0 ]; then
+            echo "ERROR: --models: unknown model '${name}'. Valid names: ${MODELS[*]}" >&2
+            exit 2
+        fi
+        INDICES+=("${found}")
+    done
+    mapfile -t INDICES < <(printf '%s\n' "${INDICES[@]}" | sort -nu)
+
+    IDS=()
+    for (( s = FIRST_SCENARIO; s <= LAST_SCENARIO; s++ )); do
+        for idx in "${INDICES[@]}"; do
+            IDS+=( $(( (s - 1) * N_MODELS + idx )) )
+        done
+    done
+    N_TASKS="${#IDS[@]}"
+
+    # Compress consecutive ids into ranges: 0 1 2 3 6 7 8 9 -> 0-3,6-9
+    ARRAY_SPEC=""
+    start="${IDS[0]}"
+    prev="${IDS[0]}"
+    flush() {
+        if [ "${start}" -eq "${prev}" ]; then
+            ARRAY_SPEC="${ARRAY_SPEC:+${ARRAY_SPEC},}${start}"
+        else
+            ARRAY_SPEC="${ARRAY_SPEC:+${ARRAY_SPEC},}${start}-${prev}"
+        fi
+    }
+    for id in "${IDS[@]:1}"; do
+        if [ "${id}" -eq $(( prev + 1 )) ]; then
+            prev="${id}"
+        else
+            flush
+            start="${id}"
+            prev="${id}"
+        fi
+    done
+    flush
+
+    # A deliberate subset is not the undersized array train_scenarios.sh warns about.
+    SUBSET_ENV=(RAILWAY_ARRAY_SUBSET=1)
+    CHOSEN=""
+    for idx in "${INDICES[@]}"; do CHOSEN="${CHOSEN:+${CHOSEN},}${MODELS[$idx]}"; done
+    if [ "${FIRST_SCENARIO}" -eq 1 ] && [ "${LAST_SCENARIO}" -eq "${N_SCENARIOS}" ]; then
+        echo "${N_SCENARIOS} scenarios x ${#INDICES[@]} models (${CHOSEN}) = ${N_TASKS} tasks"
+    else
+        echo "scenarios ${FIRST_SCENARIO}-${LAST_SCENARIO} of ${N_SCENARIOS}" \
+             "x ${#INDICES[@]} models (${CHOSEN}) = ${N_TASKS} tasks"
+    fi
+elif [ "${FIRST_SCENARIO}" -eq 1 ] && [ "${LAST_SCENARIO}" -eq "${N_SCENARIOS}" ]; then
     echo "${N_SCENARIOS} scenarios x ${N_MODELS} models = ${N_TASKS} tasks"
 else
     echo "scenarios ${FIRST_SCENARIO}-${LAST_SCENARIO} of ${N_SCENARIOS}" \
@@ -146,7 +219,7 @@ else
 fi
 echo "catalogue: ${COLUMNS_FILE} (sha256 $(sha256sum "${COLUMNS_FILE}" | cut -c1-16))"
 
-CMD=(sbatch "--array=${FIRST_TASK}-${LAST_TASK}" "${SBATCH_ARGS[@]+"${SBATCH_ARGS[@]}"}" "${BATCH_SCRIPT}")
+CMD=(sbatch "--array=${ARRAY_SPEC}" "${SBATCH_ARGS[@]+"${SBATCH_ARGS[@]}"}" "${BATCH_SCRIPT}")
 
 if [ "${DRY_RUN}" -eq 1 ]; then
     echo "${CMD[*]}"
@@ -155,4 +228,4 @@ if [ "${DRY_RUN}" -eq 1 ]; then
 fi
 
 echo "${CMD[*]}"
-COLUMNS_FILE="${COLUMNS_FILE}" exec "${CMD[@]}"
+exec env COLUMNS_FILE="${COLUMNS_FILE}" "${SUBSET_ENV[@]+"${SUBSET_ENV[@]}"}" "${CMD[@]}"
