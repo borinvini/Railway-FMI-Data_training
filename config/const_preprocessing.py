@@ -1,7 +1,7 @@
 # Pipeline State Machine Configuration
 # Dictionary containing method names in execution order with enable/disable flags
 PREPROCESSING_STATE_MACHINE = {
-    "filter_by_target_station": False,
+    "filter_by_target_station": True,
     "process_causes_column": True,
     "add_train_delayed_feature": True,
     "null_out_of_bounds_weather": True,
