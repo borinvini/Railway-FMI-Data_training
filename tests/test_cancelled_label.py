@@ -74,8 +74,8 @@ def test_the_label_is_a_registered_classification_target():
     assert "trainDisrupted" in VALID_TARGET_FEATURES
     assert "trainDisrupted" in CLASSIFICATION_PROBLEM
     assert "trainDisrupted" in CATEGORIAL_TARGET_FEATURES      # stage 12 must not to_numeric it
-    assert DEFAULT_TARGET_FEATURE == "trainDisrupted"
-    assert set(LABEL_COLUMNS) == {"trainDelayed", "trainDisrupted", "cancelled"}
+    assert DEFAULT_TARGET_FEATURE in CLASSIFICATION_PROBLEM       # trainDisrupted, or delayClass for the 4-class run
+    assert set(LABEL_COLUMNS) == {"trainDelayed", "trainDisrupted", "cancelled", "delayClass"}
 
 
 def test_the_delay_threshold_has_one_source():

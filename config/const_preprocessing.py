@@ -38,9 +38,10 @@ TRAIN_DELAY_MINUTES = 0
 # 'trainDisrupted' = delayed by more than TRAIN_DELAY_MINUTES OR cancelled. A cancelled train has no
 # delay value, so 'trainDelayed' alone can neither include nor label it. Switch to 'trainDelayed'
 # to train on the pure delay again (cancelled trains stay in the data either way).
-DEFAULT_TARGET_FEATURE = 'trainDisrupted'
+DEFAULT_TARGET_FEATURE = 'delayClass'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset',
-# 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled', 'trainDisrupted'
+# 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled', 'trainDisrupted',
+# 'delayClass' (4 classes: on time / 0-5 / 5-15 / over 15 min or cancelled, see DELAY_CLASS_BOUNDS)
 
 # Target column to use for calculating trainDelayed feature
 TRAIN_DELAYED_TARGET_COLUMN = 'differenceInMinutes'
@@ -123,15 +124,31 @@ WEATHER_MISSING_THRESHOLD = 30.0
 
 # Valid target features for selection
 VALID_TARGET_FEATURES = [
-    'differenceInMinutes', 
-    'differenceInMinutes_offset', 
-    'differenceInMinutes_eachStation_offset', 
-    'trainDelayed', 
+    'differenceInMinutes',
+    'differenceInMinutes_offset',
+    'differenceInMinutes_eachStation_offset',
+    'trainDelayed',
     'cancelled',
-    'trainDisrupted'
+    'trainDisrupted',
+    'delayClass'
 ]
 
-CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled', 'trainDisrupted']
+# Four delay classes built in stage 4 from TRAIN_DELAYED_TARGET_COLUMN, independent of
+# TRAIN_DELAY_MINUTES (which only drives the binary labels). The class number grows with severity:
+#   0 = delay <= 0            on time or early
+#   1 = 0 < delay <= 5        slightly late
+#   2 = 5 < delay <= 15       late
+#   3 = delay > 15 OR cancelled   very late or cancelled (a cancelled train has no delay value)
+# DELAY_CLASS_BOUNDS are the three upper edges of classes 0, 1, 2 (upper edge included).
+DELAY_CLASS_COLUMN = 'delayClass'
+DELAY_CLASS_BOUNDS = (0, 5, 15)
+DELAY_CLASS_NAMES = ['on_time', 'late_0_5', 'late_5_15', 'late_15_plus_or_cancelled']
+
+# Classification targets by kind. CLASSIFICATION_PROBLEM stays the union (every
+# `target in CLASSIFICATION_PROBLEM` check keeps working); src/cv_utils.target_kind tells the kinds apart.
+BINARY_CLASSIFICATION_PROBLEM = ['trainDelayed', 'cancelled', 'trainDisrupted']
+MULTICLASS_PROBLEM = ['delayClass']
+CLASSIFICATION_PROBLEM = BINARY_CLASSIFICATION_PROBLEM + MULTICLASS_PROBLEM
 REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
 
 # Station short code to filter data for - only exact matches will be kept
@@ -173,11 +190,11 @@ WIND_SINCOS_FEATURES = ['wind_dir_sin', 'wind_dir_cos']
 VALID_TRAIN_PREDICTION_FEATURES = ["trainStopping", "commercialStop","month","hour","day_of_week", "day_of_month", "causes_related_to_weather", "train_id", "weather_scenario"]
 
 # Target features that are categoricals for classification problems
-CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled', 'trainDisrupted']
+CATEGORIAL_TARGET_FEATURES = ['trainDelayed', 'cancelled', 'trainDisrupted', 'delayClass']
 
 # Columns that carry the answer. Only DEFAULT_TARGET_FEATURE may survive column selection (stage 502);
 # the trainers use every non-target column as a feature, so any other label would leak the target.
-LABEL_COLUMNS = ['trainDelayed', 'trainDisrupted', 'cancelled']
+LABEL_COLUMNS = ['trainDelayed', 'trainDisrupted', 'cancelled', 'delayClass']
 
 # Boolean features that need to be converted to numeric
 BOOLEAN_FEATURES = ['trainStopping', 'commercialStop']

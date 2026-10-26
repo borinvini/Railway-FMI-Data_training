@@ -77,6 +77,8 @@ from config.const_preprocessing import (
     VALID_WEATHER_SCENARIO_FEATURES,
     VALID_TARGET_FEATURES,
     CATEGORIAL_TARGET_FEATURES,
+    DELAY_CLASS_BOUNDS,
+    DELAY_CLASS_COLUMN,
     VALID_TRAIN_PREDICTION_FEATURES,
     ALL_WEATHER_FEATURES,
     BOOLEAN_FEATURES,
@@ -95,6 +97,27 @@ def _cancelled_flags(series):
     "True"/"False"; a missing value means not cancelled.
     """
     return series.astype(str).str.strip().str.lower().isin(("true", "1", "1.0")).to_numpy()
+
+
+def delay_classes(delay, cancelled, bounds=None):
+    """Four-class delay label (0..3) from a delay in minutes and a cancelled mask.
+
+    `bounds` are the upper edges of classes 0, 1 and 2 (DELAY_CLASS_BOUNDS, edge included):
+    0 = delay <= b0, 1 = delay <= b1, 2 = delay <= b2, 3 = above b2. A cancelled train has no
+    delay value and is class 3. A missing delay on a train that was not cancelled is <NA>
+    (stage 12 drops that row, as it does for the numeric targets). Returns a nullable Int8 Series.
+    """
+    b0, b1, b2 = DELAY_CLASS_BOUNDS if bounds is None else bounds
+    delay = pd.to_numeric(delay, errors='coerce')
+    cancelled = np.asarray(cancelled, dtype=bool)
+    values = np.select(
+        [delay <= b0, delay <= b1, delay <= b2, delay > b2],
+        [0, 1, 2, 3],
+        default=-1,                      # NaN delay: every comparison above is False
+    )
+    values = np.where(cancelled, 3, values)
+    result = pd.Series(values, index=delay.index, dtype='Int8')
+    return result.mask(values == -1)
 
 
 class PreprocessingPipeline:
@@ -1620,7 +1643,11 @@ class PreprocessingPipeline:
             # route into the label: disrupted = late by more than TRAIN_DELAY_MINUTES OR cancelled.
             cancelled = pd.Series(_cancelled_flags(df['cancelled']), index=df.index)
             df['trainDisrupted'] = df['trainDelayed'] | cancelled
-            
+
+            # Four delay classes next to the binary labels, so the same training-ready files serve
+            # every target. Its bounds are DELAY_CLASS_BOUNDS, not TRAIN_DELAY_MINUTES.
+            df[DELAY_CLASS_COLUMN] = delay_classes(df[TRAIN_DELAYED_TARGET_COLUMN], cancelled)
+
             # Reorder columns to place trainDelayed after the target column
             cols = list(df.columns)
             # Remove trainDelayed from its current position
@@ -1642,6 +1669,9 @@ class PreprocessingPipeline:
             print(f"Number of cancelled trains: {int(cancelled.sum())} ({cancelled.mean() * 100:.2f}%)")
             print(f"Number of disrupted trains (delayed > {TRAIN_DELAY_MINUTES} min or cancelled): "
                   f"{int(df['trainDisrupted'].sum())} ({df['trainDisrupted'].mean() * 100:.2f}%)")
+            class_counts = df[DELAY_CLASS_COLUMN].value_counts(dropna=False).sort_index()
+            print(f"'{DELAY_CLASS_COLUMN}' classes (edges {DELAY_CLASS_BOUNDS}; 3 includes cancelled): "
+                  + ", ".join(f"{k}: {int(v)}" for k, v in class_counts.items()))
 
             self._save_stage("add_train_delayed_feature", FOLDER_ADD_TRAIN_DELAYED_FEATURE, None, df, "add_train_delayed_feature")
             
@@ -3062,6 +3092,14 @@ class PreprocessingPipeline:
                 dropped_percentage = (dropped_required / before_required_drop) * 100 if before_required_drop > 0 else 0
                 print(f"- Dropped {dropped_required} rows with missing values in required columns ({dropped_percentage:.2f}%)")
                 logger.info(f"Dropped {dropped_required} rows with missing values in required columns ({dropped_percentage:.2f}%)")
+                # The rows that had no class (missing delay, not cancelled) are gone: make the label
+                # a plain int8 and refuse to go on if one is left.
+                if DELAY_CLASS_COLUMN in df.columns:
+                    if df[DELAY_CLASS_COLUMN].isna().any():
+                        raise ValueError(
+                            f"'{DELAY_CLASS_COLUMN}' still has {int(df[DELAY_CLASS_COLUMN].isna().sum())} "
+                            f"missing values after the missing-delay rows were dropped")
+                    df[DELAY_CLASS_COLUMN] = df[DELAY_CLASS_COLUMN].astype('int8')
             else:
                 print("Warning: Required columns not found in dataframe")
                 logger.warning("Required columns not found in dataframe")

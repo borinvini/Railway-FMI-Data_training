@@ -46,16 +46,18 @@ from imblearn.under_sampling import TomekLinks
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.metrics import (
     accuracy_score, mean_absolute_error, mean_squared_error, precision_score, recall_score, roc_auc_score,
-    f1_score, r2_score, confusion_matrix, average_precision_score
+    f1_score, r2_score, confusion_matrix, average_precision_score,
+    balanced_accuracy_score, precision_recall_fscore_support
 )
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from src.cv_utils import (filled_path, groups_path, load_filled_flags, load_train_groups,
-                          mae_baseline, make_cv, make_minutes_scorer, neg_pos_ratio,
-                          residual_quantiles, to_minutes)
+from src.cv_utils import (balanced_sample_weights, classification_average, classification_scoring,
+                          filled_path, groups_path, is_multiclass, load_filled_flags,
+                          load_train_groups, mae_baseline, make_cv, make_minutes_scorer,
+                          neg_pos_ratio, residual_quantiles, target_kind, to_minutes)
 from src.day_split import split_days
 from src import exploration_plots as xplots
 from src.data_exploration import (WIND_COLUMN, association_by_year, association_table, bin_codes,
@@ -89,6 +91,7 @@ from config.const_preprocessing import (
     TRAINING_READY_OUTPUT_FOLDER,
     REGRESSION_PROBLEM,
     CLASSIFICATION_PROBLEM,
+    DELAY_CLASS_NAMES,
     TRAIN_DELAY_MINUTES,
 )
 
@@ -461,7 +464,10 @@ class TrainingPipeline:
                     data_dir=os.path.join(self.project_root, _shap_data_folder)
                 )
 
-                if shap_result and shap_result.get("success", False):
+                if shap_result and shap_result.get("skipped", False):
+                    print(f"      ⊝ shap_correlation_analysis skipped for a multiclass target")
+                    result["steps_executed"].append("shap_correlation_analysis")
+                elif shap_result and shap_result.get("success", False):
                     result["steps_executed"].append("shap_correlation_analysis")
                     print(f"      ✓ Successfully computed SHAP correlation analysis")
                     print(f"      ✓ Features analyzed: {shap_result.get('num_features', 0)}")
@@ -492,7 +498,10 @@ class TrainingPipeline:
                     data_dir=os.path.join(self.project_root, MERGED_SELECTED_TRAINING_READY_OUTPUT_FOLDER)
                 )
 
-                if explore_result and explore_result.get("success", False):
+                if explore_result and explore_result.get("skipped", False):
+                    print(f"      ⊝ explore_training_data skipped for a multiclass target")
+                    result["steps_executed"].append("explore_training_data")
+                elif explore_result and explore_result.get("success", False):
                     result["steps_executed"].append("explore_training_data")
                     print(f"      ✓ Successfully explored the training data (no model fitted)")
                     print(f"      ✓ Rows: {explore_result.get('n_rows', 0):,} | variables: {explore_result.get('n_variables', 0)} | charts: {explore_result.get('n_charts', 0)}")
@@ -529,7 +538,10 @@ class TrainingPipeline:
                 )
                 fi_result = self.model_feature_importance_analysis(data_dir=_fi_data_dir)
 
-                if fi_result and fi_result.get("success", False):
+                if fi_result and fi_result.get("skipped", False):
+                    print(f"      ⊝ model_feature_importance_analysis skipped for a multiclass target")
+                    result["steps_executed"].append("model_feature_importance_analysis")
+                elif fi_result and fi_result.get("success", False):
                     result["steps_executed"].append("model_feature_importance_analysis")
                     print(f"      ✓ Successfully computed model feature importance analysis")
                     print(f"      ✓ Features analyzed: {fi_result.get('num_features', 0)} in {fi_result.get('num_groups', 0)} groups")
@@ -957,7 +969,11 @@ class TrainingPipeline:
         # would then be measured on a target without its extreme delays. The data is
         # still saved below so stage 502 never picks up a stale filtered file.
         defer_to_split = DEFAULT_TARGET_FEATURE in REGRESSION_PROBLEM and REGRESSION_FILTER_TRAIN_ONLY
-        if defer_to_split:
+        # A 4-class target keeps its tail: the delays above the 99.5% quantile are the top of class 3,
+        # the class that matters most, and a class label is not hurt by a long delay the way a
+        # fitted-in-minutes target is.
+        keep_tails = is_multiclass(DEFAULT_TARGET_FEATURE)
+        if defer_to_split or keep_tails:
             lower_bound = upper_bound = None
             lower_mask = upper_mask = pd.Series(False, index=df.index)
         else:
@@ -977,10 +993,13 @@ class TrainingPipeline:
         if defer_to_split:
             print(f"      Numeric target '{DEFAULT_TARGET_FEATURE}': no rows removed here; the tails are cut "
                   f"from the train split only in split_dataset (REGRESSION_FILTER_TRAIN_ONLY)")
+        elif keep_tails:
+            print(f"      Class target '{DEFAULT_TARGET_FEATURE}': no delay tail is cut (the longest delays "
+                  f"belong to its top class)")
         else:
             print(f"      Lower bound (q={FILTER_LOWER_QUANTILE}): {lower_bound:.2f} min")
             print(f"      Upper bound (q={FILTER_UPPER_QUANTILE}): {upper_bound:.2f} min")
-        if defer_to_split:
+        if defer_to_split or keep_tails:
             pass
         elif rows_before > 0:
             print(f"      Removed (lower tail): {rows_removed_lower:,} ({rows_removed_lower / rows_before * 100:.2f}%)")
@@ -1809,6 +1828,9 @@ class TrainingPipeline:
         opened. The raw table is ~518k rows per month over 96 months; holding all
         of it would need far more than the 64G the batch script requests.
         """
+        blocked = self._multiclass_unsupported("build_fcll_sequences")
+        if blocked:
+            return blocked
         from src.fcll_sequences import assemble_sequences, derive_station_visits
 
         input_dir = input_dir or os.path.join(self.project_root, INPUT_FOLDER)
@@ -1851,6 +1873,9 @@ class TrainingPipeline:
         """Train FCLL-Net on the sequences built by stage 506."""
         import torch
 
+        blocked = self._multiclass_unsupported("train_fcll_net")
+        if blocked:
+            return blocked
         from src.fcll_trainer import load_shards, train_fcll
 
         data_dir = data_dir or os.path.join(self.project_root, FCLL_SEQUENCES_OUTPUT_FOLDER)
@@ -3082,6 +3107,9 @@ class TrainingPipeline:
             print(f"    shap_correlation_analysis: Loading training data from {train_file}")
             train_df = pd.read_parquet(train_file)
 
+            blocked = self._multiclass_unsupported("shap_correlation_analysis", skip=True)
+            if blocked:
+                return blocked
             target_feature = DEFAULT_TARGET_FEATURE
             is_classification = target_feature in CLASSIFICATION_PROBLEM
             is_regression = target_feature in REGRESSION_PROBLEM
@@ -3299,6 +3327,9 @@ class TrainingPipeline:
                 print(f"    {label}: {error_msg}")
                 return {"success": False, "error": error_msg}
 
+            blocked = self._multiclass_unsupported(label, skip=True)
+            if blocked:
+                return blocked
             target_feature = DEFAULT_TARGET_FEATURE
             is_classification = target_feature in CLASSIFICATION_PROBLEM
             if not (is_classification or target_feature in REGRESSION_PROBLEM):
@@ -3534,6 +3565,9 @@ class TrainingPipeline:
                     return {"success": False, "error": error_msg}
                 split_files[split] = files[0]
 
+            blocked = self._multiclass_unsupported(label, skip=True)
+            if blocked:
+                return blocked
             target_feature = DEFAULT_TARGET_FEATURE
             is_classification = target_feature in CLASSIFICATION_PROBLEM
             if not (is_classification or target_feature in REGRESSION_PROBLEM):
@@ -3719,6 +3753,8 @@ class TrainingPipeline:
         method — see the final_test_* blocks this mirrors.
         """
         metrics = {}
+        if is_classification and is_multiclass(DEFAULT_TARGET_FEATURE):
+            return self._score_multiclass(y_true, y_pred)
         if is_classification:
             metrics['accuracy'] = accuracy_score(y_true, y_pred)
             metrics['f1'] = f1_score(y_true, y_pred, average='binary' if len(np.unique(y_true)) == 2 else 'weighted')
@@ -3742,6 +3778,128 @@ class TrainingPipeline:
         return metrics
 
     @staticmethod
+    def _multiclass_unsupported(label, skip=False):
+        """Guard for code that only knows the binary and numeric targets.
+
+        With the 4-class target (delayClass) a trainer or diagnostic written for two classes would
+        run and print numbers that mean something else (a binary scale_pos_weight, ROC-AUC on
+        one class, SHAP of the last class only). It returns None for every other target. For
+        delayClass it returns a failure (a model the user asked for cannot run) or, with
+        skip=True, a successful skip (a diagnostic that is simply not available yet).
+        """
+        if not is_multiclass(DEFAULT_TARGET_FEATURE):
+            return None
+        if skip:
+            print(f"    {label}: ⊝ skipped, '{DEFAULT_TARGET_FEATURE}' is a multiclass target and this "
+                  f"stage only knows the binary and numeric targets")
+            return {"success": True, "skipped": True, "problem_type": "multiclass"}
+        message = (f"'{DEFAULT_TARGET_FEATURE}' (multiclass) is supported by xgboost, lightgbm, random_forest and logistic_regression only; "
+                   f"set DEFAULT_TARGET_FEATURE to a binary or numeric target for this model")
+        print(f"    {label}: ✗ {message}")
+        return {"success": False, "error": message}
+
+    @staticmethod
+    def _score_multiclass(y_true, y_pred):
+        """Metric set of the 4-class target (delayClass), for test and hold-out alike.
+
+        `accuracy`, `f1`, `precision` and `recall` keep the names the binary run uses, but F1 /
+        precision / recall are macro averages (every class counts the same). Added: per-class
+        precision/recall/F1/support, the 4x4 confusion matrix, balanced accuracy, two ordinal
+        measures (mean class distance, share within one class), the class shares and
+        `f1_macro_majority`, the macro F1 of always predicting the most common class (no skill).
+        """
+        y_true = np.asarray(y_true).astype(int)
+        y_pred = np.asarray(y_pred).astype(int)
+        labels = list(range(len(DELAY_CLASS_NAMES)))
+        prec, rec, f1, support = precision_recall_fscore_support(
+            y_true, y_pred, labels=labels, zero_division=0)
+        shares = np.bincount(y_true, minlength=len(labels)) / max(len(y_true), 1)
+        majority = int(np.argmax(shares))
+        return {
+            'accuracy': float(accuracy_score(y_true, y_pred)),
+            'f1': float(f1_score(y_true, y_pred, average='macro', zero_division=0)),
+            'precision': float(precision_score(y_true, y_pred, average='macro', zero_division=0)),
+            'recall': float(recall_score(y_true, y_pred, average='macro', zero_division=0)),
+            'confusion_matrix': confusion_matrix(y_true, y_pred, labels=labels).tolist(),
+            'balanced_accuracy': float(balanced_accuracy_score(y_true, y_pred)),
+            'per_class': {
+                name: {'precision': float(prec[i]), 'recall': float(rec[i]),
+                       'f1': float(f1[i]), 'support': int(support[i])}
+                for i, name in enumerate(DELAY_CLASS_NAMES)
+            },
+            'class_mae': float(np.mean(np.abs(y_true - y_pred))),
+            'within_one_class_accuracy': float(np.mean(np.abs(y_true - y_pred) <= 1)),
+            'class_shares': {name: float(shares[i]) for i, name in enumerate(DELAY_CLASS_NAMES)},
+            'f1_macro_majority': float(f1_score(
+                y_true, np.full_like(y_true, majority), average='macro', zero_division=0)),
+            'target_type': 'multiclass',
+            'average': 'macro',
+            'class_names': list(DELAY_CLASS_NAMES),
+        }
+
+    @staticmethod
+    def _classification_metrics(y_true, y_pred):
+        """accuracy, F1, precision, recall, confusion matrix and the multiclass block (or None).
+
+        One place for the metric lines the tabular trainers repeat: macro scores and a 4x4
+        matrix for the multiclass target, the long-standing binary / weighted rule otherwise.
+        """
+        if is_multiclass(DEFAULT_TARGET_FEATURE):
+            mc = TrainingPipeline._score_multiclass(y_true, y_pred)
+            return (mc['accuracy'], mc['f1'], mc['precision'], mc['recall'],
+                    mc['confusion_matrix'], mc)
+        average = classification_average(y_true)
+        return (accuracy_score(y_true, y_pred),
+                f1_score(y_true, y_pred, average=average),
+                precision_score(y_true, y_pred, average=average, zero_division=0),
+                recall_score(y_true, y_pred, average=average, zero_division=0),
+                confusion_matrix(y_true, y_pred).tolist(), None)
+
+    @staticmethod
+    def _add_multiclass_final_metrics(final_metrics, final_mc, final_prob):
+        """Turn a binary `final_metrics` dict into the multiclass one (in place).
+
+        The binary no-skill references (positive rate, F1 of always predicting positive) mean
+        nothing for four classes: they are replaced by the per-class view and the majority-class
+        reference.
+        """
+        final_metrics.pop("positive_rate_test", None)
+        final_metrics.pop("f1_always_positive", None)
+        for key in ("average", "class_names", "class_shares", "f1_macro_majority",
+                    "balanced_accuracy", "class_mae", "within_one_class_accuracy", "per_class"):
+            final_metrics[key] = final_mc[key]
+        final_metrics["auc_per_class"] = final_prob.get("auc_per_class")
+        final_metrics["pr_auc_per_class"] = final_prob.get("pr_auc_per_class")
+        return final_metrics
+
+    @staticmethod
+    def _multiclass_probability_metrics(model, y, proba):
+        """One-vs-rest ROC-AUC and PR-AUC per class, and their macro means.
+
+        A class that is absent (or the only one present) in `y` has no defined AUC and is left
+        out of the mean, so a split that lacks a rare class still scores the others.
+        """
+        y = np.asarray(y).astype(int)
+        classes = [int(c) for c in getattr(model, 'classes_', range(proba.shape[1]))]
+        auc, pr_auc = {}, {}
+        for col, c in enumerate(classes):
+            name = DELAY_CLASS_NAMES[c] if c < len(DELAY_CLASS_NAMES) else str(c)
+            hit = (y == c)
+            if 0 < hit.sum() < len(hit):
+                auc[name] = float(roc_auc_score(hit, proba[:, col]))
+                pr_auc[name] = float(average_precision_score(hit, proba[:, col]))
+            else:
+                auc[name] = pr_auc[name] = None
+        valid_auc = [v for v in auc.values() if v is not None]
+        valid_pr = [v for v in pr_auc.values() if v is not None]
+        return {
+            'auc': float(np.mean(valid_auc)) if valid_auc else 0.0,
+            'pr_auc': float(np.mean(valid_pr)) if valid_pr else 0.0,
+            'auc_per_class': auc,
+            'pr_auc_per_class': pr_auc,
+        }
+
+    @staticmethod
     def _probability_metrics(model, X, y):
         """Ranking metrics from predicted probabilities, with their no-skill references.
 
@@ -3754,7 +3912,10 @@ class TrainingPipeline:
         if not hasattr(model, 'predict_proba'):
             return {}
         y = np.asarray(y)
-        proba = model.predict_proba(X)[:, 1]
+        proba_all = model.predict_proba(X)
+        if proba_all.ndim == 2 and proba_all.shape[1] > 2:        # 4-class target
+            return TrainingPipeline._multiclass_probability_metrics(model, y, proba_all)
+        proba = proba_all[:, 1]
         two_classes = len(np.unique(y)) > 1
         p = float(np.mean(y.astype(float)))
         return {
@@ -4173,7 +4334,16 @@ class TrainingPipeline:
                 
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
-            
+
+            # 4-class target: scale_pos_weight is for one positive class, so the classes are
+            # balanced with per-row sample weights instead (multiplied into any weights above).
+            multiclass = is_classification and is_multiclass(target_feature)
+            if multiclass:
+                balanced = balanced_sample_weights(y_train)
+                sample_weights = balanced if sample_weights is None else sample_weights * balanced
+                print(f"      Multiclass target: balanced sample weights, min {balanced.min():.2f}, "
+                      f"max {balanced.max():.2f}")
+
             # Day-grouped CV: rows of one operating day never sit in both the fitting and
             # the validation fold (see src/cv_utils.py). None without a sidecar file.
             groups = load_train_groups(train_file, len(train_df))
@@ -4185,15 +4355,24 @@ class TrainingPipeline:
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
                 cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
-                # Class weight instead of SMOTE: negatives per positive of the train split.
-                spw = neg_pos_ratio(y_train)
-                print(f"      scale_pos_weight = {spw:.3f} (train negatives / positives)")
-                base_model = xgb.XGBClassifier(
-                    random_state=RANDOM_STATE,
-                    n_jobs=MODEL_N_JOBS,
-                    scale_pos_weight=spw,
-                )
-                scoring_metric = SCORE_METRIC
+                if multiclass:
+                    # XGBClassifier switches to multi:softprob by itself for labels 0..k-1.
+                    base_model = xgb.XGBClassifier(
+                        random_state=RANDOM_STATE,
+                        n_jobs=MODEL_N_JOBS,
+                    )
+                    scoring_metric = classification_scoring('multiclass')
+                    print(f"      Multiclass tuning metric: {scoring_metric}")
+                else:
+                    # Class weight instead of SMOTE: negatives per positive of the train split.
+                    spw = neg_pos_ratio(y_train)
+                    print(f"      scale_pos_weight = {spw:.3f} (train negatives / positives)")
+                    base_model = xgb.XGBClassifier(
+                        random_state=RANDOM_STATE,
+                        n_jobs=MODEL_N_JOBS,
+                        scale_pos_weight=spw,
+                    )
+                    scoring_metric = SCORE_METRIC
             else:
                 cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = xgb.XGBRegressor(
@@ -4283,11 +4462,17 @@ class TrainingPipeline:
 
                 # Calculate test metrics
                 if is_classification:
-                    test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                    test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
+                    if multiclass:
+                        mc = self._score_multiclass(y_test, y_pred)
+                        test_f1, test_accuracy = mc['f1'], mc['accuracy']
+                        test_precision, test_recall = mc['precision'], mc['recall']
+                        test_confusion_matrix = mc['confusion_matrix']
+                    else:
+                        test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
+                        test_accuracy = accuracy_score(y_test, y_pred)
+                        test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                        test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                        test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
                     test_prob = self._probability_metrics(current_best_model, X_test, y_test)
                     test_auc_scores.append(test_prob.get('auc', 0.0))
                     test_pr_auc_scores.append(test_prob.get('pr_auc', 0.0))
@@ -4373,14 +4558,24 @@ class TrainingPipeline:
             if not is_classification:
                 final_y_pred = to_minutes(final_y_pred, y_shift)
 
+            final_mc = None
             if is_classification:
-                final_test_accuracy = accuracy_score(y_test, final_y_pred)
-                final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
+                if multiclass:
+                    final_mc = self._score_multiclass(y_test, final_y_pred)
+                    final_test_accuracy, final_test_f1 = final_mc['accuracy'], final_mc['f1']
+                    final_test_precision, final_test_recall = final_mc['precision'], final_mc['recall']
+                    final_confusion_matrix = final_mc['confusion_matrix']
+                else:
+                    final_test_accuracy = accuracy_score(y_test, final_y_pred)
+                    final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
+                    final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                    final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
+                    final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
 
-                if hasattr(best_model, 'predict_proba'):
+                if multiclass:
+                    final_prob = self._probability_metrics(best_model, X_test, y_test)
+                    final_test_auc = final_prob.get('auc', 0.0)
+                elif hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
                     final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
                     final_prob = self._probability_metrics(best_model, X_test, y_test)
@@ -4422,9 +4617,10 @@ class TrainingPipeline:
             # Plot Test F1/RMSE on left y-axis
             color1 = 'tab:blue'
             ax1.set_xlabel('Number of RandomizedSearch Iterations', fontsize=13)
-            ax1.set_ylabel(f'Test {"F1 Binary Score" if is_classification else "RMSE"}', color=color1, fontsize=13)
-            line1 = ax1.plot(iteration_values, test_f1_scores, 'o-', color=color1, linewidth=3, markersize=8, 
-                            label=f'Test {"F1 Binary" if is_classification else "RMSE"}')
+            f1_axis_label = 'Macro F1' if multiclass else 'F1 Binary'
+            ax1.set_ylabel(f'Test {(f1_axis_label + " Score") if is_classification else "RMSE"}', color=color1, fontsize=13)
+            line1 = ax1.plot(iteration_values, test_f1_scores, 'o-', color=color1, linewidth=3, markersize=8,
+                            label=f'Test {f1_axis_label if is_classification else "RMSE"}')
             ax1.tick_params(axis='y', labelcolor=color1)
             ax1.grid(True, alpha=0.3)
             
@@ -4531,6 +4727,8 @@ class TrainingPipeline:
                 # Save confusion matrix plot for the best model
                 cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
                 cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                if multiclass:
+                    cm_labels = list(DELAY_CLASS_NAMES)
                 cm_title = f'XGBoost Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
                 cm_plot_filename = os.path.join(output_dir, f'xgboost_confusion_matrix_{file_identifier}.png')
                 self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
@@ -4575,6 +4773,9 @@ class TrainingPipeline:
                         "f1_always_positive": float(final_prob.get('f1_always_positive', 0.0)),
                         "confusion_matrix": final_confusion_matrix
                     }
+                    if multiclass:
+                        results["target_type"] = "multiclass"
+                        self._add_multiclass_final_metrics(results["final_metrics"], final_mc, final_prob)
                 else:
                     results["final_metrics"] = {
                         "test_rmse": float(final_test_rmse),
@@ -4943,6 +5144,15 @@ class TrainingPipeline:
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
 
+            # 4-class target: scale_pos_weight is for one positive class, so the classes are
+            # balanced with per-row sample weights instead (multiplied into any weights above).
+            multiclass = is_classification and is_multiclass(target_feature)
+            if multiclass:
+                balanced = balanced_sample_weights(y_train)
+                sample_weights = balanced if sample_weights is None else sample_weights * balanced
+                print(f"      Multiclass target: balanced sample weights, min {balanced.min():.2f}, "
+                      f"max {balanced.max():.2f}")
+
             # Day-grouped CV: rows of one operating day never sit in both the fitting and
             # the validation fold (see src/cv_utils.py). None without a sidecar file.
             groups = load_train_groups(train_file, len(train_df))
@@ -4954,17 +5164,28 @@ class TrainingPipeline:
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
                 cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
-                # Class weight instead of SMOTE: negatives per positive of the train split.
-                spw = neg_pos_ratio(y_train)
-                print(f"      scale_pos_weight = {spw:.3f} (train negatives / positives)")
-                base_model = lgb.LGBMClassifier(
-                    random_state=RANDOM_STATE,
-                    n_jobs=MODEL_N_JOBS,
-                    subsample_freq=1,
-                    verbose=-1,
-                    scale_pos_weight=spw,
-                )
-                scoring_metric = SCORE_METRIC
+                if multiclass:
+                    # LGBMClassifier switches to the multiclass objective by itself for labels 0..k-1.
+                    base_model = lgb.LGBMClassifier(
+                        random_state=RANDOM_STATE,
+                        n_jobs=MODEL_N_JOBS,
+                        subsample_freq=1,
+                        verbose=-1,
+                    )
+                    scoring_metric = classification_scoring('multiclass')
+                    print(f"      Multiclass tuning metric: {scoring_metric}")
+                else:
+                    # Class weight instead of SMOTE: negatives per positive of the train split.
+                    spw = neg_pos_ratio(y_train)
+                    print(f"      scale_pos_weight = {spw:.3f} (train negatives / positives)")
+                    base_model = lgb.LGBMClassifier(
+                        random_state=RANDOM_STATE,
+                        n_jobs=MODEL_N_JOBS,
+                        subsample_freq=1,
+                        verbose=-1,
+                        scale_pos_weight=spw,
+                    )
+                    scoring_metric = SCORE_METRIC
             else:
                 cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = lgb.LGBMRegressor(
@@ -5045,11 +5266,8 @@ class TrainingPipeline:
 
                 # Calculate test metrics
                 if is_classification:
-                    test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                    test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
+                    (test_accuracy, test_f1, test_precision, test_recall,
+                     test_confusion_matrix, _) = self._classification_metrics(y_test, y_pred)
                     test_prob = self._probability_metrics(current_best_model, X_test, y_test)
                     test_auc_scores.append(test_prob.get('auc', 0.0))
                     test_pr_auc_scores.append(test_prob.get('pr_auc', 0.0))
@@ -5134,13 +5352,13 @@ class TrainingPipeline:
                 final_y_pred = np.expm1(final_y_pred) - y_shift
 
             if is_classification:
-                final_test_accuracy = accuracy_score(y_test, final_y_pred)
-                final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
+                (final_test_accuracy, final_test_f1, final_test_precision, final_test_recall,
+                 final_confusion_matrix, final_mc) = self._classification_metrics(y_test, final_y_pred)
 
-                if hasattr(best_model, 'predict_proba'):
+                if multiclass:
+                    final_prob = self._probability_metrics(best_model, X_test, y_test)
+                    final_test_auc = final_prob.get('auc', 0.0)
+                elif hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
                     final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
                     final_prob = self._probability_metrics(best_model, X_test, y_test)
@@ -5170,9 +5388,10 @@ class TrainingPipeline:
 
             color1 = 'tab:blue'
             ax1.set_xlabel('Number of RandomizedSearch Iterations', fontsize=13)
-            ax1.set_ylabel(f'Test {"F1 Binary Score" if is_classification else "RMSE"}', color=color1, fontsize=13)
+            f1_axis_label = 'Macro F1' if multiclass else 'F1 Binary'
+            ax1.set_ylabel(f'Test {(f1_axis_label + " Score") if is_classification else "RMSE"}', color=color1, fontsize=13)
             line1 = ax1.plot(iteration_values, test_f1_scores, 'o-', color=color1, linewidth=3, markersize=8,
-                            label=f'Test {"F1 Binary" if is_classification else "RMSE"}')
+                            label=f'Test {f1_axis_label if is_classification else "RMSE"}')
             ax1.tick_params(axis='y', labelcolor=color1)
             ax1.grid(True, alpha=0.3)
 
@@ -5262,6 +5481,8 @@ class TrainingPipeline:
                 # Save confusion matrix plot for the best model
                 cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
                 cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                if multiclass:
+                    cm_labels = list(DELAY_CLASS_NAMES)
                 cm_title = f'LightGBM Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
                 cm_plot_filename = os.path.join(output_dir, f'lightgbm_confusion_matrix_{file_identifier}.png')
                 self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
@@ -5298,6 +5519,9 @@ class TrainingPipeline:
                         "f1_always_positive": float(final_prob.get('f1_always_positive', 0.0)),
                         "confusion_matrix": final_confusion_matrix
                     }
+                    if multiclass:
+                        results["target_type"] = "multiclass"
+                        self._add_multiclass_final_metrics(results["final_metrics"], final_mc, final_prob)
                 else:
                     results["final_metrics"] = {
                         "test_rmse": float(final_test_rmse),
@@ -5627,6 +5851,8 @@ class TrainingPipeline:
                 sample_weights = weights
                 print(f"      Sample weights - Min: {weights.min():.2f}, Max: {weights.max():.2f}, Mean: {weights.mean():.2f}")
 
+            multiclass = is_classification and is_multiclass(target_feature)
+
             # Day-grouped CV: rows of one operating day never sit in both the fitting and
             # the validation fold (see src/cv_utils.py). None without a sidecar file.
             groups = load_train_groups(train_file, len(train_df))
@@ -5644,7 +5870,9 @@ class TrainingPipeline:
                     class_weight='balanced',  # instead of SMOTE
                 )
                 param_distributions=RANDOM_FOREST_PARAM_DISTRIBUTIONS
-                scoring_metric = SCORE_METRIC
+                scoring_metric = classification_scoring('multiclass') if multiclass else SCORE_METRIC
+                if multiclass:
+                    print(f"      Multiclass target: class_weight='balanced', tuning metric {scoring_metric}")
             else:
                 cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
                 base_model = RandomForestRegressor(
@@ -5724,11 +5952,8 @@ class TrainingPipeline:
 
                 # Calculate test metrics
                 if is_classification:
-                    test_f1 = f1_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                    test_accuracy = accuracy_score(y_test, y_pred)
-                    test_precision = precision_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_recall    = recall_score(y_test, y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                    test_confusion_matrix = confusion_matrix(y_test, y_pred).tolist()
+                    (test_accuracy, test_f1, test_precision, test_recall,
+                     test_confusion_matrix, _) = self._classification_metrics(y_test, y_pred)
                     test_prob = self._probability_metrics(current_best_model, X_test, y_test)
                     test_auc_scores.append(test_prob.get('auc', 0.0))
                     test_pr_auc_scores.append(test_prob.get('pr_auc', 0.0))
@@ -5813,13 +6038,13 @@ class TrainingPipeline:
                 final_y_pred = np.expm1(final_y_pred) - y_shift
 
             if is_classification:
-                final_test_accuracy = accuracy_score(y_test, final_y_pred)
-                final_test_f1 = f1_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted')
-                final_test_precision = precision_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_test_recall = recall_score(y_test, final_y_pred, average='binary' if len(np.unique(y_test)) == 2 else 'weighted', zero_division=0)
-                final_confusion_matrix = confusion_matrix(y_test, final_y_pred).tolist()
+                (final_test_accuracy, final_test_f1, final_test_precision, final_test_recall,
+                 final_confusion_matrix, final_mc) = self._classification_metrics(y_test, final_y_pred)
 
-                if hasattr(best_model, 'predict_proba'):
+                if multiclass:
+                    final_prob = self._probability_metrics(best_model, X_test, y_test)
+                    final_test_auc = final_prob.get('auc', 0.0)
+                elif hasattr(best_model, 'predict_proba'):
                     final_y_pred_proba = best_model.predict_proba(X_test)[:, 1]
                     final_test_auc = roc_auc_score(y_test, final_y_pred_proba) if len(np.unique(y_test)) > 1 else 0.0
                     final_prob = self._probability_metrics(best_model, X_test, y_test)
@@ -5849,9 +6074,10 @@ class TrainingPipeline:
 
             color1 = 'tab:blue'
             ax1.set_xlabel('Number of RandomizedSearch Iterations', fontsize=13)
-            ax1.set_ylabel(f'Test {"F1 Binary Score" if is_classification else "RMSE"}', color=color1, fontsize=13)
+            f1_axis_label = 'Macro F1' if multiclass else 'F1 Binary'
+            ax1.set_ylabel(f'Test {(f1_axis_label + " Score") if is_classification else "RMSE"}', color=color1, fontsize=13)
             line1 = ax1.plot(iteration_values, test_f1_scores, 'o-', color=color1, linewidth=3, markersize=8,
-                            label=f'Test {"F1 Binary" if is_classification else "RMSE"}')
+                            label=f'Test {f1_axis_label if is_classification else "RMSE"}')
             ax1.tick_params(axis='y', labelcolor=color1)
             ax1.grid(True, alpha=0.3)
 
@@ -5941,6 +6167,8 @@ class TrainingPipeline:
                 # Save confusion matrix plot for the best model
                 cm_for_plot = final_confusion_matrix if is_classification else final_bin_confusion_matrix
                 cm_labels = [str(c) for c in sorted(np.unique(y_test))] if is_classification else ['On-time', 'Delayed']
+                if multiclass:
+                    cm_labels = list(DELAY_CLASS_NAMES)
                 cm_title = f'Random Forest Confusion Matrix - Best Model ({problem_type.title()})\nDataset: {file_identifier} | Best Iteration: {best_iteration}'
                 cm_plot_filename = os.path.join(output_dir, f'random_forest_confusion_matrix_{file_identifier}.png')
                 self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
@@ -5977,6 +6205,9 @@ class TrainingPipeline:
                         "f1_always_positive": float(final_prob.get('f1_always_positive', 0.0)),
                         "confusion_matrix": final_confusion_matrix
                     }
+                    if multiclass:
+                        results["target_type"] = "multiclass"
+                        self._add_multiclass_final_metrics(results["final_metrics"], final_mc, final_prob)
                 else:
                     results["final_metrics"] = {
                         "test_rmse": float(final_test_rmse),
@@ -6276,6 +6507,8 @@ class TrainingPipeline:
         target_feature = inputs["target_feature"]
         train_df, test_df = inputs["train_df"], inputs["test_df"]
 
+        multiclass = is_multiclass(target_feature)
+        scoring_metric = classification_scoring(target_kind(target_feature))
         feature_columns = [col for col in train_df.columns if col != target_feature]
         X_train, y_train = train_df[feature_columns], train_df[target_feature]
         X_test, y_test = test_df[feature_columns], test_df[target_feature]
@@ -6308,12 +6541,12 @@ class TrainingPipeline:
                 )),
             ]),
             param_grid={"logreg__C": list(LOGISTIC_BASELINE_CS)},
-            scoring=SCORE_METRIC,
+            scoring=scoring_metric,
             cv=cv_splitter,
             n_jobs=SEARCH_N_JOBS,
             verbose=0,
         )
-        print(f"      Tuning C over {list(LOGISTIC_BASELINE_CS)} ({SCORE_METRIC}, day-grouped CV)")
+        print(f"      Tuning C over {list(LOGISTIC_BASELINE_CS)} ({scoring_metric}, day-grouped CV)")
         search.fit(X_train, y_train, groups=groups, **fit_kwargs)
         best_model = search.best_estimator_
         best_c = float(search.best_params_["logreg__C"])
@@ -6333,12 +6566,22 @@ class TrainingPipeline:
         test_metrics = _score(best_model, X_test, y_test)
         holdout_metrics = _score(best_model, X_holdout, y_holdout) if X_holdout is not None else None
 
-        coef = best_model.named_steps["logreg"].coef_[0]
-        importance_df = pd.DataFrame({
-            'feature': feature_columns,
-            'importance': np.abs(coef),
-            'coefficient': coef,   # signed, on standardised features
-        })
+        coef_matrix = best_model.named_steps["logreg"].coef_
+        if multiclass:
+            # One coefficient row per class: importance is the mean |coefficient| over the classes
+            # (every class counts the same); the signed row of each class goes to the CSV.
+            coef = np.mean(np.abs(coef_matrix), axis=0)
+            importance_df = pd.DataFrame({'feature': feature_columns, 'importance': coef})
+            for row, class_id in zip(coef_matrix, best_model.named_steps["logreg"].classes_):
+                class_name = DELAY_CLASS_NAMES[int(class_id)]
+                importance_df[f'coef_{class_name}'] = row     # signed, on standardised features
+        else:
+            coef = coef_matrix[0]
+            importance_df = pd.DataFrame({
+                'feature': feature_columns,
+                'importance': np.abs(coef),
+                'coefficient': coef,   # signed, on standardised features
+            })
 
         # --- plots and tables -----------------------------------------------------
         c_values = [row["C"] for row in c_scores]
@@ -6348,7 +6591,7 @@ class TrainingPipeline:
         ax.axvline(best_c, color='red', linestyle='--', label=f'best C = {best_c:g}')
         ax.set_xscale('log')
         ax.set_xlabel('C (inverse regularisation strength)')
-        ax.set_ylabel(f'CV {SCORE_METRIC} (mean ± std over day-grouped folds)')
+        ax.set_ylabel(f'CV {scoring_metric} (mean ± std over day-grouped folds)')
         ax.set_title(f'Logistic baseline: CV score by C\nDataset: {file_identifier}')
         ax.grid(True, alpha=0.3)
         ax.legend()
@@ -6359,10 +6602,15 @@ class TrainingPipeline:
 
         plot_df = importance_df.sort_values('importance', ascending=True)
         plt.figure(figsize=(12, max(8, len(plot_df) * 0.4)))
-        plt.barh(plot_df['feature'], plot_df['coefficient'],
-                 color=np.where(plot_df['coefficient'] >= 0, 'tab:red', 'tab:blue'))
-        plt.axvline(0, color='black', linewidth=0.8)
-        plt.xlabel('Coefficient on standardised feature (red: raises P(disrupted), blue: lowers it)', fontsize=12)
+        if multiclass:
+            plt.barh(plot_df['feature'], plot_df['importance'], color='tab:blue')
+            plt.xlabel('Mean |coefficient| over the 4 delay classes (standardised features; '
+                       'signed per-class values are in the CSV)', fontsize=12)
+        else:
+            plt.barh(plot_df['feature'], plot_df['coefficient'],
+                     color=np.where(plot_df['coefficient'] >= 0, 'tab:red', 'tab:blue'))
+            plt.axvline(0, color='black', linewidth=0.8)
+            plt.xlabel('Coefficient on standardised feature (red: raises P(disrupted), blue: lowers it)', fontsize=12)
         plt.title(f'Logistic baseline coefficients (Classification)\nDataset: {file_identifier} | C = {best_c:g}',
                   fontsize=14)
         plt.grid(axis='x', alpha=0.3)
@@ -6374,7 +6622,8 @@ class TrainingPipeline:
             os.path.join(output_dir, f'logistic_regression_feature_importance_{file_identifier}.csv'), index=False)
 
         self._save_confusion_matrix_plot(
-            test_metrics['confusion_matrix'], [str(c) for c in sorted(np.unique(y_test))],
+            test_metrics['confusion_matrix'],
+            list(DELAY_CLASS_NAMES) if multiclass else [str(c) for c in sorted(np.unique(y_test))],
             f'Logistic Baseline Confusion Matrix (Classification)\nDataset: {file_identifier} | C = {best_c:g}',
             os.path.join(output_dir, f'logistic_regression_confusion_matrix_{file_identifier}.png'))
 
@@ -6391,7 +6640,7 @@ class TrainingPipeline:
                 "test_file": test_file,
             },
             "best_C": best_c,
-            "tuning_metric": SCORE_METRIC,
+            "tuning_metric": scoring_metric,
             "cv_score": cv_score,
             "C_scores": c_scores,
             "best_model_params": best_model.get_params(),
@@ -6403,11 +6652,14 @@ class TrainingPipeline:
                 "test_recall": float(test_metrics['recall']),
                 "test_auc": float(test_metrics['auc']),
                 "test_pr_auc": float(test_metrics['pr_auc']),
-                "positive_rate_test": test_metrics['positive_rate'],
-                "f1_always_positive": test_metrics['f1_always_positive'],
+                "positive_rate_test": test_metrics.get('positive_rate'),
+                "f1_always_positive": test_metrics.get('f1_always_positive'),
                 "confusion_matrix": test_metrics['confusion_matrix'],
             },
         }
+        if multiclass:
+            results["target_type"] = "multiclass"
+            self._add_multiclass_final_metrics(results["final_metrics"], test_metrics, test_metrics)
         if holdout_metrics is not None:
             results["holdout_metrics"] = holdout_metrics
             results["dataset_info"]["holdout_samples"] = len(X_holdout)
@@ -6419,12 +6671,16 @@ class TrainingPipeline:
         print(f"      Results saved to: {results_file}")
 
         print(f"      Training Summary:")
-        print(f"        Best C: {best_c:g}   Best CV {SCORE_METRIC}: {cv_score:.4f}")
+        print(f"        Best C: {best_c:g}   Best CV {scoring_metric}: {cv_score:.4f}")
         print(f"        Test    Accuracy: {test_metrics['accuracy']:.4f}  F1: {test_metrics['f1']:.4f}  "
               f"Precision: {test_metrics['precision']:.4f}  Recall: {test_metrics['recall']:.4f}  "
               f"AUC: {test_metrics['auc']:.4f}  PR-AUC: {test_metrics['pr_auc']:.4f}")
-        print(f"        Always-disrupted F1: {test_metrics['f1_always_positive']:.4f} "
-              f"(positive rate {test_metrics['positive_rate']:.4f})")
+        if multiclass:
+            print(f"        Majority-class macro F1: {test_metrics['f1_macro_majority']:.4f} "
+                  f"(always predicting the most common class)")
+        else:
+            print(f"        Always-disrupted F1: {test_metrics['f1_always_positive']:.4f} "
+                  f"(positive rate {test_metrics['positive_rate']:.4f})")
         if holdout_metrics is not None:
             print(f"      Hold-out Summary (out-of-time, never trained/tuned on):")
             print(f"        Accuracy: {holdout_metrics['accuracy']:.4f}  F1: {holdout_metrics['f1']:.4f}  "
@@ -6848,6 +7104,9 @@ class TrainingPipeline:
             print(f"    train_naive_bayes_with_randomized_search_cv: Processing dataset: {file_identifier}")
 
             # Determine problem type based on target feature
+            blocked = self._multiclass_unsupported("train_naive_bayes_with_randomized_search_cv")
+            if blocked:
+                return blocked
             target_feature = DEFAULT_TARGET_FEATURE
             is_classification = target_feature in CLASSIFICATION_PROBLEM
             is_regression = target_feature in REGRESSION_PROBLEM

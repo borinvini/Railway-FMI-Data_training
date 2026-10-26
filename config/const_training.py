@@ -344,6 +344,12 @@ LIGHTGBM_PARAM_DISTRIBUTIONS = {
 # ===================================================================================================================
 SCORE_METRIC = 'roc_auc'
 
+# Metric the 4-class target (delayClass) is tuned on, instead of SCORE_METRIC ('roc_auc' needs a
+# multiclass averaging argument and says little about which class is picked). 'f1_macro' is the mean
+# of the four per-class F1 scores, so the rare >15 min class counts as much as the common ones.
+# Any sklearn scorer name that handles multiclass works, e.g. 'balanced_accuracy', 'f1_weighted'.
+MULTICLASS_SCORE_METRIC = 'f1_macro'
+
 # Metric the numeric target (differenceInMinutes) is tuned on, XGBoost only so far.
 # All are computed in minutes (the model is fitted on log1p of the delay):
 #   'mae'  : -MAE, robust to the long delay tail (default, matches mae_skill)

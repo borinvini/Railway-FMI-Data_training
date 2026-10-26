@@ -178,3 +178,53 @@ def neg_pos_ratio(y):
     y = np.asarray(y).astype(bool)
     pos = int(y.sum())
     return float((len(y) - pos) / pos) if pos else 1.0
+
+
+# --- the target decides the kind of run -----------------------------------------------------------
+#
+# 'binary'     trainDisrupted / trainDelayed / cancelled: scale_pos_weight, ROC-AUC, binary F1.
+# 'multiclass' delayClass (4 delay classes): balanced sample weights, macro F1, one-vs-rest AUC.
+# 'regression' differenceInMinutes*: minutes metrics.
+# Every trainer branches on this one rule, so changing DEFAULT_TARGET_FEATURE is the only switch.
+
+def target_kind(target):
+    """'binary', 'multiclass' or 'regression' for a target column; ValueError for any other name."""
+    from config.const_preprocessing import (BINARY_CLASSIFICATION_PROBLEM, MULTICLASS_PROBLEM,
+                                            REGRESSION_PROBLEM)
+    if target in MULTICLASS_PROBLEM:
+        return "multiclass"
+    if target in BINARY_CLASSIFICATION_PROBLEM:
+        return "binary"
+    if target in REGRESSION_PROBLEM:
+        return "regression"
+    raise ValueError(f"Target feature {target!r} is not a known binary, multiclass or regression target")
+
+
+def is_multiclass(target):
+    """True for a target in MULTICLASS_PROBLEM; False for every other name, known or not."""
+    from config.const_preprocessing import MULTICLASS_PROBLEM
+    return target in MULTICLASS_PROBLEM
+
+
+def classification_scoring(kind):
+    """The search metric for a classifier: SCORE_METRIC (binary) or MULTICLASS_SCORE_METRIC."""
+    from config.const_training import MULTICLASS_SCORE_METRIC, SCORE_METRIC
+    return MULTICLASS_SCORE_METRIC if kind == "multiclass" else SCORE_METRIC
+
+
+def classification_average(y, multiclass=False):
+    """`average=` for F1 / precision / recall: macro for a multiclass target, otherwise the
+    long-standing rule (binary for two classes, weighted for more)."""
+    if multiclass:
+        return "macro"
+    return "binary" if len(np.unique(y)) == 2 else "weighted"
+
+
+def balanced_sample_weights(y):
+    """Per-row weights that make every class weigh the same in total (n / (k * count of its class)).
+
+    scale_pos_weight exists for one positive class only; with four delay classes the same idea is
+    a sample weight, which RandomizedSearchCV slices per fold through fit(sample_weight=...).
+    """
+    from sklearn.utils.class_weight import compute_sample_weight
+    return compute_sample_weight("balanced", np.asarray(y))
