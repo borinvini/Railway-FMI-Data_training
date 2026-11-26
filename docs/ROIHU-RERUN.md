@@ -644,6 +644,24 @@ Scratch deletes anything untouched for 180 days, so copy results off.
 
 ---
 
+## All stations at once (the multi-station grid)
+
+The loop above trains one station at a time: one `data/output/101-…` and one set of `run_sNN_<model>` roots under `/scratch/project_2019266/railway-fmi`. The multi-station grid gives each station of `hpc/stations.sh` (HKI PSL TPE SK YV OL ROI) its own tree, `/scratch/.../railway-fmi/stations/<ST>/`, so all seven run side by side. The step-by-step version is the `roihu-stations-run` skill.
+
+```bash
+# [LOCAL] preprocess every station into data/stations/<ST>/ and archive it in AI Results/NUMERIC/<N> - <ST>/
+<python> -u -X utf8 scripts/preprocess_stations.py --stations all
+# [LOCAL] stage all seven; every station must end with MATCH
+bash hpc/stage_data.sh --stations all
+# [ROIHU] one array of 52 tasks per station; dry-run first
+cd /projappl/project_2019266/railway-fmi-code && git pull
+hpc/submit-stations.sh --models xgboost,lightgbm,random_forest,ridge_baseline --dry-run
+hpc/submit-stations.sh --models xgboost,lightgbm,random_forest,ridge_baseline
+# [LOCAL] once the queue is empty: fetch, sort, grid_summary.csv, archive results/
+bash hpc/fetch-stations.sh
+```
+
+`hpc/fetch-stations.sh` refuses to start if any `<N> - <ST>/results` in the archive is not empty. Without `--station(s)` every script keeps the single-station layout above.
 ## Compare runs
 
 Metrics live in

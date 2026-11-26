@@ -19,6 +19,14 @@
 # a 2.6 GB one, and it only needs re-sending when the raw parquet itself
 # changes, which is far rarer than re-preprocessing. Stage it once, then omit
 # the flag on subsequent runs.
+#
+#   --stations OL,ROI|all
+#                  The multi-station grid: data/stations/<ST>/data/output/101-...
+#                  (written by scripts/preprocess_stations.py) goes to
+#                  ${SCRATCH}/stations/<ST>/data/output/101-..., one tree per
+#                  station of hpc/stations.sh, where hpc/submit-stations.sh reads
+#                  it. Each station ends with its file count and a content hash
+#                  on both sides, which must match.
 set -euo pipefail
 
 PROJECT="project_2019266"
@@ -26,14 +34,24 @@ REMOTE_USER="vpozzobo"
 REMOTE_HOST="roihu-cpu.csc.fi"
 
 STAGE_RAW=0
+STATION_SPEC=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --raw)
             STAGE_RAW=1
             ;;
+        --stations)
+            [ $# -ge 2 ] || { echo "ERROR: --stations needs a value." >&2; exit 1; }
+            STATION_SPEC="$2"
+            shift
+            ;;
+        --stations=*)
+            STATION_SPEC="${1#*=}"
+            ;;
         -h|--help)
-            echo "Usage: hpc/stage_data.sh [--raw]"
-            echo "  --raw   also stage data/input (~2.6 GB), required by fcll_net"
+            echo "Usage: hpc/stage_data.sh [--raw] [--stations ST,ST|all]"
+            echo "  --raw       also stage data/input (~2.6 GB), required by fcll_net"
+            echo "  --stations  stage data/stations/<ST>/data/output/101-... per station"
             exit 0
             ;;
         *)
@@ -41,7 +59,7 @@ while [ $# -gt 0 ]; do
             # believes 2.6 GB went up, and the fcll_net cells die on the cluster
             # hours later with 'no input parquet'.
             echo "ERROR: Unknown option: $1" >&2
-            echo "Usage: hpc/stage_data.sh [--raw]" >&2
+            echo "Usage: hpc/stage_data.sh [--raw] [--stations ST,ST|all]" >&2
             exit 1
             ;;
     esac
@@ -78,6 +96,68 @@ transfer() {
         scp -r "${src}/." "${REMOTE}:${dest_dir}/"
     fi
 }
+
+# Content hash of a folder's parquet files: the md5 of the md5 column only.
+# Git Bash prints "hash *name" and the cluster "hash  name", so hashing whole
+# listings would always differ, even for identical files. A hash is the first
+# 32 characters of its line, which also keeps quotes out of the ssh string.
+LOCAL_HASH='md5sum *.parquet | cut -c1-32 | md5sum | cut -c1-32'
+
+if [ -n "${STATION_SPEC}" ]; then
+    if [ "${STAGE_RAW}" -eq 1 ]; then
+        echo "ERROR: --raw and --stations do not combine; stage the raw input on its own." >&2
+        exit 1
+    fi
+    # shellcheck source=hpc/stations.sh
+    source "$(dirname "${BASH_SOURCE[0]}")/stations.sh"
+    if [ "${STATION_SPEC}" = "all" ]; then
+        CHOSEN=("${STATIONS[@]}")
+    else
+        IFS=',' read -r -a CHOSEN <<< "$(printf '%s' "${STATION_SPEC}" | tr '[:lower:]' '[:upper:]')"
+        for w in "${CHOSEN[@]}"; do
+            found=0
+            for s in "${STATIONS[@]}"; do [ "${w}" = "${s}" ] && found=1; done
+            if [ "${found}" -ne 1 ]; then
+                echo "ERROR: unknown station '${w}'. hpc/stations.sh lists: ${STATIONS[*]}" >&2
+                exit 1
+            fi
+        done
+    fi
+    # Every station is checked before any byte moves: a missing one found halfway
+    # would leave the cluster with some stations new and some stale.
+    for station in "${CHOSEN[@]}"; do
+        src="data/stations/${station}/${SRC_PREPROCESSED}"
+        if [ ! -d "${src}" ]; then
+            echo "ERROR: ${src} not found. Run scripts/preprocess_stations.py first." >&2
+            exit 1
+        fi
+    done
+    REPORT=()
+    for station in "${CHOSEN[@]}"; do
+        src="data/stations/${station}/${SRC_PREPROCESSED}"
+        dest="${SCRATCH}/stations/${station}/${SRC_PREPROCESSED}"
+        ssh "${REMOTE}" "mkdir -p '${SCRATCH}/stations/${station}/data/output/log'"
+        transfer "${src}" "${dest}" "${station} preprocessed training data"
+        local_n="$(ls -1 "${src}"/*.parquet | wc -l)"
+        local_hash="$(cd "${src}" && eval "${LOCAL_HASH}")"
+        remote="$(ssh "${REMOTE}" "cd '${dest}' && echo \$(ls -1 *.parquet | wc -l) \$(${LOCAL_HASH})")"
+        remote_n="${remote%% *}"
+        remote_hash="${remote##* }"
+        verdict="MATCH"
+        if [ "${local_n}" != "${remote_n}" ] || [ "${local_hash}" != "${remote_hash}" ]; then
+            verdict="DIFFER"
+        fi
+        REPORT+=("${station}: local ${local_n} files ${local_hash} | Roihu ${remote_n} files ${remote_hash} | ${verdict}")
+    done
+    echo
+    printf '%s\n' "${REPORT[@]}"
+    if printf '%s\n' "${REPORT[@]}" | grep -q 'DIFFER$'; then
+        echo "ERROR: at least one station differs on Roihu; re-run this script before submitting." >&2
+        exit 1
+    fi
+    echo "All stations staged under ${REMOTE}:${SCRATCH}/stations/"
+    exit 0
+fi
 
 ssh "${REMOTE}" "mkdir -p '${SCRATCH}/data/output/log'"
 

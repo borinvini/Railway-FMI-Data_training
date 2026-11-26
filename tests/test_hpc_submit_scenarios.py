@@ -22,7 +22,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "hpc" / "submit-scenarios.sh"
 
-MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes", "fcll_net"]
+MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes", "fcll_net",
+          "ridge_baseline"]
 
 # The real catalogue's size, and the task range it implies. Derived rather than
 # written out, so adding a trainer to hpc/models.sh needs no edit here — the
@@ -253,23 +254,24 @@ def _subset_array(scenarios, models):
     return "--array=" + _ids_to_spec(ids)
 
 
-def test_four_models_over_the_whole_catalogue_leave_gaps_for_the_other_two():
+def test_four_models_over_the_whole_catalogue_leave_gaps_for_the_other_three():
     """Task id = (scenario - 1) * len(MODELS) + model index, because train_scenarios.sh
-    decodes it that way. Four of six models are therefore 0-3, 6-9, ... — not 0-51, which
-    would run naive_bayes, fcll_net and the wrong scenarios."""
+    decodes it that way. Four of seven models are therefore 0-3, 7-10, ... — not 0-51, which
+    would run naive_bayes, fcll_net, ridge_baseline and the wrong scenarios."""
     result = _run("--dry-run", "--models", ",".join(FOUR))
     assert result.returncode == 0, result.stderr
-    assert "--array=0-3,6-9,12-15,18-21,24-27,30-33,36-39,42-45,48-51,54-57,60-63,66-69,72-75" in result.stdout
+    assert "--array=0-3,7-10,14-17,21-24,28-31,35-38,42-45,49-52,56-59,63-66,70-73,77-80,84-87" in result.stdout
     assert _subset_array(range(1, 14), FOUR) in result.stdout
     assert "13 scenarios x 4 models" in result.stdout
     assert "52 tasks" in result.stdout
 
 
 @pytest.mark.parametrize("scenarios,models,expected", [
-    ("2-3", ["xgboost", "logistic_regression"], "--array=6,9,12,15"),
-    ("13", ["random_forest"], "--array=74"),
+    ("2-3", ["xgboost", "logistic_regression"], "--array=7,10,14,17"),
+    ("13", ["random_forest"], "--array=86"),
     ("1", ["xgboost", "lightgbm", "random_forest"], "--array=0-2"),
-    ("4-5", ["lightgbm", "random_forest"], "--array=19-20,25-26"),
+    ("4-5", ["lightgbm", "random_forest"], "--array=22-23,29-30"),
+    ("1-2", ["ridge_baseline"], "--array=6,13"),
 ])
 def test_a_model_subset_of_a_scenario_range_maps_to_the_matching_ids(scenarios, models, expected):
     result = _run("--dry-run", "--scenarios", scenarios, "--models", ",".join(models))

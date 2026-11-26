@@ -9,9 +9,20 @@ DATA_ROOT = os.environ.get("RAILWAY_DATA_ROOT", "")
 EXECUTE_PREPROCESSING_DATA_PIPELINE = False
 EXECUTE_TRAINING_PIPELINE = True
 
+# RAILWAY_PIPELINE (set by `python main.py --pipeline ...`) overrides both flags above,
+# so a script can preprocess without editing this file. An edited copy of this file
+# was pushed once and trained nothing on the cluster (c77c574, array 727792).
+_PIPELINE = os.environ.get("RAILWAY_PIPELINE", "")
+if _PIPELINE:
+    EXECUTE_PREPROCESSING_DATA_PIPELINE = _PIPELINE in ("preprocessing", "both")
+    EXECUTE_TRAINING_PIPELINE = _PIPELINE in ("training", "both")
+
 # Constants for file processing
 FOLDER_NAME = "data"
-INPUT_FOLDER = "data/input"
+# RAILWAY_INPUT_DIR (`--input-dir`) points the raw input elsewhere. An absolute path
+# survives os.path.join(DATA_ROOT, INPUT_FOLDER), so many station data roots can share
+# one copy of data/input.
+INPUT_FOLDER = os.environ.get("RAILWAY_INPUT_DIR") or "data/input"
 OUTPUT_FOLDER = "data/output"
 DATA_FILE_PREFIX = "matched_data_"
 

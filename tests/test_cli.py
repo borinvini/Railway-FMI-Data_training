@@ -34,6 +34,64 @@ def test_no_args_returns_all_none():
     assert args.search_iterations is None
     assert args.columns_file is None
     assert args.dump_columns is False
+    assert args.input_dir is None
+    assert args.station is None
+    assert args.pipeline is None
+
+
+def test_station_input_dir_and_pipeline_flags_set_their_variables(tmp_path):
+    """scripts/preprocess_stations.py runs one station per subprocess through these
+    three flags, so no config file is edited per station."""
+    args = main_module.parse_args([
+        "--station", "ol", "--input-dir", str(tmp_path), "--pipeline", "preprocessing"])
+    main_module.apply_env_overrides(args)
+    assert os.environ["RAILWAY_TARGET_STATION"] == "OL"
+    assert os.environ["RAILWAY_INPUT_DIR"] == os.path.abspath(str(tmp_path))
+    assert os.environ["RAILWAY_PIPELINE"] == "preprocessing"
+
+
+def test_without_the_flags_the_variables_stay_unset():
+    main_module.apply_env_overrides(main_module.parse_args([]))
+    for key in ("RAILWAY_TARGET_STATION", "RAILWAY_INPUT_DIR", "RAILWAY_PIPELINE"):
+        assert key not in os.environ
+
+
+def test_unknown_pipeline_value_is_rejected():
+    with pytest.raises(SystemExit):
+        main_module.parse_args(["--pipeline", "everything"])
+
+
+@pytest.mark.parametrize("value, pre, train", [
+    ("preprocessing", True, False), ("training", False, True), ("both", True, True)])
+def test_railway_pipeline_overrides_both_execute_flags(monkeypatch, value, pre, train):
+    import importlib
+    import config.const
+    monkeypatch.setenv("RAILWAY_PIPELINE", value)
+    try:
+        importlib.reload(config.const)
+        assert config.const.EXECUTE_PREPROCESSING_DATA_PIPELINE is pre
+        assert config.const.EXECUTE_TRAINING_PIPELINE is train
+    finally:
+        monkeypatch.delenv("RAILWAY_PIPELINE")
+        importlib.reload(config.const)
+
+
+def test_station_and_input_dir_reach_the_config(monkeypatch, tmp_path):
+    import importlib
+    import config.const
+    import config.const_preprocessing
+    monkeypatch.setenv("RAILWAY_TARGET_STATION", "ROI")
+    monkeypatch.setenv("RAILWAY_INPUT_DIR", str(tmp_path))
+    try:
+        importlib.reload(config.const)
+        importlib.reload(config.const_preprocessing)
+        assert config.const_preprocessing.TARGET_STATION_CODE == "ROI"
+        assert os.path.join("/any/root", config.const.INPUT_FOLDER) == str(tmp_path)
+    finally:
+        monkeypatch.delenv("RAILWAY_TARGET_STATION")
+        monkeypatch.delenv("RAILWAY_INPUT_DIR")
+        importlib.reload(config.const)
+        importlib.reload(config.const_preprocessing)
 
 
 def test_no_args_leaves_state_machine_untouched():

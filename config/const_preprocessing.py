@@ -1,3 +1,5 @@
+import os
+
 # Pipeline State Machine Configuration
 # Dictionary containing method names in execution order with enable/disable flags
 PREPROCESSING_STATE_MACHINE = {
@@ -151,8 +153,11 @@ MULTICLASS_PROBLEM = ['delayClass']
 CLASSIFICATION_PROBLEM = BINARY_CLASSIFICATION_PROBLEM + MULTICLASS_PROBLEM
 REGRESSION_PROBLEM = ['differenceInMinutes', 'differenceInMinutes_offset', 'differenceInMinutes_eachStation_offset']
 
-# Station short code to filter data for - only exact matches will be kept
-TARGET_STATION_CODE = 'OL'  # Example: 'OL', 'HKI', 'ROI', etc.
+# Station short code to filter data for - only exact matches will be kept.
+# RAILWAY_TARGET_STATION (set by `python main.py --station X`) overrides it, so
+# scripts/preprocess_stations.py can run every station of hpc/stations.sh without
+# editing this file.
+TARGET_STATION_CODE = os.environ.get("RAILWAY_TARGET_STATION") or 'OL'  # e.g. 'OL', 'HKI', 'ROI'
 
 # Column carried through preprocessing purely so split_dataset can group by
 # operating day. It is NOT a feature: select_training_cols keeps it, the split

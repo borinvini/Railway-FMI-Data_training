@@ -70,6 +70,24 @@ def parse_args(argv=None):
         help="Absolute path holding data/. On CSC this is /scratch/<project>/railway-fmi.",
     )
     parser.add_argument(
+        "--input-dir",
+        default=None,
+        help="Folder holding the raw matched_data_flat_*.parquet, when it is not "
+             "<data-root>/data/input. Lets several station data roots share one copy.",
+    )
+    parser.add_argument(
+        "--station",
+        default=None,
+        help="Target station short code (e.g. OL), overriding TARGET_STATION_CODE. "
+             "Used by scripts/preprocess_stations.py.",
+    )
+    parser.add_argument(
+        "--pipeline",
+        default=None,
+        choices=("preprocessing", "training", "both"),
+        help="Which pipeline runs, overriding the EXECUTE_* flags of config/const.py.",
+    )
+    parser.add_argument(
         "--n-jobs",
         type=int,
         default=None,
@@ -204,6 +222,14 @@ def apply_env_overrides(args):
     time. Must run before any config/src import."""
     if args.data_root is not None:
         os.environ["RAILWAY_DATA_ROOT"] = args.data_root
+    if args.input_dir is not None:
+        # Absolutised: config/const.py joins it onto DATA_ROOT, and only an absolute
+        # path survives that join unchanged.
+        os.environ["RAILWAY_INPUT_DIR"] = os.path.abspath(args.input_dir)
+    if args.station is not None:
+        os.environ["RAILWAY_TARGET_STATION"] = args.station.strip().upper()
+    if args.pipeline is not None:
+        os.environ["RAILWAY_PIPELINE"] = args.pipeline
     if args.n_jobs is not None:
         # A dedicated variable, not SLURM_CPUS_PER_TASK: that variable is Slurm's
         # own record of the step's allocation and the batch scripts rely on it

@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
 #SBATCH --mem=64G
-#SBATCH --array=0-5
+#SBATCH --array=0-6
 #SBATCH --output=slurm-train-%A_%a.out
 #
 # Same five trainers and the same per-task shape as train_scenarios.sh, so the

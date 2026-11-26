@@ -7,6 +7,8 @@
 #   hpc/submit-scenarios.sh --scenarios 9      # just that one
 #   hpc/submit-scenarios.sh --models xgboost,lightgbm   # only those models of the grid
 #   hpc/submit-scenarios.sh --dry-run          # print the sbatch line, submit nothing
+#   hpc/submit-scenarios.sh --station OL       # the grid of one station of hpc/stations.sh,
+#                                              # under /scratch/.../stations/OL/
 #
 # Any other argument is passed through to sbatch, so a one-off override needs no
 # edit here:  hpc/submit-scenarios.sh --time=02:00:00
@@ -40,11 +42,12 @@ source "${REPO_ROOT}/hpc/models.sh"
 N_MODELS="${#MODELS[@]}"
 
 usage() {
-    sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
+    sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
 
 SCENARIO_SPEC=""
 MODEL_SPEC=""
+STATION=""
 DRY_RUN=0
 SBATCH_ARGS=()
 while [ $# -gt 0 ]; do
@@ -67,6 +70,15 @@ while [ $# -gt 0 ]; do
             MODEL_SPEC="${1#*=}"
             shift
             ;;
+        --station)
+            [ $# -ge 2 ] || { echo "ERROR: --station needs a value." >&2; exit 2; }
+            STATION="${2}"
+            shift 2
+            ;;
+        --station=*)
+            STATION="${1#*=}"
+            shift
+            ;;
         --dry-run)
             DRY_RUN=1
             shift
@@ -81,6 +93,39 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# --station: one station of hpc/stations.sh. Its grid reads and writes only
+# ${SCRATCH}/stations/<ST>/ (train_scenarios.sh picks that tree from
+# RAILWAY_STATION), so the grids of several stations can be queued together.
+STATION_ENV=()
+if [ -n "${STATION}" ]; then
+    STATION="$(printf '%s' "${STATION}" | tr '[:lower:]' '[:upper:]')"
+    # shellcheck source=hpc/stations.sh
+    source "${REPO_ROOT}/hpc/stations.sh"
+    known=0
+    for s in "${STATIONS[@]}"; do [ "${s}" = "${STATION}" ] && known=1; done
+    if [ "${known}" -ne 1 ]; then
+        echo "ERROR: --station ${STATION} is not in hpc/stations.sh (${STATIONS[*]})." >&2
+        exit 2
+    fi
+    # Checked here, on the login node, and only where the scratch tree exists (so
+    # this script stays testable off the cluster): a station that was never staged
+    # would otherwise fail 52 times after queueing.
+    STATION_INPUT="/scratch/${PROJECT}/railway-fmi/stations/${STATION}/data/output/101-preprocessed_training_ready"
+    if [ -d "/scratch/${PROJECT}" ]; then
+        n_files="$( (ls -1 "${STATION_INPUT}"/*.parquet 2>/dev/null || true) | wc -l)"
+        if [ "${n_files}" -eq 0 ]; then
+            echo "ERROR: ${STATION_INPUT} holds no parquet files." >&2
+            echo "       Stage it from your laptop with: hpc/stage_data.sh --stations ${STATION}" >&2
+            exit 1
+        fi
+        echo "station: ${STATION} (${n_files} preprocessed files in ${STATION_INPUT})"
+    else
+        echo "station: ${STATION}"
+    fi
+    STATION_ENV=(RAILWAY_STATION="${STATION}")
+    SBATCH_ARGS=("--job-name=railway-${STATION}" "${SBATCH_ARGS[@]+"${SBATCH_ARGS[@]}"}")
+fi
 
 # The catalogue. Gitignored and uploaded straight to this clone by
 # hpc/push-features.sh, so changing a scenario needs no commit, push or pull.
@@ -228,4 +273,5 @@ if [ "${DRY_RUN}" -eq 1 ]; then
 fi
 
 echo "${CMD[*]}"
-exec env COLUMNS_FILE="${COLUMNS_FILE}" "${SUBSET_ENV[@]+"${SUBSET_ENV[@]}"}" "${CMD[@]}"
+exec env COLUMNS_FILE="${COLUMNS_FILE}" "${SUBSET_ENV[@]+"${SUBSET_ENV[@]}"}" \
+    "${STATION_ENV[@]+"${STATION_ENV[@]}"}" "${CMD[@]}"

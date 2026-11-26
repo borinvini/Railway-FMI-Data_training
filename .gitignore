@@ -194,3 +194,5 @@ docs/superpowers/
 # template: config/scenarios.txt is the working copy that reaches Roihu by
 # scp, so a scenario tweak needs no commit.
 !config/scenarios.example.txt
+# Per-station data roots written by scripts/preprocess_stations.py
+data/stations/

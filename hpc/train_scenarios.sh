@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=40
 #SBATCH --mem=64G
-#SBATCH --array=0-77
+#SBATCH --array=0-90
 #SBATCH --output=slurm-scenarios-%A_%a.out
 #
 # time and mem are both sized off run 580873 (2026-08-11), which lost 8 of 40
@@ -40,8 +40,8 @@
 #
 # Task id decomposes scenario-major, so one scenario's models are contiguous and
 # cancelling a tail range loses whole scenarios rather than fragments of many:
-#   scenario = id / ${#MODELS[@]} + 1     with the 6 models of hpc/models.sh:
-#                                         0-5 -> s01, 6-11 -> s02, ... 72-77 -> s13
+#   scenario = id / ${#MODELS[@]} + 1     with the 7 models of hpc/models.sh:
+#                                         0-6 -> s01, 7-13 -> s02, ... 84-90 -> s13
 #   model    = MODELS[id % ${#MODELS[@]}]
 #
 # Each task re-runs the shared preparation stages (merge, filter, select, split,
@@ -157,12 +157,29 @@ SLUG="$(printf "s%02d" "${SCENARIO}")"
 # say how.
 echo "Features: ${COLUMNS_FILE} scenario ${SCENARIO}/${N_SCENARIOS}, sha256 $(sha256sum "${COLUMNS_FILE}" | cut -c1-16)"
 
+# Multi-station grid (hpc/submit-stations.sh): RAILWAY_STATION names the station,
+# and every path of this task lives under its own tree
+# ${SCRATCH}/stations/<ST>/{data/output/101-...,run_sNN_<model>}, so the seven
+# stations' grids run side by side without touching each other. Unset, the
+# single-station layout directly under ${SCRATCH} is unchanged.
+if [ -n "${RAILWAY_STATION:-}" ]; then
+    BASE="${SCRATCH}/stations/${RAILWAY_STATION}"
+    echo "Station: ${RAILWAY_STATION} (${BASE})"
+else
+    BASE="${SCRATCH}"
+fi
+PREPROCESSED="${BASE}/data/output/101-preprocessed_training_ready"
+if [ ! -d "${PREPROCESSED}" ]; then
+    echo "ERROR: ${PREPROCESSED} not found. Stage it first with hpc/stage_data.sh." >&2
+    exit 1
+fi
+
 # Per-task data root: isolates the 500-*..505-* intermediate files from the
-# other 39 concurrently running tasks (see comment above). Slugged rather than
+# other concurrently running tasks (see comment above). Slugged rather than
 # named, because scenario names contain spaces, + and parentheses.
-RUNROOT="${SCRATCH}/run_${SLUG}_${MODEL}"
+RUNROOT="${BASE}/run_${SLUG}_${MODEL}"
 mkdir -p "${RUNROOT}/data/output"
-ln -sfn "${SCRATCH}/data/output/101-preprocessed_training_ready" \
+ln -sfn "${PREPROCESSED}" \
         "${RUNROOT}/data/output/101-preprocessed_training_ready"
 
 export OMP_NUM_THREADS=1

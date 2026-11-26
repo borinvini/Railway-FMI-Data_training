@@ -23,6 +23,7 @@ TRAIN_ALL_EXPECTED = [
     f"{SCRATCH}/data/output/701-*",
     f"{SCRATCH}/data/output/702-*",
     f"{SCRATCH}/data/output/100[0-4]-*",
+    f"{SCRATCH}/data/output/999-*",
 ]
 ARRAY_EXPECTED = [
     f"{SCRATCH}/run_0/data/output/50[0-5]-*",
@@ -30,10 +31,12 @@ ARRAY_EXPECTED = [
     f"{SCRATCH}/run_0/data/output/701-*",
     f"{SCRATCH}/run_0/data/output/702-*",
     f"{SCRATCH}/run_*/data/output/100[0-4]-*",
+    f"{SCRATCH}/run_*/data/output/999-*",
 ]
 SCENARIOS_EXPECTED = [
     f"{SCRATCH}/run_s??_xgboost/data/output/50[0-5]-*",
     f"{SCRATCH}/run_s??_*/data/output/100[0-4]-*",
+    f"{SCRATCH}/run_s??_*/data/output/999-*",
 ]
 
 CANDIDATES_RE = re.compile(r'CANDIDATES\+=\("([^"]+)"\)')
@@ -132,7 +135,7 @@ def test_the_archive_members_are_flattened_to_bare_directory_names():
     /scratch/... prefix and results/ would gain a deep directory tree instead of
     the flat layout every doc and the compare-runs snippet assume."""
     assert '-C $(dirname "${path}") $(basename "${path}")' in SCRIPT
-    assert "-C results" in SCRIPT
+    assert '-C "${RESULTS}"' in SCRIPT
 
 
 def test_an_unreachable_cluster_points_at_the_auth_script():
@@ -200,7 +203,7 @@ def test_scenarios_mode_archives_members_relative_to_scratch():
 def test_the_reshuffle_calls_the_shared_module_not_an_inline_copy():
     """The sorting logic lives in hpc/sort_results.py so the test suite can
     exercise the shipped code; an inline heredoc could only be tested by a copy."""
-    assert 'python hpc/sort_results.py results "${SCENARIOS_FILE}"' in SCRIPT
+    assert 'python hpc/sort_results.py "${RESULTS}" "${SCENARIOS_FILE}"' in SCRIPT
     assert "load_scenarios" not in SCRIPT, "the parser is the module's job, not the script's"
 
 
@@ -211,6 +214,7 @@ def test_the_scenarios_file_is_overridable_like_the_cluster_side_default():
     override, not a hardcoded path that can silently relabel every folder."""
     assert 'SCENARIOS_FILE="${COLUMNS_FILE:-config/scenarios.txt}"' in SCRIPT
     assert "python hpc/sort_results.py results config/scenarios.txt" not in SCRIPT
+    assert 'python hpc/sort_results.py "${RESULTS}" config/scenarios.txt' not in SCRIPT
 
 
 def test_the_sort_provenance_sha256_is_echoed():
@@ -242,3 +246,21 @@ def test_scenarios_mode_still_opens_exactly_one_transfer_connection():
         line for line in SCRIPT.splitlines() if not line.lstrip().startswith("#")
     )
     assert code.count('ssh "${REMOTE_HOST}"') == 2
+
+
+def test_the_ridge_baseline_is_fetched_in_every_layout():
+    """The numeric grid trains ridge_baseline (stage 999). The model globs used to be
+    100[0-4]-* only, so its results would have stayed on scratch and been deleted
+    after 180 days."""
+    for branch in _candidate_branches():
+        assert any(glob.endswith("/999-*") for glob in branch), branch
+
+
+def test_a_station_moves_both_the_remote_base_and_the_local_folder():
+    """Seven stations share scenario names. Without a per-station remote tree and a
+    per-station results/<ST>/ the second station's fetch would overwrite the first."""
+    assert 'SCRATCH="${SCRATCH}/stations/${STATION}"' in SCRIPT
+    assert 'RESULTS="results/${STATION}"' in SCRIPT
+    # set before the globs are built, so every candidate uses the station tree
+    assert SCRIPT.index('SCRATCH="${SCRATCH}/stations/${STATION}"') < SCRIPT.index("CANDIDATES=()")
+    assert "--station needs --scenarios" in SCRIPT

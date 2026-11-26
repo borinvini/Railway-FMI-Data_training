@@ -21,7 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "hpc" / "train_scenarios.sh"
 SCRIPT = SCRIPT_PATH.read_text(encoding="utf-8")
 
-MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes", "fcll_net"]
+MODELS = ["xgboost", "lightgbm", "random_forest", "logistic_regression", "naive_bayes", "fcll_net",
+          "ridge_baseline"]
 
 # Mirrors config/columns_file.py's banner rule, so the header test counts
 # sections the same way the job will.
@@ -180,7 +181,19 @@ def test_the_undersized_array_warning_fires_only_when_it_should(
 def test_the_run_root_is_slugged_and_zero_padded():
     """Slugs keep spaces, + and parentheses off the cluster entirely."""
     assert 'SLUG="$(printf "s%02d" "${SCENARIO}")"' in SCRIPT
-    assert 'RUNROOT="${SCRATCH}/run_${SLUG}_${MODEL}"' in SCRIPT
+    assert 'RUNROOT="${BASE}/run_${SLUG}_${MODEL}"' in SCRIPT
+
+
+def test_a_station_gets_its_own_tree_and_no_station_keeps_the_old_layout():
+    """hpc/submit-stations.sh runs seven grids at once. With one shared tree a
+    station's run_sNN_<model> roots and its 101 input would overwrite another's,
+    and the fetch would label one station's results with another's name."""
+    assert 'BASE="${SCRATCH}/stations/${RAILWAY_STATION}"' in SCRIPT
+    assert 'BASE="${SCRATCH}"' in SCRIPT
+    assert 'PREPROCESSED="${BASE}/data/output/101-preprocessed_training_ready"' in SCRIPT
+    assert 'echo "Station: ${RAILWAY_STATION}' in SCRIPT
+    # the missing-input guard runs before the task builds its root or calls srun
+    assert SCRIPT.index('[ ! -d "${PREPROCESSED}" ]') < SCRIPT.index("mkdir -p \"${RUNROOT}")
 
 
 def test_the_shared_preprocessed_input_is_symlinked_not_copied():

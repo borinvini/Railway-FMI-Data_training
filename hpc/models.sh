@@ -13,4 +13,7 @@
 #
 # The names are the keys of MODEL_TRAINERS in main.py:20; a name that is not a
 # key fails in argparse, which is loud, and is the one drift mode that is safe.
-MODELS=(xgboost lightgbm random_forest logistic_regression naive_bayes fcll_net)
+# ridge_baseline (appended for the numeric grid) is the simple reference the tree
+# models are compared with on a numeric target; it is skipped, with success, for a
+# classification target, so leave it out of --models in a classification grid.
+MODELS=(xgboost lightgbm random_forest logistic_regression naive_bayes fcll_net ridge_baseline)
