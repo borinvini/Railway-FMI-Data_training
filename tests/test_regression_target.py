@@ -1,4 +1,5 @@
-"""A numeric target (differenceInMinutes) through the training stages, XGBoost only.
+"""A numeric target (differenceInMinutes) through the training stages and the tree trainers
+(XGBoost, LightGBM, Random Forest).
 
 Switching DEFAULT_TARGET_FEATURE to a numeric target used to fail, and the numbers it would
 have produced were not comparable:
@@ -14,6 +15,11 @@ have produced were not comparable:
 4. The search scored neg_mean_absolute_error on the log-shifted target while every reported
    metric is in minutes, and the best iteration was picked on the log-unit score.
 5. Stage 504 binarised the numeric target and ran SMOTE on it.
+6. LightGBM and Random Forest kept the old numeric branch after XGBoost was fixed: they always
+   fitted log1p(y + shift) (REGRESSION_LOG_TARGET ignored), scored the search in log units,
+   LightGBM used squared error instead of REGRESSION_OBJECTIVE, and neither reported mae_skill,
+   residuals, running-train metrics under 'cap' or per-iteration R2. Random Forest also searched
+   criterion='absolute_error', far too slow for a cluster run.
 """
 import json
 import os
@@ -299,7 +305,33 @@ def test_stage_505_carries_the_flags_to_the_trainers_folder(tmp_path):
         assert flags is not None and flags.any()
 
 
-def test_the_trainer_reports_running_trains_separately_under_cap(tmp_path):
+# The tree trainers that take a numeric target the same way: method, the search-space constant
+# to shrink, a one-point space for the fixtures, and the loss the estimator must be built with
+# (None for Random Forest, which has no objective).
+TREE_TRAINERS = {
+    "xgboost": ("train_xgboost_with_randomized_search_cv", "XGBOOST_PARAM_DISTRIBUTIONS",
+                {"n_estimators": [30], "max_depth": [3], "learning_rate": [0.1]}, "reg:absoluteerror"),
+    "lightgbm": ("train_lightgbm_with_randomized_search_cv", "LIGHTGBM_PARAM_DISTRIBUTIONS",
+                 {"n_estimators": [30], "num_leaves": [7], "learning_rate": [0.1],
+                  "min_child_samples": [5]}, "l1"),
+    "random_forest": ("train_random_forest_with_randomized_search_cv",
+                      "RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION",
+                      {"n_estimators": [30], "max_depth": [5]}, None),
+}
+
+
+def _train(pipeline, name, folder):
+    """Run one tree trainer on `folder` with a one-point search space, single-threaded."""
+    method, space_name, space, _ = TREE_TRAINERS[name]
+    with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
+         patch(f"src.training_pipeline.{space_name}", space), \
+         patch("src.training_pipeline.RANDOM_SEARCH_ITERATIONS", 10), \
+         patch("src.training_pipeline.SEARCH_N_JOBS", 1):
+        return getattr(pipeline, method)(data_dir=str(folder))
+
+
+@pytest.mark.parametrize("name", list(TREE_TRAINERS))
+def test_the_trainer_reports_running_trains_separately_under_cap(tmp_path, name):
     df = _delay_frame(days_per_year=45)
     df.loc[df.index[::60], TARGET] = np.nan
     dev = df[df["year"] < 2024].drop(columns="year")
@@ -316,12 +348,7 @@ def test_the_trainer_reports_running_trains_separately_under_cap(tmp_path):
     holdout.assign(**{TARGET: holdout[TARGET].fillna(value)}).to_parquet(folder / "merged_data_x_holdout.parquet", index=False)
     pd.DataFrame({"filled": flags}).to_parquet(filled_path(str(folder / "merged_data_x_holdout.parquet")), index=False)
 
-    small_space = {"n_estimators": [30], "max_depth": [3], "learning_rate": [0.1]}
-    with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
-         patch("src.training_pipeline.XGBOOST_PARAM_DISTRIBUTIONS", small_space), \
-         patch("src.training_pipeline.RANDOM_SEARCH_ITERATIONS", 10), \
-         patch("src.training_pipeline.SEARCH_N_JOBS", 1):
-        result = pipeline.train_xgboost_with_randomized_search_cv(data_dir=str(folder))
+    result = _train(pipeline, name, folder)
 
     assert result["success"] is True, result
     results = json.loads(open(result["results_file"], encoding="utf-8").read())
@@ -419,22 +446,55 @@ def _scaled_folder(tmp_path, df):
     return folder
 
 
-def test_xgboost_regression_defaults_to_absolute_error_on_the_raw_minutes(tmp_path):
+@pytest.mark.parametrize("name", list(TREE_TRAINERS))
+def test_tree_regression_defaults_to_absolute_error_on_the_raw_minutes(tmp_path, name):
     """Hold-out 2025: the log + squared-error fit scored mae_skill -0.060 (worse than always
-    predicting the train median); reg:absoluteerror on the raw minutes scored +0.040."""
+    predicting the train median); reg:absoluteerror on the raw minutes scored +0.040.
+    LightGBM and Random Forest used to fit log1p(y + shift) whatever REGRESSION_LOG_TARGET said,
+    and LightGBM used squared error."""
     from config.const_training import REGRESSION_LOG_TARGET, REGRESSION_OBJECTIVE
     assert REGRESSION_OBJECTIVE == "reg:absoluteerror" and REGRESSION_LOG_TARGET is False
 
+    method, _, _, objective = TREE_TRAINERS[name]
     folder = _scaled_folder(tmp_path, _delay_frame())
     train = pd.read_parquet(folder / "merged_data_x_train.parquet")
     with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
          patch("src.training_pipeline.RandomizedSearchCV", _SearchSpy):
-        _pipeline(tmp_path).train_xgboost_with_randomized_search_cv(data_dir=str(folder))
+        getattr(_pipeline(tmp_path), method)(data_dir=str(folder))
 
     seen = _SearchSpy.seen
-    assert seen["init"]["estimator"].get_params()["objective"] == "reg:absoluteerror"
+    if objective is not None:
+        assert seen["init"]["estimator"].get_params()["objective"] == objective
     np.testing.assert_array_equal(np.asarray(seen["y"]), train[TARGET].to_numpy())  # no log1p
     assert seen["init"]["scoring"] == "neg_mean_absolute_error"   # already minutes
+
+
+def test_lightgbm_takes_each_objective_under_its_own_name(tmp_path):
+    from config.const_training import LIGHTGBM_REGRESSION_OBJECTIVES
+    assert LIGHTGBM_REGRESSION_OBJECTIVES["reg:absoluteerror"] == "l1"
+    folder = _scaled_folder(tmp_path, _delay_frame())
+    with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
+         patch("src.training_pipeline.REGRESSION_OBJECTIVE", "reg:pseudohubererror"), \
+         patch("src.training_pipeline.RandomizedSearchCV", _SearchSpy):
+        _pipeline(tmp_path).train_lightgbm_with_randomized_search_cv(data_dir=str(folder))
+    assert _SearchSpy.seen["init"]["estimator"].get_params()["objective"] == "huber"
+
+
+def test_lightgbm_refuses_an_objective_it_has_no_name_for(tmp_path):
+    folder = _scaled_folder(tmp_path, _delay_frame())
+    with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
+         patch("src.training_pipeline.REGRESSION_OBJECTIVE", "reg:tweedie"), \
+         patch("src.training_pipeline.RandomizedSearchCV", _SearchSpy):
+        result = _pipeline(tmp_path).train_lightgbm_with_randomized_search_cv(data_dir=str(folder))
+    assert result["success"] is False
+    assert "LIGHTGBM_REGRESSION_OBJECTIVES" in result["error"]
+
+
+def test_random_forest_regression_never_searches_the_absolute_error_criterion():
+    """sklearn's MAE split criterion is orders of magnitude slower than squared error and would
+    push a search past the 8 h Roihu limit; the search still picks by MAE in minutes."""
+    from config.const_training import RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION
+    assert "absolute_error" not in RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION["criterion"]
 
 
 def test_to_minutes_undoes_the_log_only_when_there_is_a_shift():
@@ -451,14 +511,17 @@ def test_minutes_scorer_without_a_shift_is_the_sklearn_scorer():
     assert make_minutes_scorer(None, "r2") == "r2"
 
 
-def test_xgboost_regression_uses_day_grouped_cv_and_a_minutes_scorer(tmp_path):
-    """The log-target path (REGRESSION_LOG_TARGET = True), which must still score in minutes."""
+@pytest.mark.parametrize("name", list(TREE_TRAINERS))
+def test_tree_regression_uses_day_grouped_cv_and_a_minutes_scorer(tmp_path, name):
+    """The log-target path (REGRESSION_LOG_TARGET = True), which must still score in minutes.
+    LightGBM and Random Forest used to score neg_mean_absolute_error in log units."""
+    method = TREE_TRAINERS[name][0]
     folder = _scaled_folder(tmp_path, _delay_frame())
     train = pd.read_parquet(folder / "merged_data_x_train.parquet")
     with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
          patch("src.training_pipeline.REGRESSION_LOG_TARGET", True), \
          patch("src.training_pipeline.RandomizedSearchCV", _SearchSpy):
-        _pipeline(tmp_path).train_xgboost_with_randomized_search_cv(data_dir=str(folder))
+        getattr(_pipeline(tmp_path), method)(data_dir=str(folder))
 
     seen = _SearchSpy.seen
     assert isinstance(seen["init"]["cv"], GroupKFold)
@@ -477,15 +540,11 @@ def test_xgboost_regression_uses_day_grouped_cv_and_a_minutes_scorer(tmp_path):
     assert shift > 0
 
 
-def test_xgboost_regression_runs_end_to_end_and_reports_minutes(tmp_path):
+@pytest.mark.parametrize("name", list(TREE_TRAINERS))
+def test_tree_regression_runs_end_to_end_and_reports_minutes(tmp_path, name):
     """The whole numeric branch on a learnable fixture: tuning, test, hold-out, plots, JSON."""
     folder = _scaled_folder(tmp_path, _delay_frame(days_per_year=45))
-    small_space = {"n_estimators": [30], "max_depth": [3], "learning_rate": [0.1]}
-    with patch("src.training_pipeline.DEFAULT_TARGET_FEATURE", TARGET), \
-         patch("src.training_pipeline.XGBOOST_PARAM_DISTRIBUTIONS", small_space), \
-         patch("src.training_pipeline.RANDOM_SEARCH_ITERATIONS", 10), \
-         patch("src.training_pipeline.SEARCH_N_JOBS", 1):
-        result = _pipeline(tmp_path).train_xgboost_with_randomized_search_cv(data_dir=str(folder))
+    result = _train(_pipeline(tmp_path), name, folder)
 
     assert result["success"] is True, result
     assert result["problem_type"] == "regression"
@@ -509,5 +568,5 @@ def test_xgboost_regression_runs_end_to_end_and_reports_minutes(tmp_path):
 
     out = result["output_directory"]
     names = os.listdir(out)
-    assert "xgboost_residuals_x.png" in names
-    assert "xgboost_residuals_holdout_x.png" in names
+    assert f"{name}_residuals_x.png" in names
+    assert f"{name}_residuals_holdout_x.png" in names

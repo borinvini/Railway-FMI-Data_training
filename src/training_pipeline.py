@@ -152,6 +152,7 @@ from config.const_training import (
     XGBOOST_PARAM_DISTRIBUTIONS,
     LIGHTGBM_RANDOMIZED_SEARCH_OUTPUT_FOLDER,
     LIGHTGBM_PARAM_DISTRIBUTIONS,
+    LIGHTGBM_REGRESSION_OBJECTIVES,
     MAX_SAMPLE_WEIGHT_REGRESSION,
     MERGED_BALANCED_OUTPUT_FOLDER,
     RESAMPLING_METHOD,
@@ -3925,6 +3926,113 @@ class TrainingPipeline:
             'f1_always_positive': (2 * p / (1 + p)) if p > 0 else 0.0,
         }
 
+    # --- numeric target, shared by the XGBoost, LightGBM and Random Forest trainers ---------
+
+    @staticmethod
+    def _regression_fit_target(y_train):
+        """What a tree model is fitted on for a numeric target, and how the search scores it.
+
+        Returns (y_fit, y_shift, scorer). With REGRESSION_LOG_TARGET the model is fitted on
+        log1p(y + y_shift); otherwise y_shift is None and the model fits and predicts minutes
+        (to_minutes passes them through). The scorer is in minutes either way, so the tuning
+        score and the reported test / hold-out metrics are the same quantity.
+        """
+        if REGRESSION_LOG_TARGET:
+            # Shift the target so all values are positive, then log-transform it.
+            y_shift = max(0.0, -float(y_train.min())) + 1.0
+            y_fit = np.log1p(y_train + y_shift)
+            print(f"      Log-transform target: shift={y_shift:.2f}, "
+                  f"log range=[{y_fit.min():.3f}, {y_fit.max():.3f}] "
+                  f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
+        else:
+            y_shift = None
+            y_fit = y_train
+            print("      Target fitted on the raw minutes (no log transform)")
+        scorer = make_minutes_scorer(y_shift, REGRESSION_SCORE_METRIC)
+        print(f"      Tuning metric: {REGRESSION_SCORE_METRIC} (minutes)")
+        return y_fit, y_shift, scorer
+
+    @staticmethod
+    def _load_split_filled_flags(test_file, n_test, scaled_data_dir, n_holdout):
+        """Rows whose delay was filled in (REGRESSION_CANCELLED_POLICY = 'cap'), for the test
+        and hold-out files. Each is None when there is no flag file (policy 'drop')."""
+        test_filled = load_filled_flags(test_file, n_test)
+        holdout_filled = None
+        if n_holdout is not None:
+            holdout_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_holdout.parquet"))
+            if len(holdout_files) == 1:
+                holdout_filled = load_filled_flags(holdout_files[0], n_holdout)
+        return test_filled, holdout_filled
+
+    def _running_train_metrics(self, y_train, y_true, y_pred, filled):
+        """Metrics without the rows whose delay was filled in, or None when none were."""
+        if filled is None or not filled.any():
+            return None
+        keep = ~filled
+        y_run, p_run = np.asarray(y_true)[keep], np.asarray(y_pred)[keep]
+        running = self._score_predictions(y_run, p_run, False)
+        running.update(mae_baseline(y_train, y_run, running['mae']))
+        running['n_rows'] = int(keep.sum())
+        running['n_filled_excluded'] = int(filled.sum())
+        return running
+
+    def _regression_test_extras(self, y_train, y_test, y_pred, test_mae, test_filled):
+        """Baseline, skill and residual quantiles for final_metrics, plus the running-train
+        metrics (None unless rows were filled in). Returns (extras, running)."""
+        baseline = mae_baseline(y_train, y_test, test_mae)
+        extras = {
+            "baseline_mae_train_median": baseline["baseline_mae"],
+            "mae_skill": baseline["mae_skill"],
+            "residual_quantiles": residual_quantiles(y_test, y_pred),
+        }
+        return extras, self._running_train_metrics(y_train, y_test, y_pred, test_filled)
+
+    def _regression_holdout_extras(self, results, model, X_holdout, y_holdout, y_train, y_shift,
+                                   holdout_filled, title, png_path):
+        """Adds the baseline, skill and residual quantiles to results['holdout_metrics'],
+        results['holdout_metrics_running_trains'] when rows were filled in, and saves the
+        hold-out residual plot."""
+        h_pred = to_minutes(model.predict(X_holdout), y_shift)
+        results["holdout_metrics"].update(
+            mae_baseline(y_train, y_holdout, results["holdout_metrics"]["mae"]))
+        results["holdout_metrics"]["residual_quantiles"] = residual_quantiles(y_holdout, h_pred)
+        hold_running = self._running_train_metrics(y_train, y_holdout, h_pred, holdout_filled)
+        if hold_running is not None:
+            results["holdout_metrics_running_trains"] = hold_running
+        self._save_regression_diagnostics(y_holdout, h_pred, title, png_path)
+
+    @staticmethod
+    def _print_regression_test_summary(results):
+        """The numeric-target lines of a trainer's "Training Summary"."""
+        fm = results["final_metrics"]
+        running = results.get("final_metrics_running_trains")
+        print(f"        Final RMSE: {fm['test_rmse']:.4f}  MAE: {fm['test_mae']:.4f}  "
+              f"R²: {fm['test_r2']:.4f}  WMAPE: {fm['test_wmape']:.2f}%")
+        print(f"        Baseline MAE (always the train median): {fm['baseline_mae_train_median']:.4f} min  "
+              f"MAE skill: {fm['mae_skill']:.3f}")
+        if running is not None:
+            print(f"        Running trains only (n={running['n_rows']:,}, {running['n_filled_excluded']:,} filled rows excluded): "
+                  f"RMSE: {running['rmse']:.4f}  MAE: {running['mae']:.4f}  R²: {running['r2']:.4f}  "
+                  f"MAE skill: {running['mae_skill']:.3f}")
+        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min; "
+              f"{'filled cancelled rows count as delayed' if running is not None else 'cancelled trains are not in a numeric run'}):")
+        print(f"          Precision: {fm['test_bin_precision']:.4f}  Recall: {fm['test_bin_recall']:.4f}  "
+              f"F1: {fm['test_bin_f1']:.4f}  Accuracy: {fm['test_bin_accuracy']:.4f}")
+
+    @staticmethod
+    def _print_regression_holdout_summary(results):
+        """The numeric-target lines of a trainer's "Hold-out Summary"."""
+        hm = results["holdout_metrics"]
+        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
+        print(f"        Baseline MAE (always the train median): {hm['baseline_mae']:.4f} min  MAE skill: {hm['mae_skill']:.3f}")
+        hr = results.get("holdout_metrics_running_trains")
+        if hr:
+            print(f"        Running trains only (n={hr['n_rows']:,}, {hr['n_filled_excluded']:,} filled rows excluded): "
+                  f"RMSE: {hr['rmse']:.4f}  MAE: {hr['mae']:.4f}  R²: {hr['r2']:.4f}  MAE skill: {hr['mae_skill']:.3f}")
+        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
+        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  "
+              f"F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
+
     def _evaluate_holdout(self, model, X_holdout, y_holdout, is_classification, y_shift, method_label):
         """
         Score the already-trained best_model on the out-of-time hold-out — no fit(),
@@ -4311,16 +4419,13 @@ class TrainingPipeline:
             )
 
             # Rows whose delay was filled in (REGRESSION_CANCELLED_POLICY = 'cap'); None otherwise.
-            test_filled = load_filled_flags(test_file, len(test_df))
-            holdout_filled = None
-            if X_holdout is not None:
-                holdout_files = glob.glob(os.path.join(scaled_data_dir, "merged_data_*_holdout.parquet"))
-                if len(holdout_files) == 1:
-                    holdout_filled = load_filled_flags(holdout_files[0], len(X_holdout))
-            
+            test_filled, holdout_filled = self._load_split_filled_flags(
+                test_file, len(test_df), scaled_data_dir,
+                None if X_holdout is None else len(X_holdout))
+
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
-            
+
             # Calculate sample weights if applicable
             sample_weights = None
             if WEIGHT_DELAY_COLUMN in train_df.columns:
@@ -4351,7 +4456,7 @@ class TrainingPipeline:
                 print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
 
             # Set up cross-validation strategy
-            y_train_log = None  # assigned in regression branch below
+            y_fit = y_train     # replaced by the regression branch below
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
                 cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
@@ -4381,22 +4486,7 @@ class TrainingPipeline:
                     objective=REGRESSION_OBJECTIVE,
                 )
                 print(f"      Objective: {REGRESSION_OBJECTIVE}")
-                if REGRESSION_LOG_TARGET:
-                    # Shift target so all values are positive, then log-transform to compress
-                    # the extreme right tail (max 963 min) that deflates R² artificially.
-                    y_shift = max(0.0, -float(y_train.min())) + 1.0
-                    y_train_log = np.log1p(y_train + y_shift)
-                    print(f"      Log-transform target: shift={y_shift:.2f}, "
-                          f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
-                          f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
-                else:
-                    # y_shift None = the model is fitted and predicts in minutes (to_minutes).
-                    y_shift = None
-                    print("      Target fitted on the raw minutes (no log transform)")
-                # Score in minutes whatever the fit, so the tuning score and the reported
-                # test / hold-out metrics are the same quantity.
-                scoring_metric = make_minutes_scorer(y_shift, REGRESSION_SCORE_METRIC)
-                print(f"      Tuning metric: {REGRESSION_SCORE_METRIC} (minutes)")
+                y_fit, y_shift, scoring_metric = self._regression_fit_target(y_train)
 
             # Define iteration range: 10 to 100 (step=10)
             iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
@@ -4444,8 +4534,7 @@ class TrainingPipeline:
                     verbose=0
                 )
                 
-                # Fit with sample weights if available; use log-transformed y for regression
-                y_fit = y_train if (is_classification or y_shift is None) else y_train_log
+                # Fit with sample weights if available; y_fit is log1p(y + shift) under REGRESSION_LOG_TARGET
                 if sample_weights is not None:
                     randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
@@ -4589,16 +4678,8 @@ class TrainingPipeline:
                 final_test_r2 = r2_score(y_test, final_y_pred)
                 denom = np.sum(np.abs(y_test))
                 final_test_wmape = (np.sum(np.abs(y_test - final_y_pred)) / denom * 100) if denom > 0 else 0.0
-                final_baseline = mae_baseline(y_train, y_test, final_test_mae)
-                final_residuals = residual_quantiles(y_test, final_y_pred)
-                final_running = None
-                if test_filled is not None and test_filled.any():
-                    keep = ~test_filled
-                    y_run, p_run = np.asarray(y_test)[keep], np.asarray(final_y_pred)[keep]
-                    final_running = self._score_predictions(y_run, p_run, False)
-                    final_running.update(mae_baseline(y_train, y_run, final_running['mae']))
-                    final_running['n_rows'] = int(keep.sum())
-                    final_running['n_filled_excluded'] = int(test_filled.sum())
+                final_extras, final_running = self._regression_test_extras(
+                    y_train, y_test, final_y_pred, final_test_mae, test_filled)
 
                 y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
                 final_y_pred_binary = (final_y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
@@ -4782,9 +4863,7 @@ class TrainingPipeline:
                         "test_mae": float(final_test_mae),
                         "test_wmape": float(final_test_wmape),
                         "test_r2": float(final_test_r2),
-                        "baseline_mae_train_median": final_baseline["baseline_mae"],
-                        "mae_skill": final_baseline["mae_skill"],
-                        "residual_quantiles": final_residuals,
+                        **final_extras,
                         "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
@@ -4849,20 +4928,8 @@ class TrainingPipeline:
                     results["dataset_info"]["holdout_samples"] = len(X_holdout)
 
                     if not is_classification:
-                        h_pred = to_minutes(best_model.predict(X_holdout), y_shift)
-                        results["holdout_metrics"].update(
-                            mae_baseline(y_train, y_holdout, results["holdout_metrics"]["mae"]))
-                        results["holdout_metrics"]["residual_quantiles"] = residual_quantiles(y_holdout, h_pred)
-                        if holdout_filled is not None and holdout_filled.any():
-                            keep = ~holdout_filled
-                            y_run, p_run = np.asarray(y_holdout)[keep], np.asarray(h_pred)[keep]
-                            hold_running = self._score_predictions(y_run, p_run, False)
-                            hold_running.update(mae_baseline(y_train, y_run, hold_running['mae']))
-                            hold_running['n_rows'] = int(keep.sum())
-                            hold_running['n_filled_excluded'] = int(holdout_filled.sum())
-                            results["holdout_metrics_running_trains"] = hold_running
-                        self._save_regression_diagnostics(
-                            y_holdout, h_pred,
+                        self._regression_holdout_extras(
+                            results, best_model, X_holdout, y_holdout, y_train, y_shift, holdout_filled,
                             f'XGBoost regression, hold-out year | Dataset: {file_identifier} | Best Iteration: {best_iteration}',
                             os.path.join(output_dir, f'xgboost_residuals_holdout_{file_identifier}.png'))
 
@@ -4951,16 +5018,8 @@ class TrainingPipeline:
             print(f"        {'F1' if is_classification else 'RMSE'} Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
             if is_classification:
                 print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}  PR-AUC: {final_prob.get('pr_auc', 0.0):.4f}")
-            if not is_classification:
-                print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
-                print(f"        Baseline MAE (always the train median): {final_baseline['baseline_mae']:.4f} min  MAE skill: {final_baseline['mae_skill']:.3f}")
-                if final_running is not None:
-                    print(f"        Running trains only (n={final_running['n_rows']:,}, {final_running['n_filled_excluded']:,} filled rows excluded): "
-                          f"RMSE: {final_running['rmse']:.4f}  MAE: {final_running['mae']:.4f}  R²: {final_running['r2']:.4f}  "
-                          f"MAE skill: {final_running['mae_skill']:.3f}")
-                print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min; "
-                      f"{'filled cancelled rows count as delayed' if final_running is not None else 'cancelled trains are not in a numeric run'}):")
-                print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+            if not is_classification and results.get("final_metrics"):
+                self._print_regression_test_summary(results)
 
             if results.get("holdout_metrics"):
                 hm = results["holdout_metrics"]
@@ -4968,14 +5027,7 @@ class TrainingPipeline:
                 if is_classification:
                     print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}  PR-AUC: {hm.get('pr_auc', 0):.4f}")
                 else:
-                    print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
-                    print(f"        Baseline MAE (always the train median): {hm['baseline_mae']:.4f} min  MAE skill: {hm['mae_skill']:.3f}")
-                    hr = results.get("holdout_metrics_running_trains")
-                    if hr:
-                        print(f"        Running trains only (n={hr['n_rows']:,}, {hr['n_filled_excluded']:,} filled rows excluded): "
-                              f"RMSE: {hr['rmse']:.4f}  MAE: {hr['mae']:.4f}  R²: {hr['r2']:.4f}  MAE skill: {hr['mae_skill']:.3f}")
-                    print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                    print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
+                    self._print_regression_holdout_summary(results)
 
             if is_classification:
                 return {
@@ -5127,6 +5179,11 @@ class TrainingPipeline:
                 scaled_data_dir, feature_columns, target_feature, "train_lightgbm_with_randomized_search_cv"
             )
 
+            # Rows whose delay was filled in (REGRESSION_CANCELLED_POLICY = 'cap'); None otherwise.
+            test_filled, holdout_filled = self._load_split_filled_flags(
+                test_file, len(test_df), scaled_data_dir,
+                None if X_holdout is None else len(X_holdout))
+
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
 
@@ -5160,7 +5217,7 @@ class TrainingPipeline:
                 print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
 
             # Set up cross-validation strategy
-            y_train_log = None  # assigned in regression branch below
+            y_fit = y_train     # replaced by the regression branch below
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
                 cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
@@ -5188,20 +5245,23 @@ class TrainingPipeline:
                     scoring_metric = SCORE_METRIC
             else:
                 cv_splitter = make_cv(False, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
+                # The same loss as XGBoost, under its LightGBM name (one setting for both).
+                if REGRESSION_OBJECTIVE not in LIGHTGBM_REGRESSION_OBJECTIVES:
+                    error_msg = (f"REGRESSION_OBJECTIVE={REGRESSION_OBJECTIVE!r} has no LightGBM "
+                                 f"counterpart in LIGHTGBM_REGRESSION_OBJECTIVES "
+                                 f"({sorted(LIGHTGBM_REGRESSION_OBJECTIVES)})")
+                    print(f"    train_lightgbm_with_randomized_search_cv: {error_msg}")
+                    return {"success": False, "error": error_msg}
+                lgb_objective = LIGHTGBM_REGRESSION_OBJECTIVES[REGRESSION_OBJECTIVE]
                 base_model = lgb.LGBMRegressor(
                     random_state=RANDOM_STATE,
                     n_jobs=MODEL_N_JOBS,
                     subsample_freq=1,
                     verbose=-1,
+                    objective=lgb_objective,
                 )
-                scoring_metric = 'neg_mean_absolute_error'
-                # Shift target so all values are positive, then log-transform to compress
-                # the extreme right tail (max 963 min) that deflates R² artificially.
-                y_shift = max(0.0, -float(y_train.min())) + 1.0
-                y_train_log = np.log1p(y_train + y_shift)
-                print(f"      Log-transform target: shift={y_shift:.2f}, "
-                      f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
-                      f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
+                print(f"      Objective: {lgb_objective} (REGRESSION_OBJECTIVE {REGRESSION_OBJECTIVE})")
+                y_fit, y_shift, scoring_metric = self._regression_fit_target(y_train)
 
             # Define iteration range: 10 to 100 (step=10)
             iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
@@ -5218,6 +5278,7 @@ class TrainingPipeline:
             test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
+            test_r2_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
@@ -5248,8 +5309,7 @@ class TrainingPipeline:
                     verbose=0
                 )
 
-                # Fit with sample weights if available; use log-transformed y for regression
-                y_fit = y_train_log if not is_classification else y_train
+                # Fit with sample weights if available; y_fit is log1p(y + shift) under REGRESSION_LOG_TARGET
                 if sample_weights is not None:
                     randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
@@ -5262,7 +5322,7 @@ class TrainingPipeline:
                 # Make predictions on test set; inverse-transform for regression
                 y_pred = current_best_model.predict(X_test)
                 if not is_classification:
-                    y_pred = np.expm1(y_pred) - y_shift
+                    y_pred = to_minutes(y_pred, y_shift)
 
                 # Calculate test metrics
                 if is_classification:
@@ -5316,6 +5376,7 @@ class TrainingPipeline:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
                     test_wmape_scores.append(test_wmape)
+                    test_r2_scores.append(test_r2)
                     test_bin_precision_scores.append(test_bin_precision)
                     test_bin_recall_scores.append(test_bin_recall)
                     test_bin_f1_scores.append(test_bin_f1)
@@ -5336,6 +5397,7 @@ class TrainingPipeline:
                     'test_pr_auc': test_pr_auc_scores[-1] if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
+                    'test_r2': test_r2_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
@@ -5349,7 +5411,7 @@ class TrainingPipeline:
             print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
             final_y_pred = best_model.predict(X_test)
             if not is_classification:
-                final_y_pred = np.expm1(final_y_pred) - y_shift
+                final_y_pred = to_minutes(final_y_pred, y_shift)
 
             if is_classification:
                 (final_test_accuracy, final_test_f1, final_test_precision, final_test_recall,
@@ -5372,6 +5434,8 @@ class TrainingPipeline:
                 final_test_r2 = r2_score(y_test, final_y_pred)
                 denom = np.sum(np.abs(y_test))
                 final_test_wmape = (np.sum(np.abs(y_test - final_y_pred)) / denom * 100) if denom > 0 else 0.0
+                final_extras, final_running = self._regression_test_extras(
+                    y_train, y_test, final_y_pred, final_test_mae, test_filled)
 
                 y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
                 final_y_pred_binary = (final_y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
@@ -5488,6 +5552,14 @@ class TrainingPipeline:
                 self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
                 print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
 
+                if not is_classification:
+                    diag_filename = os.path.join(output_dir, f'lightgbm_residuals_{file_identifier}.png')
+                    self._save_regression_diagnostics(
+                        y_test, final_y_pred,
+                        f'LightGBM regression, test split | Dataset: {file_identifier} | Best Iteration: {best_iteration}',
+                        diag_filename)
+                    print(f"      Regression diagnostics plot saved to: {diag_filename}")
+
                 # Create comprehensive results dictionary
                 results = {
                     "file_identifier": file_identifier,
@@ -5528,6 +5600,7 @@ class TrainingPipeline:
                         "test_mae": float(final_test_mae),
                         "test_wmape": float(final_test_wmape),
                         "test_r2": float(final_test_r2),
+                        **final_extras,
                         "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
@@ -5535,6 +5608,9 @@ class TrainingPipeline:
                         "test_bin_accuracy": float(final_bin_accuracy),
                         "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
+
+                if not is_classification and final_running is not None:
+                    results["final_metrics_running_trains"] = final_running
 
                 # Add iteration-wise metrics summary
                 if is_classification:
@@ -5564,13 +5640,16 @@ class TrainingPipeline:
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
                         "wmape_values": [float(x) for x in test_wmape_scores],
+                        "r2_values": [float(x) for x in test_r2_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_rmse": float(min(test_f1_scores)),
                         "best_mae": float(min(test_mae_scores)),
                         "best_wmape": float(min(test_wmape_scores)),
+                        "best_r2": float(max(test_r2_scores)),
                         "average_rmse": float(np.mean(test_f1_scores)),
                         "average_mae": float(np.mean(test_mae_scores)),
                         "average_wmape": float(np.mean(test_wmape_scores)),
+                        "average_r2": float(np.mean(test_r2_scores)),
                         "bin_f1_values": [float(x) for x in test_bin_f1_scores],
                         "bin_accuracy_values": [float(x) for x in test_bin_accuracy_scores],
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
@@ -5584,6 +5663,12 @@ class TrainingPipeline:
                         "train_lightgbm_with_randomized_search_cv"
                     )
                     results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    if not is_classification:
+                        self._regression_holdout_extras(
+                            results, best_model, X_holdout, y_holdout, y_train, y_shift, holdout_filled,
+                            f'LightGBM regression, hold-out year | Dataset: {file_identifier} | Best Iteration: {best_iteration}',
+                            os.path.join(output_dir, f'lightgbm_residuals_holdout_{file_identifier}.png'))
 
                     # Per-iteration hold-out metrics plus a summary mirroring
                     # iteration_metrics_summary above.
@@ -5621,6 +5706,7 @@ class TrainingPipeline:
                             h_rmse = [float(h['rmse']) for h in valid_holdout]
                             h_mae = [float(h['mae']) for h in valid_holdout]
                             h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_r2 = [float(h['r2']) for h in valid_holdout]
                             h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
                             h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
                             h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
@@ -5629,6 +5715,9 @@ class TrainingPipeline:
                                 "rmse_values": h_rmse,
                                 "mae_values": h_mae,
                                 "wmape_values": h_wmape,
+                                "r2_values": h_r2,
+                                "best_r2": float(max(h_r2)),
+                                "average_r2": float(np.mean(h_r2)),
                                 "best_rmse": float(min(h_rmse)),
                                 "best_mae": float(min(h_mae)),
                                 "best_wmape": float(min(h_wmape)),
@@ -5661,13 +5750,11 @@ class TrainingPipeline:
                 print(f"        Problem Type: {problem_type}")
                 print(f"        Best Iteration Count: {best_iteration}")
                 print(f"        Best CV Score: {best_cv_score:.4f}")
-                print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+                print(f"        {'F1' if is_classification else 'RMSE'} Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
                 if is_classification:
                     print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}  PR-AUC: {final_prob.get('pr_auc', 0.0):.4f}")
                 if not is_classification:
-                    print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
-                    print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                    print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+                    self._print_regression_test_summary(results)
 
                 if results.get("holdout_metrics"):
                     hm = results["holdout_metrics"]
@@ -5675,9 +5762,7 @@ class TrainingPipeline:
                     if is_classification:
                         print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}  PR-AUC: {hm.get('pr_auc', 0):.4f}")
                     else:
-                        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
-                        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
+                        self._print_regression_holdout_summary(results)
 
                 if is_classification:
                     return {
@@ -5834,6 +5919,11 @@ class TrainingPipeline:
                 scaled_data_dir, feature_columns, target_feature, "train_random_forest_with_randomized_search_cv"
             )
 
+            # Rows whose delay was filled in (REGRESSION_CANCELLED_POLICY = 'cap'); None otherwise.
+            test_filled, holdout_filled = self._load_split_filled_flags(
+                test_file, len(test_df), scaled_data_dir,
+                None if X_holdout is None else len(X_holdout))
+
             print(f"      Dataset info - Train: {X_train.shape}, Test: {X_test.shape}")
             print(f"      Features: {len(feature_columns)}")
 
@@ -5860,7 +5950,7 @@ class TrainingPipeline:
                 print(f"      Day-grouped CV: {len(set(groups)):,} operating days in the train split")
 
             # Set up cross-validation strategy
-            y_train_log = None  # assigned in regression branch below
+            y_fit = y_train     # replaced by the regression branch below
             y_shift = 0.0       # assigned in regression branch below
             if is_classification:
                 cv_splitter = make_cv(True, groups, RANDOM_SEARCH_CV_FOLDS, RANDOM_STATE)
@@ -5880,14 +5970,8 @@ class TrainingPipeline:
                     n_jobs=MODEL_N_JOBS,
                 )
                 param_distributions = RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION
-                scoring_metric = 'neg_mean_absolute_error'
-                # Shift target so all values are positive, then log-transform to compress
-                # the extreme right tail (max 963 min) that deflates R² artificially.
-                y_shift = max(0.0, -float(y_train.min())) + 1.0
-                y_train_log = np.log1p(y_train + y_shift)
-                print(f"      Log-transform target: shift={y_shift:.2f}, "
-                      f"log range=[{y_train_log.min():.3f}, {y_train_log.max():.3f}] "
-                      f"(original [{y_train.min():.1f}, {y_train.max():.1f}])")
+                # No objective: the forest fits the mean; the search picks by minutes.
+                y_fit, y_shift, scoring_metric = self._regression_fit_target(y_train)
 
             # Define iteration range: 10 to 100 (step=10)
             iteration_values = list(range(10, RANDOM_SEARCH_ITERATIONS + 1, 10))
@@ -5904,6 +5988,7 @@ class TrainingPipeline:
             test_recall_scores = []
             test_mae_scores = []
             test_wmape_scores = []
+            test_r2_scores = []
             test_bin_precision_scores = []
             test_bin_recall_scores = []
             test_bin_f1_scores = []
@@ -5934,8 +6019,7 @@ class TrainingPipeline:
                     verbose=0
                 )
 
-                # Fit with sample weights if available; use log-transformed y for regression
-                y_fit = y_train_log if not is_classification else y_train
+                # Fit with sample weights if available; y_fit is log1p(y + shift) under REGRESSION_LOG_TARGET
                 if sample_weights is not None:
                     randomized_search.fit(X_train, y_fit, groups=groups, sample_weight=sample_weights)
                 else:
@@ -5948,7 +6032,7 @@ class TrainingPipeline:
                 # Make predictions on test set; inverse-transform for regression
                 y_pred = current_best_model.predict(X_test)
                 if not is_classification:
-                    y_pred = np.expm1(y_pred) - y_shift
+                    y_pred = to_minutes(y_pred, y_shift)
 
                 # Calculate test metrics
                 if is_classification:
@@ -6002,6 +6086,7 @@ class TrainingPipeline:
                     test_f1_scores.append(test_rmse)
                     test_mae_scores.append(test_mae)
                     test_wmape_scores.append(test_wmape)
+                    test_r2_scores.append(test_r2)
                     test_bin_precision_scores.append(test_bin_precision)
                     test_bin_recall_scores.append(test_bin_recall)
                     test_bin_f1_scores.append(test_bin_f1)
@@ -6022,6 +6107,7 @@ class TrainingPipeline:
                     'test_pr_auc': test_pr_auc_scores[-1] if is_classification else None,
                     'test_mae': test_mae_scores[-1] if not is_classification else None,
                     'test_wmape': test_wmape_scores[-1] if not is_classification else None,
+                    'test_r2': test_r2_scores[-1] if not is_classification else None,
                     'test_bin_f1': test_bin_f1_scores[-1] if not is_classification else None,
                     'test_bin_precision': test_bin_precision_scores[-1] if not is_classification else None,
                     'test_bin_recall': test_bin_recall_scores[-1] if not is_classification else None,
@@ -6035,7 +6121,7 @@ class TrainingPipeline:
             print(f"      Calculating final metrics with best model (iteration {best_iteration})...")
             final_y_pred = best_model.predict(X_test)
             if not is_classification:
-                final_y_pred = np.expm1(final_y_pred) - y_shift
+                final_y_pred = to_minutes(final_y_pred, y_shift)
 
             if is_classification:
                 (final_test_accuracy, final_test_f1, final_test_precision, final_test_recall,
@@ -6058,6 +6144,8 @@ class TrainingPipeline:
                 final_test_r2 = r2_score(y_test, final_y_pred)
                 denom = np.sum(np.abs(y_test))
                 final_test_wmape = (np.sum(np.abs(y_test - final_y_pred)) / denom * 100) if denom > 0 else 0.0
+                final_extras, final_running = self._regression_test_extras(
+                    y_train, y_test, final_y_pred, final_test_mae, test_filled)
 
                 y_test_binary = (y_test > DELAY_THRESHOLD_MINUTES).astype(int)
                 final_y_pred_binary = (final_y_pred > DELAY_THRESHOLD_MINUTES).astype(int)
@@ -6174,6 +6262,14 @@ class TrainingPipeline:
                 self._save_confusion_matrix_plot(cm_for_plot, cm_labels, cm_title, cm_plot_filename)
                 print(f"      Confusion matrix plot saved to: {cm_plot_filename}")
 
+                if not is_classification:
+                    diag_filename = os.path.join(output_dir, f'random_forest_residuals_{file_identifier}.png')
+                    self._save_regression_diagnostics(
+                        y_test, final_y_pred,
+                        f'Random Forest regression, test split | Dataset: {file_identifier} | Best Iteration: {best_iteration}',
+                        diag_filename)
+                    print(f"      Regression diagnostics plot saved to: {diag_filename}")
+
                 # Create comprehensive results dictionary
                 results = {
                     "file_identifier": file_identifier,
@@ -6214,6 +6310,7 @@ class TrainingPipeline:
                         "test_mae": float(final_test_mae),
                         "test_wmape": float(final_test_wmape),
                         "test_r2": float(final_test_r2),
+                        **final_extras,
                         "delay_threshold_minutes": DELAY_THRESHOLD_MINUTES,
                         "test_bin_precision": float(final_bin_precision),
                         "test_bin_recall": float(final_bin_recall),
@@ -6221,6 +6318,9 @@ class TrainingPipeline:
                         "test_bin_accuracy": float(final_bin_accuracy),
                         "test_bin_confusion_matrix": final_bin_confusion_matrix
                     }
+
+                if not is_classification and final_running is not None:
+                    results["final_metrics_running_trains"] = final_running
 
                 # Add iteration-wise metrics summary
                 if is_classification:
@@ -6250,13 +6350,16 @@ class TrainingPipeline:
                         "rmse_values": [float(x) for x in test_f1_scores],
                         "mae_values": [float(x) for x in test_mae_scores],
                         "wmape_values": [float(x) for x in test_wmape_scores],
+                        "r2_values": [float(x) for x in test_r2_scores],
                         "cv_scores": [float(x) for x in cv_scores],
                         "best_rmse": float(min(test_f1_scores)),
                         "best_mae": float(min(test_mae_scores)),
                         "best_wmape": float(min(test_wmape_scores)),
+                        "best_r2": float(max(test_r2_scores)),
                         "average_rmse": float(np.mean(test_f1_scores)),
                         "average_mae": float(np.mean(test_mae_scores)),
                         "average_wmape": float(np.mean(test_wmape_scores)),
+                        "average_r2": float(np.mean(test_r2_scores)),
                         "bin_f1_values": [float(x) for x in test_bin_f1_scores],
                         "bin_accuracy_values": [float(x) for x in test_bin_accuracy_scores],
                         "bin_precision_values": [float(x) for x in test_bin_precision_scores],
@@ -6270,6 +6373,12 @@ class TrainingPipeline:
                         "train_random_forest_with_randomized_search_cv"
                     )
                     results["dataset_info"]["holdout_samples"] = len(X_holdout)
+
+                    if not is_classification:
+                        self._regression_holdout_extras(
+                            results, best_model, X_holdout, y_holdout, y_train, y_shift, holdout_filled,
+                            f'Random Forest regression, hold-out year | Dataset: {file_identifier} | Best Iteration: {best_iteration}',
+                            os.path.join(output_dir, f'random_forest_residuals_holdout_{file_identifier}.png'))
 
                     # Per-iteration hold-out metrics plus a summary mirroring
                     # iteration_metrics_summary above.
@@ -6307,6 +6416,7 @@ class TrainingPipeline:
                             h_rmse = [float(h['rmse']) for h in valid_holdout]
                             h_mae = [float(h['mae']) for h in valid_holdout]
                             h_wmape = [float(h['wmape']) for h in valid_holdout]
+                            h_r2 = [float(h['r2']) for h in valid_holdout]
                             h_bin_f1 = [float(h['bin_f1']) for h in valid_holdout]
                             h_bin_prec = [float(h['bin_precision']) for h in valid_holdout]
                             h_bin_rec = [float(h['bin_recall']) for h in valid_holdout]
@@ -6315,6 +6425,9 @@ class TrainingPipeline:
                                 "rmse_values": h_rmse,
                                 "mae_values": h_mae,
                                 "wmape_values": h_wmape,
+                                "r2_values": h_r2,
+                                "best_r2": float(max(h_r2)),
+                                "average_r2": float(np.mean(h_r2)),
                                 "best_rmse": float(min(h_rmse)),
                                 "best_mae": float(min(h_mae)),
                                 "best_wmape": float(min(h_wmape)),
@@ -6347,13 +6460,11 @@ class TrainingPipeline:
                 print(f"        Problem Type: {problem_type}")
                 print(f"        Best Iteration Count: {best_iteration}")
                 print(f"        Best CV Score: {best_cv_score:.4f}")
-                print(f"        F1 Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
+                print(f"        {'F1' if is_classification else 'RMSE'} Range: {min(test_f1_scores):.4f} - {max(test_f1_scores):.4f}")
                 if is_classification:
                     print(f"        Final Accuracy: {final_test_accuracy:.4f}  F1: {final_test_f1:.4f}  Precision: {final_test_precision:.4f}  Recall: {final_test_recall:.4f}  AUC: {final_test_auc:.4f}  PR-AUC: {final_prob.get('pr_auc', 0.0):.4f}")
                 if not is_classification:
-                    print(f"        Final RMSE: {final_test_rmse:.4f}  MAE: {final_test_mae:.4f}  R²: {final_test_r2:.4f}  WMAPE: {final_test_wmape:.2f}%")
-                    print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                    print(f"          Precision: {final_bin_precision:.4f}  Recall: {final_bin_recall:.4f}  F1: {final_bin_f1:.4f}  Accuracy: {final_bin_accuracy:.4f}")
+                    self._print_regression_test_summary(results)
 
                 if results.get("holdout_metrics"):
                     hm = results["holdout_metrics"]
@@ -6361,9 +6472,7 @@ class TrainingPipeline:
                     if is_classification:
                         print(f"        Accuracy: {hm['accuracy']:.4f}  F1: {hm['f1']:.4f}  Precision: {hm['precision']:.4f}  Recall: {hm['recall']:.4f}  AUC: {hm.get('auc', 0):.4f}  PR-AUC: {hm.get('pr_auc', 0):.4f}")
                     else:
-                        print(f"        RMSE: {hm['rmse']:.4f}  MAE: {hm['mae']:.4f}  R²: {hm['r2']:.4f}  WMAPE: {hm['wmape']:.2f}%")
-                        print(f"        Binary metrics (threshold > {DELAY_THRESHOLD_MINUTES} min):")
-                        print(f"          Precision: {hm['bin_precision']:.4f}  Recall: {hm['bin_recall']:.4f}  F1: {hm['bin_f1']:.4f}  Accuracy: {hm['bin_accuracy']:.4f}")
+                        self._print_regression_holdout_summary(results)
 
                 if is_classification:
                     return {

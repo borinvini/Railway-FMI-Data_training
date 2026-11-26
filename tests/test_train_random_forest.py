@@ -29,8 +29,9 @@ def test_random_forest_param_distributions_regression_constant_exists():
     }
     assert set(RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION.keys()) == expected_keys
     assert 'class_weight' not in RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION
+    # no 'absolute_error': too slow (see tests/test_regression_target.py)
     assert set(RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION['criterion']) == {
-        'squared_error', 'absolute_error', 'friedman_mse'
+        'squared_error', 'friedman_mse'
     }
 
 

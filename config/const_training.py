@@ -261,7 +261,11 @@ RANDOM_FOREST_PARAM_DISTRIBUTIONS_REGRESSION = {
     'min_samples_leaf': randint(1, 15),
     'max_features': ['sqrt', 'log2', 0.3, 0.5, 0.7, None],
     'bootstrap': [True, False],
-    'criterion': ['squared_error', 'absolute_error', 'friedman_mse'],
+    # No 'absolute_error': sklearn's MAE split criterion is orders of magnitude slower than
+    # squared error on this many rows and would push a search past the 8 h Roihu limit. The
+    # forest fits the mean, but the search still picks the candidate by REGRESSION_SCORE_METRIC
+    # in minutes (MAE by default), like XGBoost and LightGBM.
+    'criterion': ['squared_error', 'friedman_mse'],
     'min_impurity_decrease': [0.0, 0.001, 0.005, 0.01],
     'ccp_alpha': [0.0, 0.001, 0.01, 0.05]
 }
@@ -350,8 +354,8 @@ SCORE_METRIC = 'roc_auc'
 # Any sklearn scorer name that handles multiclass works, e.g. 'balanced_accuracy', 'f1_weighted'.
 MULTICLASS_SCORE_METRIC = 'f1_macro'
 
-# Metric the numeric target (differenceInMinutes) is tuned on, XGBoost only so far.
-# All are computed in minutes (the model is fitted on log1p of the delay):
+# Metric the numeric target (differenceInMinutes) is tuned on by XGBoost, LightGBM, Random Forest
+# and the ridge baseline. All are computed in minutes, also when REGRESSION_LOG_TARGET fits log1p:
 #   'mae'  : -MAE, robust to the long delay tail (default, matches mae_skill)
 #   'rmse' : -RMSE, punishes the tail harder
 #   'r2'   : R2
@@ -364,8 +368,18 @@ REGRESSION_SCORE_METRIC = 'mae'
 # reg:pseudohubererror +0.019). The log fit pulls predictions below the mean of a
 # right-skewed delay. Set REGRESSION_LOG_TARGET = True to get the old behaviour back
 # (with reg:squarederror).
+# REGRESSION_LOG_TARGET applies to XGBoost, LightGBM and Random Forest alike. Random Forest has
+# no objective (it fits the mean); LightGBM takes the same loss through LIGHTGBM_REGRESSION_OBJECTIVES.
 REGRESSION_OBJECTIVE = 'reg:absoluteerror'
 REGRESSION_LOG_TARGET = False
+
+# The LightGBM name of each REGRESSION_OBJECTIVE, so one setting drives both boosters.
+# 'huber' is LightGBM's Huber loss, the closest it has to XGBoost's pseudo-Huber.
+LIGHTGBM_REGRESSION_OBJECTIVES = {
+    'reg:absoluteerror': 'l1',
+    'reg:squarederror': 'l2',
+    'reg:pseudohubererror': 'huber',
+}
 
 
 # RandomizedSearchCV settings
