@@ -159,3 +159,50 @@ def test_submit_stations_dry_run_calls_one_grid_per_station(tmp_path):
     assert result.stdout.count("--job-name=railway-ROI") == 1
     # 2 scenarios x {xgboost (0), ridge_baseline (6)} of 7 models
     assert result.stdout.count("--array=0,6-7,13") == 2
+
+
+# --- chains: all stations from one submit, under the 200-task limit ---------------------------
+
+def test_a_chain_link_runs_after_the_whole_station_and_passes_lists_in_the_environment():
+    """small allows 200 queued-or-running tasks (sacctmgr maxsubmit) and dependency-held
+    jobs count, so 7 x 52 = 364 could never be queued: SK was refused with
+    AssocMaxSubmitJobLimit after HKI, PSL and TPE (156). A lane holds one station plus
+    one 1-core link that submits the next station when the array has ended."""
+    body = _read("chain_next.sh")
+    assert 'sbatch --dependency="afterany:${job}" hpc/chain_next.sh' in body
+    # --export= splits on commas, and both lists have commas
+    assert "--export=" not in "\n".join(l for l in body.splitlines() if not l.lstrip().startswith("#"))
+    assert 'RAILWAY_CHAIN_NEXT="${REST}"' in body
+    assert "#SBATCH --cpus-per-task=1" in body
+
+
+def test_a_chain_link_drops_its_own_slurm_variables_before_submitting():
+    """Exported into the 40-core grid, the link's SLURM_CPUS_PER_TASK=1 could leak."""
+    body = _read("chain_next.sh")
+    unset_at = body.index('unset "${var}"')
+    assert unset_at < body.index("bash hpc/submit-scenarios.sh")
+    assert body.index('cd "${SLURM_SUBMIT_DIR') < unset_at
+
+
+def test_a_chain_link_retries_only_the_submit_limit():
+    """Any other refusal (a station never staged) would retry every 30 minutes forever."""
+    body = _read("chain_next.sh")
+    assert "AssocMaxSubmitJobLimit" in body
+    assert "sbatch --begin=now+30minutes hpc/chain_next.sh" in body
+    assert "this lane stops here" in body
+
+
+def test_chain_stations_deals_round_robin_and_holds_a_link_behind_each_first_station():
+    body = _read("chain-stations.sh")
+    assert "LANES=3" in body
+    assert "l=$(( i % LANES ))" in body
+    assert 'sbatch --dependency="afterany:${job}" hpc/chain_next.sh' in body
+    assert "STATIONS=(" not in body
+
+
+def test_three_lanes_of_the_seven_stations_stay_under_the_submit_limit():
+    stations = stations_module.load_stations()
+    lanes = [stations[i::3] for i in range(3)]
+    assert lanes == [["HKI", "SK", "ROI"], ["PSL", "YV"], ["TPE", "OL"]]
+    tasks_per_station = 13 * 4
+    assert len(lanes) * (tasks_per_station + 1) <= 200
