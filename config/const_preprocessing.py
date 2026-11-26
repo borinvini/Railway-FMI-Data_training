@@ -38,7 +38,7 @@ TRAIN_DELAY_MINUTES = 0
 # 'trainDisrupted' = delayed by more than TRAIN_DELAY_MINUTES OR cancelled. A cancelled train has no
 # delay value, so 'trainDelayed' alone can neither include nor label it. Switch to 'trainDelayed'
 # to train on the pure delay again (cancelled trains stay in the data either way).
-DEFAULT_TARGET_FEATURE = 'delayClass'
+DEFAULT_TARGET_FEATURE = 'differenceInMinutes'
 # Possible values: 'differenceInMinutes', 'differenceInMinutes_offset',
 # 'differenceInMinutes_eachStation_offset', 'trainDelayed', 'cancelled', 'trainDisrupted',
 # 'delayClass' (4 classes: on time / 0-5 / 5-15 / over 15 min or cancelled, see DELAY_CLASS_BOUNDS)
